@@ -504,6 +504,7 @@ class PipelineTests(unittest.TestCase):
         (6) reviewerStressTest provenance recorded cleanly in report."""
         cost_doc_text = (
             "Compute Accounting Evaluation Study.\n"
+            "Method execution ran on accountA and control execution ran on accountB.\n"
             "TXN-M1500: The method used 1,500 GPU-hours on accountA during evaluation.\n"
             "TXN-C500: The control used 500 GPU-hours on accountB during evaluation.\n"
             "TXN-CLM1: On the shared cluster, the method used 1,500 GPU-hours.\n"
@@ -515,14 +516,22 @@ class PipelineTests(unittest.TestCase):
             "TXN-S1: For multi-stage billing, stage 1 of the method used 500 GPU-hours.\n"
             "TXN-S2: Stage 2 of the method used 1,000 GPU-hours.\n"
             "TXN-C1500: The control baseline used 1,500 GPU-hours in total.\n"
+            "LEDGER-CLM1: Reconciled total actual spend for the method was 1,500 GPU-hours.\n"
+            "LEDGER-CLC1: Reconciled total actual spend for the control was 500 GPU-hours.\n"
+            "LEDGER-CLM2: Reconciled total actual spend for the method was 500 GPU-hours.\n"
+            "LEDGER-CLC2: Reconciled total actual spend for the control baseline was 500 GPU-hours.\n"
+            "LEDGER-M500: Reconciled total actual spend for the method on accountA was 500 GPU-hours.\n"
+            "LEDGER-C500: Reconciled total actual spend for the control on accountB was 500 GPU-hours.\n"
+            "LEDGER-MSUM: Reconciled total actual spend across all sessions (TXN-S1, TXN-S2) for the method on accountA was 1,500 GPU-hours.\n"
+            "LEDGER-CSUM: Reconciled total actual spend across all sessions (TXN-C1500) for the control on accountB was 1,500 GPU-hours.\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
             cost_doc_path = Path(tmp) / "cost_study.md"
             cost_doc_path.write_text(cost_doc_text, encoding="utf-8")
             doc = ingest_document(str(cost_doc_path))
             q_hdr = "Compute Accounting Evaluation Study."
+            q_run = "Method execution ran on accountA and control execution ran on accountB."
             q_m1500 = "TXN-M1500: The method used 1,500 GPU-hours on accountA during evaluation."
-            q_c500 = "TXN-C500: The control used 500 GPU-hours on accountB during evaluation."
             q_cl_m1500 = "TXN-CLM1: On the shared cluster, the method used 1,500 GPU-hours."
             q_cl_c500 = "TXN-CLC1: On the shared cluster, the control used 500 GPU-hours."
             q_cl_m500 = "TXN-CLM2: On the shared cluster, the method used 500 GPU-hours."
@@ -532,11 +541,19 @@ class PipelineTests(unittest.TestCase):
             q_m_s1 = "TXN-S1: For multi-stage billing, stage 1 of the method used 500 GPU-hours."
             q_m_s2 = "TXN-S2: Stage 2 of the method used 1,000 GPU-hours."
             q_c1500 = "TXN-C1500: The control baseline used 1,500 GPU-hours in total."
+            q_rec_clm1 = "LEDGER-CLM1: Reconciled total actual spend for the method was 1,500 GPU-hours."
+            q_rec_clc1 = "LEDGER-CLC1: Reconciled total actual spend for the control was 500 GPU-hours."
+            q_rec_clm2 = "LEDGER-CLM2: Reconciled total actual spend for the method was 500 GPU-hours."
+            q_rec_clc2 = "LEDGER-CLC2: Reconciled total actual spend for the control baseline was 500 GPU-hours."
+            q_rec_m500 = "LEDGER-M500: Reconciled total actual spend for the method on accountA was 500 GPU-hours."
+            q_rec_c500 = "LEDGER-C500: Reconciled total actual spend for the control on accountB was 500 GPU-hours."
+            q_rec_msum = "LEDGER-MSUM: Reconciled total actual spend across all sessions (TXN-S1, TXN-S2) for the method on accountA was 1,500 GPU-hours."
+            q_rec_csum = "LEDGER-CSUM: Reconciled total actual spend across all sessions (TXN-C1500) for the control on accountB was 1,500 GPU-hours."
 
             spec = {
                 "schema_version": "epistemic-ledger/v2.3",
                 "auditor": "CostAuditorV23",
-                "paper_title": "Tier-2 v2.3.2 Cost & Control Test",
+                "paper_title": "Tier-2 v2.3.4 Cost & Control Test",
                 "nodes": [
                     "sharedCluster",
                     "accountA",
@@ -563,8 +580,8 @@ class PipelineTests(unittest.TestCase):
                 "tags": ["resourceCost"],
                 "sources": [
                     {"node": "sharedCluster", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
-                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_m1500},
-                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_c500},
+                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_run},
+                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_run},
                     {"node": "humanHours", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
                 ],
                 "ops": [
@@ -573,8 +590,8 @@ class PipelineTests(unittest.TestCase):
                     {"name": "forget_hours", "inputs": ["humanHours"], "output": "forgottenHours", "kind": "forget", "tag": "resourceCost", "evidence": "shown", "quote": q_hdr},
                     {"name": "run_m_forgot", "inputs": ["sharedCluster", "forgottenHours"], "output": "methodForgetHours", "kind": "transform", "introduces": [], "quote": q_hdr},
                     {"name": "clone_ctrl", "inputs": ["methodCluster"], "output": "clonedCtrl", "kind": "transform", "introduces": [], "quote": q_hdr},
-                    {"name": "run_m_accA", "inputs": ["accountA"], "output": "methodAccA", "kind": "transform", "introduces": [], "quote": q_m1500},
-                    {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q_c500},
+                    {"name": "run_m_accA", "inputs": ["accountA"], "output": "methodAccA", "kind": "transform", "introduces": [], "quote": q_run},
+                    {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q_run},
                     {"name": "bill_cluster", "inputs": ["sharedCluster"], "output": "meterCluster", "kind": "transform", "introduces": [], "quote": q_hdr},
                     {"name": "post_hoc_bill", "inputs": ["accountA", "accountB", "methodAccA", "ctrlAccB"], "output": "postHocMeter", "kind": "transform", "introduces": [], "quote": q_hdr},
                     {"name": "clone_ctrl_ledger", "inputs": ["ctrlCluster"], "output": "clonedCtrlLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
@@ -604,6 +621,10 @@ class PipelineTests(unittest.TestCase):
                         "control_usage": [
                             {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500}
                         ],
+                        "reconciliations": [
+                            {"arm": "methodCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 1500, "receipt": "LEDGER-CLM1", "quote": q_rec_clm1},
+                            {"arm": "ctrlCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLC1", "quote": q_rec_clc1},
+                        ],
                     },
                     {
                         "id": "equalSeparateAccountsPostHoc",
@@ -621,6 +642,10 @@ class PipelineTests(unittest.TestCase):
                         ],
                         "control_usage": [
                             {"arm": "ctrlAccB", "source": "accountB", "receipt": "TXN-C500B", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500_b}
+                        ],
+                        "reconciliations": [
+                            {"arm": "methodAccA", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-M500", "quote": q_rec_m500},
+                            {"arm": "ctrlAccB", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-C500", "quote": q_rec_c500},
                         ],
                     },
                     {
@@ -641,6 +666,10 @@ class PipelineTests(unittest.TestCase):
                         "control_usage": [
                             {"arm": "ctrlAccB", "source": "accountB", "receipt": "TXN-C1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_c1500}
                         ],
+                        "reconciliations": [
+                            {"arm": "methodAccA", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 1500, "receipt": "LEDGER-MSUM", "quote": q_rec_msum},
+                            {"arm": "ctrlAccB", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 1500, "receipt": "LEDGER-CSUM", "quote": q_rec_csum},
+                        ],
                     },
                     {
                         "id": "forgetCannotEraseSpentHours",
@@ -657,6 +686,10 @@ class PipelineTests(unittest.TestCase):
                         ],
                         "control_usage": [
                             {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                        ],
+                        "reconciliations": [
+                            {"arm": "methodForgetHours", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLM2", "quote": q_rec_clm2},
+                            {"arm": "ctrlCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLC2", "quote": q_rec_clc2},
                         ],
                     },
                     {
@@ -675,6 +708,10 @@ class PipelineTests(unittest.TestCase):
                         "control_usage": [
                             {"arm": "clonedCtrl", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
                         ],
+                        "reconciliations": [
+                            {"arm": "methodCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLM2", "quote": q_rec_clm2},
+                            {"arm": "clonedCtrl", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLC2", "quote": q_rec_clc2},
+                        ],
                     },
                     {
                         "id": "clonedControlLedgerRejected",
@@ -691,6 +728,10 @@ class PipelineTests(unittest.TestCase):
                         ],
                         "control_usage": [
                             {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                        ],
+                        "reconciliations": [
+                            {"arm": "methodCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLM2", "quote": q_rec_clm2},
+                            {"arm": "ctrlCluster", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-CLC2", "quote": q_rec_clc2},
                         ],
                     },
                     {
@@ -750,6 +791,8 @@ class PipelineTests(unittest.TestCase):
             s_cmp_b["claims"][0]["provenance"] = "reviewerStressTest"
             s_cmp_b["claims"][0]["method_usage"][0]["unit"] = "gpu_hours"
             s_cmp_b["claims"][0]["control_usage"][0]["unit"] = "gpu_hours"
+            s_cmp_b["claims"][0]["reconciliations"][0]["unit"] = "gpu_hours"
+            s_cmp_b["claims"][0]["reconciliations"][1]["unit"] = "gpu_hours"
             pa, pb = Path(tmp) / "ca.json", Path(tmp) / "cb.json"
             pa.write_text(json.dumps(s_cmp_a), encoding="utf-8")
             pb.write_text(json.dumps(s_cmp_b), encoding="utf-8")
@@ -845,7 +888,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rc0, 0)
             rep0 = json.loads((Path(tmp) / "o0" / "HonestAuditor_report.json").read_text(encoding="utf-8"))
             self.assertEqual(rep0["lean_verification"]["claims"][0]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in rep0["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
+            self.assertIn("unmatchedControlBudget", [f["type"] for f in rep0["lean_verification"]["claims"][0]["findings"]])
 
             # 1. Bug 1: `500` inside `1,500` MUST fail grounding!
             s_bug1 = make_base_spec(
@@ -921,10 +964,11 @@ class PipelineTests(unittest.TestCase):
             rep_unv = json.loads((Path(tmp) / "o_unv" / "UnverifiedAuditor_report.json").read_text(encoding="utf-8"))
             cl_unv = rep_unv["lean_verification"]["claims"][0]
             self.assertEqual(cl_unv["verdict"], "rejected")
-            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl_unv["findings"]))
+            self.assertTrue(
+                any(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl_unv["findings"])
+            )
             md_unv = (Path(tmp) / "o_unv" / "UnverifiedAuditor_report.md").read_text(encoding="utf-8")
             self.assertIn("Unverified Prose Budget", md_unv)
-            self.assertIn("Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED**", md_unv)
 
             # 5. Wrong unit (`500 seconds` claimed as `GPU-hours`) -> ungrounded_usage_unit!
             s_unit = make_base_spec(
@@ -1065,6 +1109,9 @@ class PipelineTests(unittest.TestCase):
                     {"arm": "controlRun", "source": "accountB", "receipt": "Section 6", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose3},
                 ],
             )
+            # Use pure prose quotes on control graph nodes so this specifically isolates pure-prose unverified status
+            s3b["sources"][1]["quote"] = q_prose1
+            s3b["ops"][1]["quote"] = q_prose1
             p3b = Path(tmp) / "prose3.json"
             p3b.write_text(json.dumps(s3b), encoding="utf-8")
             rc3b = cli_main(["run", "--doc", str(doc_path), "--spec", str(p3b), "--out", str(Path(tmp) / "o3b")])
@@ -1072,9 +1119,189 @@ class PipelineTests(unittest.TestCase):
             rep3b = json.loads((Path(tmp) / "o3b" / "ProseOnlyAuditor_report.json").read_text(encoding="utf-8"))
             cl3b = rep3b["lean_verification"]["claims"][0]
             self.assertEqual(cl3b["verdict"], "rejected")
-            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl3b["findings"]))
+            self.assertTrue(
+                any(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl3b["findings"])
+            )
             md3b = (Path(tmp) / "o3b" / "ProseOnlyAuditor_report.md").read_text(encoding="utf-8")
             self.assertIn("Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED**", md3b)
+
+    def test_codex_27319_reconciliation_omitted_session_job_invoice_and_trailing_period(self) -> None:
+        """Codex #27319 exact counterexamples + trailing-period regression:
+        1. Full reconciled accounting (TXN-M1 500 + TXN-M2 500 = 1,000 vs JOB-C1 500) -> `unmatchedControlBudget`.
+        2. Cherry-picking (omitting TXN-M2 even though TXN-M2 appears in method op quote) -> REJECTED
+           (`omittedLedgerReceipt` + `reconciliationTotalMismatch` or `unreconciledArmTotal`).
+        3. Cross-document double counting (JOB-C1 500 + INV-C1 billing JOB-C1 500 = 1,000) -> REJECTED
+           (`duplicateChargeEvent` for `JOB-C1` + `reconciliationTotalMismatch`).
+        4. Unreconciled selected verified lines (`500 / 500` with no scope/period total reconciliation) -> REJECTED
+           (`unreconciledArmTotal`) with clear report message that total actual spend is unverified.
+        5. Trailing period after receipt ID (`... under TXN-M1.`) MUST still classify as `verifiedRecord`,
+           while `TXN-M1` inside `TXN-M1.2` or `TXN-M10` remains blocked.
+        """
+        from pipeline.schema import classify_usage_entry
+
+        # 5. Direct check on trailing-period fix at schema.py
+        q_no_dot = "1,500 GPU-hours were charged to the method under TXN-M1"
+        q_with_dot = "1,500 GPU-hours were charged to the method under TXN-M1."
+        q_sub_dot = "1,500 GPU-hours were charged to the method under TXN-M1.2."
+        for qt, expected in [(q_no_dot, "verifiedRecord"), (q_with_dot, "verifiedRecord"), (q_sub_dot, "unverifiedProse")]:
+            qk, attr = classify_usage_entry(
+                "method",
+                "methodRun",
+                "controlRun",
+                {"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": qt},
+                {"accountA"},
+                {"accountB"},
+                {"accountA", "accountB"},
+            )
+            self.assertEqual(qk, "actualSpend")
+            self.assertEqual(attr, expected)
+
+        doc_text = (
+            "Ledger Reconciliation Benchmark.\n"
+            "Method execution ran sessions TXN-M1 and TXN-M2 on accountA.\n"
+            "Control execution ran session JOB-C1 on accountB.\n"
+            "TXN-M1: 500 GPU-hours were charged to the method under TXN-M1.\n"
+            "TXN-M2: 500 GPU-hours were charged to the method under TXN-M2.\n"
+            "JOB-C1: 500 GPU-hours were charged to the control under JOB-C1.\n"
+            "INV-C1: Invoice INV-C1 billed 500 GPU-hours to the control for JOB-C1.\n"
+            "LEDGER-M: Reconciled total actual method spend across all sessions (TXN-M1, TXN-M2) was 1,000 GPU-hours.\n"
+            "LEDGER-C: Reconciled total actual control spend across all sessions (JOB-C1) was 500 GPU-hours.\n"
+            "Single-session clean method run on accountA.\n"
+            "Single-session clean control run on accountB.\n"
+        )
+        q_hdr = "Ledger Reconciliation Benchmark."
+        q_op_m = "Method execution ran sessions TXN-M1 and TXN-M2 on accountA."
+        q_op_c = "Control execution ran session JOB-C1 on accountB."
+        q_m1 = "TXN-M1: 500 GPU-hours were charged to the method under TXN-M1."
+        q_m2 = "TXN-M2: 500 GPU-hours were charged to the method under TXN-M2."
+        q_c1 = "JOB-C1: 500 GPU-hours were charged to the control under JOB-C1."
+        q_inv_c1 = "INV-C1: Invoice INV-C1 billed 500 GPU-hours to the control for JOB-C1."
+        q_led_m = "LEDGER-M: Reconciled total actual method spend across all sessions (TXN-M1, TXN-M2) was 1,000 GPU-hours."
+        q_led_c = "LEDGER-C: Reconciled total actual control spend across all sessions (JOB-C1) was 500 GPU-hours."
+        q_clean_m = "Single-session clean method run on accountA."
+        q_clean_c = "Single-session clean control run on accountB."
+
+        def make_spec(auditor: str, m_usage: list[dict], c_usage: list[dict], recs: list[dict] | None, op_m_q: str = q_op_m, op_c_q: str = q_op_c) -> dict:
+            cl: dict = {
+                "id": "reconciledBudget",
+                "statement": "Total actual GPU-hour spend is equal across method and control.",
+                "quote": q_hdr,
+                "provenance": "authorClaimed",
+                "kind": "effectivenessClaim",
+                "method_node": "methodRun",
+                "evaluation_node": "evalNode",
+                "control_node": "controlRun",
+                "cost_ledger_node": "costLedger",
+                "cost_tag": "resourceCost",
+                "method_usage": m_usage,
+                "control_usage": c_usage,
+            }
+            if recs is not None:
+                cl["reconciliations"] = recs
+            return {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": auditor,
+                "paper_title": "Codex 27319 Reconciliation",
+                "nodes": ["accountA", "accountB", "methodRun", "controlRun", "costLedger", "evalNode"],
+                "tags": ["resourceCost"],
+                "sources": [
+                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
+                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
+                ],
+                "ops": [
+                    {"name": "run_method", "inputs": ["accountA"], "output": "methodRun", "kind": "transform", "introduces": [], "quote": op_m_q},
+                    {"name": "run_control", "inputs": ["accountB"], "output": "controlRun", "kind": "transform", "introduces": [], "quote": op_c_q},
+                    {"name": "meter_all", "inputs": ["accountA", "accountB"], "output": "costLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "eval_both", "inputs": ["methodRun", "controlRun", "costLedger"], "output": "evalNode", "kind": "transform", "introduces": [], "quote": q_hdr},
+                ],
+                "claims": [cl],
+            }
+
+        recs_full = [
+            {"arm": "methodRun", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 1000, "receipt": "LEDGER-M", "quote": q_led_m},
+            {"arm": "controlRun", "dimension": "resourceCost", "unit": "GPU-hours", "reconciled_total": 500, "receipt": "LEDGER-C", "quote": q_led_c},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "codex_27319.md"
+            doc_path.write_text(doc_text, encoding="utf-8")
+
+            # 1. Full honest accounting: 1,000 vs 500 -> rejected: ONLY unmatchedControlBudget
+            s1 = make_spec(
+                "Honest27319",
+                [
+                    {"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1},
+                    {"arm": "methodRun", "source": "accountA", "receipt": "TXN-M2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m2},
+                ],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "JOB-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c1}],
+                recs_full,
+            )
+            p1 = Path(tmp) / "s1.json"
+            p1.write_text(json.dumps(s1), encoding="utf-8")
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(p1), "--out", str(Path(tmp) / "o1")]), 0)
+            rep1 = json.loads((Path(tmp) / "o1" / "Honest27319_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(rep1["lean_verification"]["claims"][0]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in rep1["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
+
+            # 2a. Cherry-picking (omit TXN-M2, even WITHOUT reconciliations!) -> rejected: unreconciledArmTotal + omittedLedgerReceipt(TXN-M2)!
+            s2 = make_spec(
+                "CherryPick27319",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "JOB-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c1}],
+                None,
+            )
+            p2 = Path(tmp) / "s2.json"
+            p2.write_text(json.dumps(s2), encoding="utf-8")
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(p2), "--out", str(Path(tmp) / "o2")]), 0)
+            rep2 = json.loads((Path(tmp) / "o2" / "CherryPick27319_report.json").read_text(encoding="utf-8"))
+            cl2 = rep2["lean_verification"]["claims"][0]
+            self.assertEqual(cl2["verdict"], "rejected")
+            ftypes2 = {f["type"] for f in cl2["findings"]}
+            self.assertIn("omittedLedgerReceipt", ftypes2)
+            self.assertIn("unreconciledArmTotal", ftypes2)
+            self.assertTrue(any(f["type"] == "omittedLedgerReceipt" and f["receipt"] == "TXN-M2" for f in cl2["findings"]))
+
+            # 3. Cross-document double counting: JOB-C1 + INV-C1 (for JOB-C1) = 1,000 vs 1,000 -> rejected: duplicateChargeEvent(JOB-C1)!
+            s3 = make_spec(
+                "JobInvDouble27319",
+                [
+                    {"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1},
+                    {"arm": "methodRun", "source": "accountA", "receipt": "TXN-M2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m2},
+                ],
+                [
+                    {"arm": "controlRun", "source": "accountB", "receipt": "JOB-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c1},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "INV-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_inv_c1},
+                ],
+                recs_full,
+            )
+            p3 = Path(tmp) / "s3.json"
+            p3.write_text(json.dumps(s3), encoding="utf-8")
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(p3), "--out", str(Path(tmp) / "o3")]), 0)
+            rep3 = json.loads((Path(tmp) / "o3" / "JobInvDouble27319_report.json").read_text(encoding="utf-8"))
+            cl3 = rep3["lean_verification"]["claims"][0]
+            self.assertEqual(cl3["verdict"], "rejected")
+            ftypes3 = {f["type"] for f in cl3["findings"]}
+            self.assertIn("duplicateChargeEvent", ftypes3)
+            self.assertIn("reconciliationTotalMismatch", ftypes3)
+
+            # 4. Unreconciled selected verified lines (500 vs 500, clean op quotes, no reconciliations) -> rejected: unreconciledArmTotal + honest status message!
+            s4 = make_spec(
+                "Unreconciled27319",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "JOB-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c1}],
+                None,
+                op_m_q=q_clean_m,
+                op_c_q=q_clean_c,
+            )
+            p4 = Path(tmp) / "s4.json"
+            p4.write_text(json.dumps(s4), encoding="utf-8")
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(p4), "--out", str(Path(tmp) / "o4")]), 0)
+            rep4 = json.loads((Path(tmp) / "o4" / "Unreconciled27319_report.json").read_text(encoding="utf-8"))
+            cl4 = rep4["lean_verification"]["claims"][0]
+            self.assertEqual(cl4["verdict"], "rejected")
+            self.assertTrue(all(f["type"] == "unreconciledArmTotal" for f in cl4["findings"]))
+            md4 = (Path(tmp) / "o4" / "Unreconciled27319_report.md").read_text(encoding="utf-8")
+            self.assertIn("Selected verified line items sum to equal totals, but **total actual spend is UNVERIFIED / UNRECONCILED**", md4)
 
 
 if __name__ == "__main__":

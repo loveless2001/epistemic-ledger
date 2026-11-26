@@ -56,6 +56,8 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
     if ft == "duplicateUsageReceipt":
         return f"**[Duplicate Usage Receipt]** arm `{f['arm']}` reuses or omits receipt `{f['receipt']}` for `{f['cost_tag']}`"
+    if ft == "duplicateChargeEvent":
+        return f"**[Duplicate Charge Event]** arm `{f['arm']}` double-counts linked charge/run event `{f['event']}` across documents for `{f['cost_tag']}`"
     if ft == "nonActualUsageQuantity":
         return (
             f"**[Non-Actual Usage Quantity]** usage item `{f['receipt']}` on `{f['arm']}` "
@@ -71,6 +73,21 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return (
             f"**[Unverified Prose Budget]** usage item `{f['receipt']}` on `{f['arm']}` "
             f"(`{f['source']}`, `{f['cost_tag']}`) lacks a source-grounded structured billing/run receipt or unambiguous arm attribution — actual budget parity unverified"
+        )
+    if ft == "unreconciledArmTotal":
+        return (
+            f"**[Unreconciled Arm Total]** selected `{f['cost_tag']}` (`{f['unit']}`) items for `{f['arm']}` "
+            f"lack a verified period/scope total reconciliation — total actual spend unverified"
+        )
+    if ft == "reconciliationTotalMismatch":
+        return (
+            f"**[Reconciliation Total Mismatch]** selected `{f['cost_tag']}` (`{f['unit']}`) sum for `{f['arm']}` "
+            f"({f['selected_sum']}) disagrees with reconciled scope total ({f['reconciled_total']})"
+        )
+    if ft == "omittedLedgerReceipt":
+        return (
+            f"**[Omitted Ledger Receipt]** receipt `{f['receipt']}` referenced by `{f['arm']}` graph/ledger "
+            f"is missing from `{f['cost_tag']}` usage"
         )
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
@@ -128,6 +145,20 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         sig["method_usage"] = _norm_usage_key(meta["method_usage"])
     if "control_usage" in meta:
         sig["control_usage"] = _norm_usage_key(meta["control_usage"])
+    if "reconciliations" in meta:
+        sig["reconciliations"] = sorted(
+            [
+                {
+                    "arm": r.get("arm"),
+                    "dimension": r.get("dimension"),
+                    "unit": r.get("unit"),
+                    "reconciled_total": r.get("reconciled_total"),
+                    "receipt": r.get("receipt"),
+                }
+                for r in meta["reconciliations"]
+            ],
+            key=lambda x: (str(x["arm"]), str(x["dimension"]), str(x["unit"]), str(x["receipt"])),
+        )
     return sig
 
 
@@ -238,13 +269,19 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             if (
                 meta.get("kind") == "effectivenessClaim"
                 and all(
-                    f.get("type") == "unverifiedUsageAttribution" and f.get("status") == "unverifiedProse"
+                    (f.get("type") == "unverifiedUsageAttribution" and f.get("status") == "unverifiedProse")
+                    or f.get("type") == "unreconciledArmTotal"
                     for f in c["findings"]
                 )
             ):
-                lines.append(
-                    "- **Budget status:** Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED** (plain prose without source-grounded structured billing/run receipt IDs)."
-                )
+                if any(f.get("type") == "unverifiedUsageAttribution" for f in c["findings"]):
+                    lines.append(
+                        "- **Budget status:** Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED** (plain prose without source-grounded structured billing/run receipt IDs)."
+                    )
+                else:
+                    lines.append(
+                        "- **Budget status:** Selected verified line items sum to equal totals, but **total actual spend is UNVERIFIED / UNRECONCILED** (missing verified period/scope total reconciliation for one or both arms)."
+                    )
             lines.append("- **Findings:**")
             for f in c["findings"]:
                 lines.append(f"  - {format_finding_human(f)}")
@@ -351,7 +388,11 @@ def build_comparison_report(
                         effectiveness_controls.add((str(sig.get("control_node")), str(sig.get("cost_ledger_node"))))
                         usage_signatures.add(
                             json.dumps(
-                                {"m": sig.get("method_usage", []), "c": sig.get("control_usage", [])},
+                                {
+                                    "m": sig.get("method_usage", []),
+                                    "c": sig.get("control_usage", []),
+                                    "r": sig.get("reconciliations", []),
+                                },
                                 sort_keys=True,
                             )
                         )
@@ -557,6 +598,7 @@ CRITICAL RULES:
 6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
    - `method_usage` and `control_usage`: lists of `{{"arm": "<arm_node>", "source": "<source_node>", "receipt": "<TXN-.../INV-.../RUN-...>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quantity_kind": "actualSpend|requestedOrAllocated|estimatedOrProjected|unknown", "quote": "<verbatim quote with intact source-doc number + unit + receipt ID>"}}` (empty `[]` if unquantified; plain prose without source-grounded structured billing/run receipt IDs is flagged `unverifiedProse` rather than certified `admissible`).
+   - `reconciliations` (optional): list of `{{"arm": "<arm_node>", "dimension": "<cost_tag>", "unit": "<str>", "reconciled_total": <int>, "receipt": "<LEDGER-...>", "quote": "<verbatim period/scope total summary quote>"}}` reconciling total actual spend per arm (without verified reconciliation, selected lines alone are reported as unreconciled).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 

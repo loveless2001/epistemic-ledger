@@ -526,8 +526,10 @@ def unevenQuantitiesSameCluster : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M1", .resourceCost, "gpu_hours", 100, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C1", .resourceCost, "gpu_hours", 1, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M1", "TXN-M1", .resourceCost, "gpu_hours", 100, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C1", "TXN-C1", .resourceCost, "gpu_hours", 1, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "gpu_hours", some 100, ["TXN-M1"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "gpu_hours", some 1, ["TXN-C1"], .verifiedRecord⟩]
 
 /-- Case 2 (Codex P1-1 converse + post-hoc meter): Two separate accounts both spending 500 USD -> ADMISSIBLE! -/
 def separateAccountsEqualDollars : FlowClaim Node Tag where
@@ -543,8 +545,10 @@ def separateAccountsEqualDollars : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .accountA, "TXN-A1", .resourceCost, "USD", 500, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .accountB, "TXN-B1", .resourceCost, "USD", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .accountA, "TXN-A1", "TXN-A1", .resourceCost, "USD", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "TXN-B1", "TXN-B1", .resourceCost, "USD", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "USD", some 500, ["TXN-A1"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "USD", some 500, ["TXN-B1"], .verifiedRecord⟩]
 
 /-- Case 3 (Codex P1-2): `forget .resourceCost .shown` CANNOT erase physically spent human hours! -/
 def forgetShownCannotEraseCost : FlowClaim Node Tag where
@@ -560,8 +564,10 @@ def forgetShownCannotEraseCost : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M2", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C2", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M2", "TXN-M2", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C2", "TXN-C2", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "gpu_hours", some 10, ["TXN-M2"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "gpu_hours", some 10, ["TXN-C2"], .verifiedRecord⟩]
 
 /-- Case 4 (Codex P1-3): Control arm derived from method output -> REJECTED (`dependentControlArm`)! -/
 def controlDerivedFromMethod : FlowClaim Node Tag where
@@ -575,8 +581,10 @@ def controlDerivedFromMethod : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .clonedControlArm) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M3", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
-    [⟨.clonedControlArm, .sharedGpuCluster, "TXN-C3", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M3", "TXN-M3", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.clonedControlArm, .sharedGpuCluster, "TXN-C3", "TXN-C3", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "gpu_hours", some 10, ["TXN-M3"], .verifiedRecord⟩,
+     ⟨.clonedControlArm, .resourceCost, "gpu_hours", some 10, ["TXN-C3"], .verifiedRecord⟩]
 
 /-- Case 5 (Codex R2 P1-2): Ledger cloned solely from control output (no direct metering path) -> REJECTED! -/
 def ledgerClonedFromControlOnly : FlowClaim Node Tag where
@@ -590,8 +598,10 @@ def ledgerClonedFromControlOnly : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M4", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C4", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "TXN-M4", "TXN-M4", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "TXN-C4", "TXN-C4", .resourceCost, "gpu_hours", 10, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "gpu_hours", some 10, ["TXN-M4"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "gpu_hours", some 10, ["TXN-C4"], .verifiedRecord⟩]
 
 /-- Case 6 (Society of AI Scientists macro): no control, no ledger, unquantified budget -> REJECTED! -/
 def societyNoControlNoCost : FlowClaim Node Tag where
@@ -601,7 +611,7 @@ def societyNoControlNoCost : FlowClaim Node Tag where
       ⟨.humanOperatorHours, .setByExperimenter, [.resourceCost]⟩],
      [⟨"run_936_agents", [.sharedGpuCluster, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
       ⟨"count_papers", [.autonomousSocietyRun], .rawStudyCountReport, .transform []⟩]⟩
-  kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost [] []
+  kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost [] [] []
 
 /-- Case 7 (Codex #27315 Bug 3): Triple-counting the same control receipt (500 x 3 = 1500) -> REJECTED! -/
 def tripleCountedControlReceipt : FlowClaim Node Tag where
@@ -609,10 +619,12 @@ def tripleCountedControlReceipt : FlowClaim Node Tag where
   graph := separateAccountsEqualDollars.graph
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .accountA, "TXN-M1500", .resourceCost, "GPU-hours", 1500, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .accountB, "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
-     ⟨.humanPlusAiControlRun, .accountB, "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
-     ⟨.humanPlusAiControlRun, .accountB, "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .accountA, "TXN-M1500", "TXN-M1500", .resourceCost, "GPU-hours", 1500, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "TXN-C500", "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .accountB, "TXN-C500", "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .accountB, "TXN-C500", "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 1500, ["TXN-M1500"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 500, ["TXN-C500"], .verifiedRecord⟩]
 
 /-- Case 8 (Codex #27315/#27317): Unverified prose CANNOT certify matched budget! -/
 def unverifiedAttributionClaim : FlowClaim Node Tag where
@@ -620,18 +632,22 @@ def unverifiedAttributionClaim : FlowClaim Node Tag where
   graph := separateAccountsEqualDollars.graph
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .accountA, "prose_a", .resourceCost, "GPU-hours", 500, .actualSpend, .unverifiedProse⟩]
-    [⟨.humanPlusAiControlRun, .accountB, "TXN-B500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .accountA, "prose_a", "prose_a", .resourceCost, "GPU-hours", 500, .actualSpend, .unverifiedProse⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "TXN-B500", "TXN-B500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 500, ["prose_a"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 500, ["TXN-B500"], .verifiedRecord⟩]
 
-/-- Case 9 (Honest multi-item sum): Two distinct verified receipts (500 + 1000) match control 1500 -> ADMISSIBLE! -/
+/-- Case 9 (Honest multi-item sum): Two distinct verified receipts (500 + 1000) match reconciled total 1500 -> ADMISSIBLE! -/
 def distinctReceiptsMultiItemSum : FlowClaim Node Tag where
   statement := "Two distinct verified method receipts (500 + 1000) match verified control 1500."
   graph := separateAccountsEqualDollars.graph
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .accountA, "TXN-M1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
-     ⟨.autonomousSocietyRun, .accountA, "TXN-M2", .resourceCost, "GPU-hours", 1000, .actualSpend, .verifiedRecord⟩]
-    [⟨.humanPlusAiControlRun, .accountB, "TXN-C1", .resourceCost, "GPU-hours", 1500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .accountA, "TXN-M1", "TXN-M1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
+     ⟨.autonomousSocietyRun, .accountA, "TXN-M2", "TXN-M2", .resourceCost, "GPU-hours", 1000, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "TXN-C1", "TXN-C1", .resourceCost, "GPU-hours", 1500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 1500, ["TXN-M1", "TXN-M2"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 1500, ["TXN-C1"], .verifiedRecord⟩]
 
 /-- Case 10 (Codex #27317 Bug 2): Requested/allocated quota is NOT actual measured spend -> REJECTED! -/
 def requestedQuotaNotActualSpend : FlowClaim Node Tag where
@@ -639,8 +655,44 @@ def requestedQuotaNotActualSpend : FlowClaim Node Tag where
   graph := separateAccountsEqualDollars.graph
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.autonomousSocietyRun, .accountA, "TXN-REQ1", .resourceCost, "GPU-hours", 500, .requestedOrAllocated, .contradicted⟩]
-    [⟨.humanPlusAiControlRun, .accountB, "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .accountA, "TXN-REQ1", "TXN-REQ1", .resourceCost, "GPU-hours", 500, .requestedOrAllocated, .contradicted⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "TXN-C500", "TXN-C500", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 500, ["TXN-REQ1"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 500, ["TXN-C500"], .verifiedRecord⟩]
+
+/-- Case 11 (Codex #27319 Bug 1): Omitting session TXN-M2 from method usage -> REJECTED (`omittedLedgerReceipt` + `reconciliationTotalMismatch`)! -/
+def omittedSessionReceiptRejected : FlowClaim Node Tag where
+  statement := "Method ran TXN-M1 (500) and TXN-M2 (500) totaling 1,000, but auditor omits TXN-M2."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "TXN-M1", "TXN-M1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "JOB-C1", "JOB-C1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 1000, ["TXN-M1", "TXN-M2"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 500, ["JOB-C1"], .verifiedRecord⟩]
+
+/-- Case 12 (Codex #27319 Bug 2): Counting JOB-C1 and its invoice INV-C1 as two separate charges -> REJECTED (`duplicateChargeEvent`)! -/
+def jobPlusInvoiceSameEventRejected : FlowClaim Node Tag where
+  statement := "Control sums JOB-C1 (500) and INV-C1 billing JOB-C1 (500) to reach 1,000."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "TXN-M1", "TXN-M1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
+     ⟨.autonomousSocietyRun, .accountA, "TXN-M2", "TXN-M2", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "JOB-C1", "JOB-C1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .accountB, "INV-C1", "JOB-C1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.autonomousSocietyRun, .resourceCost, "GPU-hours", some 1000, ["TXN-M1", "TXN-M2"], .verifiedRecord⟩,
+     ⟨.humanPlusAiControlRun, .resourceCost, "GPU-hours", some 500, ["JOB-C1"], .verifiedRecord⟩]
+
+/-- Case 13 (Codex #27319): Equal selected verified lines without scope/period total reconciliation -> REJECTED (`unreconciledArmTotal`)! -/
+def unreconciledSelectedLinesRejected : FlowClaim Node Tag where
+  statement := "Selected lines sum to 500 vs 500, but no scope/period total reconciliation is provided."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "TXN-M1", "TXN-M1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "JOB-C1", "JOB-C1", .resourceCost, "GPU-hours", 500, .actualSpend, .verifiedRecord⟩]
+    []
 
 theorem uneven_quantities_rejected :
     flowVerdict unevenQuantitiesSameCluster = .rejected ∧
@@ -696,6 +748,26 @@ theorem requested_quota_rejected :
     flowVerdict requestedQuotaNotActualSpend = .rejected ∧
     FlowFinding.nonActualUsageQuantity Node.autonomousSocietyRun Node.accountA "TXN-REQ1"
       Tag.resourceCost UsageQuantityKind.requestedOrAllocated ∈ auditFlow requestedQuotaNotActualSpend := by
+  decide
+
+theorem omitted_session_receipt_rejected :
+    flowVerdict omittedSessionReceiptRejected = .rejected ∧
+    FlowFinding.omittedLedgerReceipt Node.autonomousSocietyRun "TXN-M2" Tag.resourceCost
+      ∈ auditFlow omittedSessionReceiptRejected ∧
+    FlowFinding.reconciliationTotalMismatch Node.autonomousSocietyRun Tag.resourceCost "GPU-hours" 500 1000
+      ∈ auditFlow omittedSessionReceiptRejected := by
+  decide
+
+theorem job_plus_invoice_same_event_rejected :
+    flowVerdict jobPlusInvoiceSameEventRejected = .rejected ∧
+    FlowFinding.duplicateChargeEvent Node.humanPlusAiControlRun "JOB-C1" Tag.resourceCost
+      ∈ auditFlow jobPlusInvoiceSameEventRejected := by
+  decide
+
+theorem unreconciled_selected_lines_rejected :
+    flowVerdict unreconciledSelectedLinesRejected = .rejected ∧
+    FlowFinding.unreconciledArmTotal Node.autonomousSocietyRun Tag.resourceCost "GPU-hours"
+      ∈ auditFlow unreconciledSelectedLinesRejected := by
   decide
 
 end EffectivenessTests

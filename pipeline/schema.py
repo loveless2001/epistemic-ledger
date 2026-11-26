@@ -91,6 +91,16 @@ STRUCTURED_RECEIPT_RE = re.compile(
     r"^(?:TXN|INV|REC|RECEIPT|BILL|JOB|RUN|LEDGER|CHARGE|METER|ACCT)[-_:#][A-Za-z0-9][A-Za-z0-9_.\-]*$",
     re.IGNORECASE,
 )
+STRUCTURED_RECEIPT_SEARCH_RE = re.compile(
+    r"(?<![A-Za-z0-9_\-])"
+    r"((?:TXN|INV|REC|RECEIPT|BILL|JOB|RUN|LEDGER|CHARGE|METER|ACCT|ORDER|EVENT|BATCH)[-_:#][A-Za-z0-9][A-Za-z0-9_.\-]*)",
+    re.IGNORECASE,
+)
+RECONCILIATION_TOTAL_CUES_RE = re.compile(
+    r"\b(?:total|overall|cumulative|all\s+(?:sessions?|runs?|jobs?|charges?|items?)|"
+    r"entire\s+(?:study|experiment|period|run)|full\s+period|complete\s+ledger|reconciled|summary)\b",
+    re.IGNORECASE,
+)
 
 # Cues indicating a figure is a request/allocation/cap/estimate/projection rather than actual spend.
 REQUESTED_OR_ALLOCATED_CUES_RE = re.compile(
@@ -314,6 +324,88 @@ def _unit_stopwords(unit: str) -> set[str]:
     return out
 
 
+def _quote_contains_receipt_id(qtext: str, receipt: str) -> bool:
+    """Match `receipt` verbatim in `qtext` with identifier boundaries that allow trailing
+    sentence punctuation (e.g. `under TXN-M1.`) while still blocking substring matches
+    inside longer IDs like `TXN-M10` or `TXN-M1.2`."""
+    if not receipt:
+        return False
+    for m in re.finditer(re.escape(receipt), qtext, re.IGNORECASE):
+        s, e = m.start(), m.end()
+        left_ok = s == 0 or not (
+            qtext[s - 1].isalnum()
+            or qtext[s - 1] in "_-"
+            or (qtext[s - 1] == "." and s >= 2 and qtext[s - 2].isalnum())
+        )
+        right_ok = e == len(qtext) or not (
+            qtext[e].isalnum()
+            or qtext[e] in "_-"
+            or (qtext[e] == "." and e + 1 < len(qtext) and qtext[e + 1].isalnum())
+        )
+        if left_ok and right_ok:
+            return True
+    return False
+
+
+def extract_structured_receipt_ids(text: str) -> list[str]:
+    """Extract distinct structured billing/run/job/invoice IDs from `text`, preserving
+    original case and stripping trailing sentence punctuation."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in STRUCTURED_RECEIPT_SEARCH_RE.finditer(text):
+        raw = m.group(1).rstrip(".,;:")
+        if not raw:
+            continue
+        s = m.start(1)
+        if s >= 2 and text[s - 1] == "." and text[s - 2].isalnum():
+            continue
+        key = raw.upper()
+        if key not in seen:
+            seen.add(key)
+            out.append(raw)
+    return out
+
+
+def _spec_ancestors(spec: dict[str, Any], target: str | None) -> set[str]:
+    if not target:
+        return set()
+    visited = {target}
+    ops = spec.get("ops", [])
+    changed = True
+    while changed:
+        changed = False
+        for op in ops:
+            if isinstance(op, dict) and op.get("output") in visited:
+                for inp in op.get("inputs", []):
+                    if inp not in visited:
+                        visited.add(inp)
+                        changed = True
+    return visited
+
+
+def _arm_exclusive_graph_receipts(
+    spec: dict[str, Any], arm_node: str, other_arm_node: str | None, exclude_upper: set[str]
+) -> list[str]:
+    arm_anc = _spec_ancestors(spec, arm_node)
+    other_anc = _spec_ancestors(spec, other_arm_node)
+    excl = arm_anc - other_anc
+    out: list[str] = []
+    seen: set[str] = set()
+    for src in spec.get("sources", []):
+        if isinstance(src, dict) and src.get("node") in excl and isinstance(src.get("quote"), str):
+            for rid in extract_structured_receipt_ids(src["quote"]):
+                if rid.upper() not in exclude_upper and rid.upper() not in seen:
+                    seen.add(rid.upper())
+                    out.append(rid)
+    for op in spec.get("ops", []):
+        if isinstance(op, dict) and op.get("output") in excl and isinstance(op.get("quote"), str):
+            for rid in extract_structured_receipt_ids(op["quote"]):
+                if rid.upper() not in exclude_upper and rid.upper() not in seen:
+                    seen.add(rid.upper())
+                    out.append(rid)
+    return out
+
+
 def classify_usage_entry(
     arm_role: str,
     method_node: str,
@@ -403,38 +495,229 @@ def classify_usage_entry(
     if not ACTUAL_SPEND_CUES_RE.search(qtext):
         return "unknown", "unverifiedProse"
 
-    # 6. Require a structured billing/run receipt ID grounded verbatim (word-bounded) inside the quote.
+    # 6. Require a structured billing/run receipt ID grounded verbatim (identifier-bounded,
+    # allowing trailing sentence punctuation such as `under TXN-M1.`) inside the quote.
     # Plain prose without a source-grounded receipt ID is classified `unverifiedProse`.
     if not STRUCTURED_RECEIPT_RE.fullmatch(receipt):
         return "actualSpend", "unverifiedProse"
-    if not re.search(rf"(?<![A-Za-z0-9_.\-]){re.escape(receipt)}(?![A-Za-z0-9_.\-])", qtext, re.IGNORECASE):
+    if not _quote_contains_receipt_id(qtext, receipt):
         return "actualSpend", "unverifiedProse"
 
     return "actualSpend", "verifiedRecord"
 
 
-def compute_claim_usage_classifications(
+def classify_reconciliation_entry(
+    arm_role: str,
+    method_node: str,
+    control_node: str | None,
+    rec: dict[str, Any],
+    method_sources: set[str],
+    control_sources: set[str],
+    all_graph_sources: set[str],
+) -> str:
+    """Mechanically classify whether an `ArmReconciliation` quote establishes a verified
+    scope/period total for the arm (`verifiedRecord` | `unverifiedProse` | `contradicted`)."""
+    qtext = str(rec.get("quote", ""))
+    unit = str(rec.get("unit", ""))
+    total = rec.get("reconciled_total")
+    receipt = str(rec.get("receipt", ""))
+
+    if (
+        REQUESTED_OR_ALLOCATED_CUES_RE.search(qtext)
+        or ESTIMATED_OR_PROJECTED_CUES_RE.search(qtext)
+        or RESTATEMENT_CUES_RE.search(qtext)
+        or NEGATED_ACTUAL_CUES_RE.search(qtext)
+    ):
+        return "contradicted"
+
+    bound = extract_unit_bound_amounts(qtext, unit)
+    if len(bound) != 1 or bound[0] != total:
+        return "unverifiedProse"
+
+    if not RECONCILIATION_TOTAL_CUES_RE.search(qtext):
+        return "unverifiedProse"
+
+    unit_sw = _unit_stopwords(unit)
+    method_raw = set(METHOD_ROLE_WORDS) | _ident_markers(method_node)
+    for s in method_sources:
+        method_raw |= _ident_markers(s)
+    control_raw = set(CONTROL_ROLE_WORDS) | _ident_markers(control_node)
+    for s in control_sources:
+        control_raw |= _ident_markers(s)
+    shared = method_raw & control_raw
+    method_excl = method_raw - shared - CONTROL_ROLE_WORDS - ATTRIBUTION_STOPWORDS - unit_sw
+    control_excl = control_raw - shared - METHOD_ROLE_WORDS - ATTRIBUTION_STOPWORDS - unit_sw
+
+    own_markers, opp_markers = (method_excl, control_excl) if arm_role == "method" else (control_excl, method_excl)
+    qlow = qtext.lower()
+
+    def _hits(markers: set[str]) -> bool:
+        return any(re.search(rf"(?<![a-z0-9]){re.escape(m)}(?![a-z0-9])", qlow) for m in markers)
+
+    hits_own = _hits(own_markers)
+    hits_opp = _hits(opp_markers)
+    if hits_opp and not hits_own:
+        return "contradicted"
+    if not (hits_own and not hits_opp):
+        return "unverifiedProse"
+
+    if not STRUCTURED_RECEIPT_RE.fullmatch(receipt) or not _quote_contains_receipt_id(qtext, receipt):
+        return "unverifiedProse"
+    return "verifiedRecord"
+
+
+def compute_claim_usage_details(
     spec: dict[str, Any], claim: dict[str, Any]
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Compute mechanical `(quantity_kind, attribution)` pairs for `(method_usage, control_usage)`."""
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]], list[dict[str, Any]]]:
+    """Compute mechanical `(charge_event_id, quantity_kind, attribution)` tuples for
+    `(method_usage, control_usage)` AND normalized `reconciliations` (with graph-referenced
+    expected receipts merged in) for Lean verification."""
     if claim.get("kind") != "effectivenessClaim":
-        return [], []
+        return [], [], []
     method_node = str(claim["method_node"])
     control_node = claim.get("control_node")
+    cost_tag = str(claim["cost_tag"])
     m_usage = claim.get("method_usage", [])
     c_usage = claim.get("control_usage", [])
     m_sources = {str(u.get("source", "")) for u in m_usage if isinstance(u, dict) and u.get("source")}
     c_sources = {str(u.get("source", "")) for u in c_usage if isinstance(u, dict) and u.get("source")}
     all_sources = {str(s.get("node", "")) for s in spec.get("sources", []) if isinstance(s, dict) and s.get("node")}
-    m_cls = [
-        classify_usage_entry("method", method_node, control_node, u, m_sources, c_sources, all_sources)
-        for u in m_usage
-    ]
-    c_cls = [
-        classify_usage_entry("control", method_node, control_node, u, m_sources, c_sources, all_sources)
-        for u in c_usage
-    ]
-    return m_cls, c_cls
+
+    # Link cross-referenced usage entries (e.g. JOB-C1 and INV-C1 billing JOB-C1) via union-find
+    # over shared structured IDs found in their quotes or explicit `charge_event` field.
+    all_entries = list(m_usage) + list(c_usage)
+    n = len(all_entries)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    entry_keys: list[list[str]] = []
+    key_owner: dict[str, int] = {}
+    for idx, u in enumerate(all_entries):
+        keys: list[str] = []
+        seen_k: set[str] = set()
+        for raw_k in [
+            str(u.get("charge_event", "")).strip(),
+            str(u.get("receipt", "")).strip(),
+            *extract_structured_receipt_ids(str(u.get("quote", ""))),
+        ]:
+            if raw_k and raw_k.upper() not in seen_k:
+                seen_k.add(raw_k.upper())
+                keys.append(raw_k)
+        entry_keys.append(keys)
+        for k in keys:
+            ku = k.upper()
+            if ku in key_owner:
+                union(key_owner[ku], idx)
+            else:
+                key_owner[ku] = idx
+
+    # For each connected component of linked entries, pick a deterministic canonical chargeEventId
+    # (preferring any shared cross-referenced key or explicit charge_event, otherwise the entry's receipt).
+    comp_members: dict[int, list[int]] = {}
+    for idx in range(n):
+        comp_members.setdefault(find(idx), []).append(idx)
+
+    canonical_event: list[str] = [""] * n
+    for root, members in comp_members.items():
+        if len(members) == 1:
+            u = all_entries[members[0]]
+            canonical_event[members[0]] = str(u.get("charge_event") or u.get("receipt") or "")
+        else:
+            key_counts: dict[str, tuple[int, str]] = {}
+            for idx in members:
+                for k in entry_keys[idx]:
+                    ku = k.upper()
+                    cnt, orig = key_counts.get(ku, (0, k))
+                    key_counts[ku] = (cnt + 1, orig)
+            shared_keys = sorted([orig for cnt, orig in key_counts.values() if cnt >= 2])
+            chosen = shared_keys[0] if shared_keys else str(all_entries[members[0]].get("receipt", ""))
+            for idx in members:
+                canonical_event[idx] = chosen
+
+    m_details: list[tuple[str, str, str]] = []
+    for i, u in enumerate(m_usage):
+        qk, attr = classify_usage_entry("method", method_node, control_node, u, m_sources, c_sources, all_sources)
+        m_details.append((canonical_event[i], qk, attr))
+
+    c_details: list[tuple[str, str, str]] = []
+    offset = len(m_usage)
+    for j, u in enumerate(c_usage):
+        qk, attr = classify_usage_entry("control", method_node, control_node, u, m_sources, c_sources, all_sources)
+        c_details.append((canonical_event[offset + j], qk, attr))
+
+    # Reconciliations + automatic arm-exclusive graph receipt expectations
+    raw_recs = claim.get("reconciliations", [])
+    rec_receipts_upper = {str(r.get("receipt", "")).upper() for r in raw_recs if isinstance(r, dict) and r.get("receipt")}
+    method_graph_expected = _arm_exclusive_graph_receipts(spec, method_node, control_node, rec_receipts_upper)
+    control_graph_expected = (
+        _arm_exclusive_graph_receipts(spec, control_node, method_node, rec_receipts_upper) if control_node else []
+    )
+
+    lean_recs: list[dict[str, Any]] = []
+    covered_arm_units: set[tuple[str, str]] = set()
+    for r in raw_recs:
+        arm = str(r["arm"])
+        dim = str(r["dimension"])
+        unit = str(r["unit"])
+        role = "method" if arm == method_node else "control"
+        attr = classify_reconciliation_entry(
+            role, method_node, control_node, r, m_sources, c_sources, all_sources
+        )
+        rec_id_up = str(r.get("receipt", "")).upper()
+        quote_ids = [rid for rid in extract_structured_receipt_ids(str(r.get("quote", ""))) if rid.upper() != rec_id_up]
+        graph_ids = method_graph_expected if role == "method" else control_graph_expected
+        exp: list[str] = []
+        seen_e: set[str] = set()
+        for rid in [*r.get("expected_receipts", []), *quote_ids, *graph_ids]:
+            if rid and rid.upper() not in seen_e:
+                seen_e.add(rid.upper())
+                exp.append(rid)
+        lean_recs.append(
+            {
+                "arm": arm,
+                "dimension": dim,
+                "unit": unit,
+                "reconciled_total": r["reconciled_total"],
+                "expected_receipts": exp,
+                "attribution": attr,
+            }
+        )
+        if dim == cost_tag:
+            covered_arm_units.add((arm, unit))
+
+    # Even if no reconciliation entry was provided for an arm/unit, still surface graph-referenced
+    # expected receipts so omitted sessions (e.g. TXN-M2 in run_method's quote) are always flagged!
+    all_units: list[str] = []
+    for u in all_entries:
+        if u.get("dimension") == cost_tag and u.get("unit") not in all_units:
+            all_units.append(str(u["unit"]))
+    for arm_name, graph_ids in [(method_node, method_graph_expected), (control_node, control_graph_expected)]:
+        if not arm_name or not graph_ids:
+            continue
+        for unit in all_units:
+            if (arm_name, unit) not in covered_arm_units:
+                lean_recs.append(
+                    {
+                        "arm": arm_name,
+                        "dimension": cost_tag,
+                        "unit": unit,
+                        "reconciled_total": None,
+                        "expected_receipts": graph_ids,
+                        "attribution": "unverifiedProse",
+                    }
+                )
+
+    return m_details, c_details, lean_recs
 
 
 @dataclass(frozen=True)
@@ -750,6 +1033,7 @@ def validate_spec(
                     "method_usage",
                     "control_usage",
                 }
+                base_opt = base_opt | {"reconciliations"}
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -776,6 +1060,7 @@ def validate_spec(
             def check_effectiveness_usages(
                 m_val: Any,
                 c_val: Any,
+                r_val: Any,
                 claim_path: str,
                 method_node_name: Any,
                 control_node_name: Any,
@@ -791,7 +1076,7 @@ def validate_spec(
                         ep = f"{upath}[{j}]"
                         if not _check_allowed_keys(
                             entry,
-                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote", "quantity_kind"},
+                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote", "quantity_kind", "charge_event"},
                             {"arm", "source", "receipt", "dimension", "unit", "amount", "quote"},
                             ep,
                             errors,
@@ -805,6 +1090,8 @@ def validate_spec(
                                     f"quantity_kind must be in {sorted(VALID_USAGE_QUANTITY_KINDS)}",
                                 )
                             )
+                        if "charge_event" in entry:
+                            _check_nonempty_str(entry["charge_event"], f"{ep}.charge_event", errors)
                         check_node_ref(entry["arm"], f"{ep}.arm")
                         if expected_arm is None or entry["arm"] != expected_arm:
                             errors.append(
@@ -916,6 +1203,115 @@ def validate_spec(
                 _check_one_list(m_val, f"{claim_path}.method_usage", method_node_name)
                 _check_one_list(c_val, f"{claim_path}.control_usage", control_node_name)
 
+                if r_val is not None:
+                    rpath = f"{claim_path}.reconciliations"
+                    if not isinstance(r_val, list):
+                        errors.append(ValidationErrorItem(rpath, "type_error", "Expected list of reconciliation entries"))
+                    else:
+                        valid_arms = {a for a in (method_node_name, control_node_name) if a is not None}
+                        for j, rec in enumerate(r_val):
+                            rp = f"{rpath}[{j}]"
+                            if not _check_allowed_keys(
+                                rec,
+                                {"arm", "dimension", "unit", "reconciled_total", "receipt", "quote", "expected_receipts"},
+                                {"arm", "dimension", "unit", "reconciled_total", "receipt", "quote"},
+                                rp,
+                                errors,
+                            ):
+                                continue
+                            check_node_ref(rec["arm"], f"{rp}.arm")
+                            if rec["arm"] not in valid_arms:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{rp}.arm",
+                                        "mismatched_usage_arm",
+                                        f"Reconciliation arm {rec['arm']!r} must match method or control node",
+                                    )
+                                )
+                            if rec["dimension"] not in tag_set:
+                                errors.append(
+                                    ValidationErrorItem(f"{rp}.dimension", "unknown_tag", f"Unknown tag {rec['dimension']!r}")
+                                )
+                            unit_ok = _check_nonempty_str(rec["unit"], f"{rp}.unit", errors) is not None
+                            _check_nonempty_str(rec["receipt"], f"{rp}.receipt", errors)
+                            valid_tot = (
+                                isinstance(rec["reconciled_total"], int)
+                                and not isinstance(rec["reconciled_total"], bool)
+                                and rec["reconciled_total"] >= 0
+                            )
+                            if not valid_tot:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{rp}.reconciled_total",
+                                        "invalid_amount",
+                                        "reconciled_total must be a non-negative integer",
+                                    )
+                                )
+                            if "expected_receipts" in rec:
+                                if not isinstance(rec["expected_receipts"], list):
+                                    errors.append(
+                                        ValidationErrorItem(f"{rp}.expected_receipts", "type_error", "Expected list of strings")
+                                    )
+                                else:
+                                    for k, er in enumerate(rec["expected_receipts"]):
+                                        _check_nonempty_str(er, f"{rp}.expected_receipts[{k}]", errors)
+                            before_q_len = len(quotes)
+                            check_quote(rec["quote"], f"{rp}.quote")
+                            qm = quotes[-1] if len(quotes) > before_q_len else None
+                            if valid_tot and isinstance(rec["quote"], str):
+                                intact_ints, truncated_vals = extract_doc_bounded_quote_integers(
+                                    rec["quote"], doc=doc, qm=qm
+                                )
+                                parsed_ints = {v for v, _, _ in intact_ints}
+                                if rec["reconciled_total"] not in parsed_ints:
+                                    code = "truncated_numeric_quote" if rec["reconciled_total"] in truncated_vals else "ungrounded_usage_amount"
+                                    errors.append(
+                                        ValidationErrorItem(
+                                            f"{rp}.reconciled_total",
+                                            code,
+                                            f"Reconciled total {rec['reconciled_total']} not intact in quote: {rec['quote'][:120]!r}",
+                                        )
+                                    )
+                                elif unit_ok:
+                                    scan_text = (
+                                        qm.normalized_quote
+                                        if (doc is not None and qm is not None and qm.matched)
+                                        else rec["quote"]
+                                    )
+                                    if rec["reconciled_total"] not in extract_unit_bound_amounts(
+                                        scan_text, rec["unit"], integers=intact_ints
+                                    ):
+                                        errors.append(
+                                            ValidationErrorItem(
+                                                f"{rp}.unit",
+                                                "ungrounded_usage_unit",
+                                                f"Reconciled total {rec['reconciled_total']} not paired with unit {rec['unit']!r} in quote",
+                                            )
+                                        )
+                            if isinstance(rec["quote"], str) and rec["quote"].strip():
+                                dehy_q = dehyphenate_and_normalize(rec["quote"])
+                                span_start = -1
+                                span_end = -1
+                                if doc is not None and qm is not None and qm.matched:
+                                    idx_d = doc.dehyphenated_text.find(dehy_q)
+                                    if idx_d != -1:
+                                        span_start, span_end = idx_d, idx_d + len(dehy_q)
+                                    elif qm.char_offset is not None:
+                                        span_start, span_end = qm.char_offset, qm.char_offset + len(qm.normalized_quote)
+                                for prev_path, ps, pe, prev_dehy in seen_spans:
+                                    span_overlap = span_start != -1 and ps != -1 and span_start < pe and ps < span_end
+                                    text_overlap = (dehy_q == prev_dehy) or (dehy_q in prev_dehy) or (prev_dehy in dehy_q)
+                                    if span_overlap or text_overlap:
+                                        errors.append(
+                                            ValidationErrorItem(
+                                                f"{rp}.quote",
+                                                "duplicate_usage_quote_span",
+                                                f"Reconciliation quote overlaps evidence already cited by {prev_path}",
+                                            )
+                                        )
+                                        break
+                                seen_spans.append((rp, span_start, span_end, dehy_q))
+
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if cl["tag"] not in tag_set:
@@ -942,7 +1338,12 @@ def validate_spec(
                         ValidationErrorItem(f"{p}.cost_tag", "unknown_tag", f"Unknown tag {cl['cost_tag']!r}")
                     )
                 check_effectiveness_usages(
-                    cl["method_usage"], cl["control_usage"], p, cl["method_node"], cl["control_node"]
+                    cl["method_usage"],
+                    cl["control_usage"],
+                    cl.get("reconciliations"),
+                    p,
+                    cl["method_node"],
+                    cl["control_node"],
                 )
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
