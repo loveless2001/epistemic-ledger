@@ -179,6 +179,11 @@ OUT_OF_SCOPE_SOURCE_SUPPORT = (
     "`lossyChannelOnPath` certifies non-recoverability assuming both colliding inputs of the bottleneck op "
     "remain jointly valid while holding disconnected outside observations fixed."
 )
+OUT_OF_SCOPE_PDF_MATH = (
+    "PDF text extraction (`pdftotext`) can drop superscripts, subscripts, and mathematical symbols; "
+    "verbatim quote grounding verifies fidelity to the extracted text snapshot, not formula typography "
+    "— prefer `.tex` / LaTeX source when auditing formula-heavy mathematical statements."
+)
 
 
 def build_single_report_dict(
@@ -202,6 +207,8 @@ def build_single_report_dict(
         if isinstance(c, dict) and c.get("kind") == "outOfScope" and c.get("id")
     ]
     out_of_scope = [OUT_OF_SCOPE_CORE]
+    if doc.resolved_path.suffix.lower() == ".pdf":
+        out_of_scope.append(OUT_OF_SCOPE_PDF_MATH)
     if has_effectiveness:
         out_of_scope.append(OUT_OF_SCOPE_ACCOUNTING)
     if has_unique_recovery:

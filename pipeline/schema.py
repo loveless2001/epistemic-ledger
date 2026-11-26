@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize, normalize_whitespace
@@ -187,29 +188,64 @@ def _check_allowed_keys(
     return ok
 
 
+_MAGNITUDE_SUFFIXES: dict[str, int] = {
+    "k": 1_000,
+    "thousand": 1_000,
+    "m": 1_000_000,
+    "million": 1_000_000,
+    "b": 1_000_000_000,
+    "billion": 1_000_000_000,
+}
+_QUOTE_NUM_RE = re.compile(
+    r"(?P<num>\d+(?:[.,_]\d+)*)(?:(?P<sp>\s*)(?P<word>thousand|million|billion)\b|(?P<abbr>[KMBkmb])(?![A-Za-z0-9_]))?",
+    flags=re.IGNORECASE,
+)
+_TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
+
+
 def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
-    """Parse complete non-negative integer tokens (plain or thousands-grouped like `1,500`)
-    from `qtext`, returning `(value, start, end)`. Never matches a substring inside a larger
-    grouped number (`500` inside `1,500`) or decimal (`99` inside `99.4`)."""
+    """Parse complete non-negative integer tokens from `qtext`, returning `(value, start, end)`.
+
+    Supports plain integers (`500`), thousands-grouped integers (`1,500`), and exact scaled
+    quantities with `K`/`M`/`B` or `thousand`/`million`/`billion` suffixes (e.g. `21.6M` ->
+    `21600000`, `900M` -> `900000000`, `1.5 billion` -> `1500000000`) when the scaled result
+    is an exact integer. Never matches a substring inside a larger grouped number (`500` inside
+    `1,500`) or an unscaled decimal (`99` inside `99.4`)."""
     results: list[tuple[int, int, int]] = []
-    for m in re.finditer(r"\d+(?:[.,_]\d+)*", qtext):
+    for m in _QUOTE_NUM_RE.finditer(qtext):
         start, end = m.start(), m.end()
         if start > 0 and qtext[start - 1].isalpha():
             continue
         if start > 0 and qtext[start - 1] == "-" and (start == 1 or not qtext[start - 2].isalnum()):
             continue
-        tok = m.group(0)
-        if re.fullmatch(r"\d+", tok):
-            results.append((int(tok), start, end))
-        elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", tok):
-            results.append((int(tok.replace(",", "")), start, end))
+        num_tok = m.group("num")
+        suffix = (m.group("word") or m.group("abbr") or "").lower()
+        if suffix:
+            mult = _MAGNITUDE_SUFFIXES[suffix]
+            if re.fullmatch(r"\d+(?:\.\d+)?", num_tok):
+                clean = num_tok
+            elif re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", num_tok):
+                clean = num_tok.replace(",", "")
+            else:
+                continue
+            try:
+                scaled = Decimal(clean) * mult
+            except InvalidOperation:
+                continue
+            if scaled == int(scaled):
+                results.append((int(scaled), start, end))
+        else:
+            if re.fullmatch(r"\d+", num_tok):
+                results.append((int(num_tok), start, end))
+            elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", num_tok):
+                results.append((int(num_tok.replace(",", "")), start, end))
     return results
 
 
 def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int) -> bool:
     """Return True iff `doc_text[abs_start:abs_end]` is NOT sliced out of a larger numeric
     or alphanumeric token in the full source document (e.g. `500` sliced from `1,500`, `1500`,
-    `-500`, `500.5`, or `500,000`)."""
+    `-500`, `500.5`, `500,000`, `900M`, or `900 million`)."""
     if abs_start > 0:
         prev = doc_text[abs_start - 1]
         if prev.isdigit() or prev.isalpha():
@@ -224,6 +260,13 @@ def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int
             return False
         if nxt in ",._" and abs_end + 1 < len(doc_text) and doc_text[abs_end + 1].isdigit():
             return False
+        if abs_end > abs_start and doc_text[abs_end - 1].isdigit():
+            if nxt in "KMBkmb" and (
+                abs_end + 1 == len(doc_text) or not (doc_text[abs_end + 1].isalnum() or doc_text[abs_end + 1] == "_")
+            ):
+                return False
+            if _TRAILING_WORD_MAG_RE.match(doc_text[abs_end:]):
+                return False
     return True
 
 

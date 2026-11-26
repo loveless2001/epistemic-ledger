@@ -1441,6 +1441,113 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in c0["findings"]], ["lossyWithSideInformation"])
             self.assertEqual(c0["findings"][0]["side_nodes"], ["sharedR"])
 
+    def test_claude_27388_large_graph_no_max_rec_depth_and_scaled_usage_numbers(self) -> None:
+        """Regression tests for Claude `#27388`:
+        1. Large 25-node, 14-op graph verifies cleanly in Lean kernel via `by rfl` without hitting
+           `maxRecDepth` / `sorryAx` (and negative control confirms kernel still rejects wrong verdicts).
+        2. Exact scaled resource quantities (`21.6M`, `900M`, `1.5 billion`, `4.2K`) ground cleanly to
+           exact integers (`21600000`, `900000000`, `1500000000`, `4200`), while slicing `900` out of
+           `900M` or `900 million` fails with `truncated_numeric_quote`.
+        """
+        doc_text = (
+            "Good views reached target accuracy after 21.6M samples, whereas next-token training ran for 900M samples.\n"
+            "Auxiliary run used 1.5 billion tokens and 4.2K steps (100MB checkpoint).\n"
+        )
+        q_21m = "Good views reached target accuracy after 21.6M samples, whereas next-token training ran for 900M samples."
+        q_aux = "Auxiliary run used 1.5 billion tokens and 4.2K steps (100MB checkpoint)."
+        q_sliced_900 = "whereas next-token training ran for 900"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "scale.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            # Build a 25-node, 14-op graph (larger than Claude's 20-node, 11-op math spec that hit maxRecDepth)
+            nodes = [f"src_{i}" for i in range(11)] + [f"step_{i}" for i in range(14)]
+            sources = [
+                {"node": f"src_{i}", "origin": "setByExperimenter", "carries": ["resourceCost"] if i < 2 else [], "quote": q_21m}
+                for i in range(11)
+            ]
+            ops = [
+                {"name": "op_0", "inputs": ["src_0", "src_2", "src_3"], "output": "step_0", "kind": "transform", "introduces": [], "quote": q_21m},
+                {"name": "op_1", "inputs": ["src_1", "src_4", "src_5"], "output": "step_1", "kind": "transform", "introduces": [], "quote": q_21m},
+            ]
+            for i in range(2, 12):
+                ops.append(
+                    {
+                        "name": f"op_{i}",
+                        "inputs": [f"step_{i - 2}", f"src_{min(i + 4, 10)}"],
+                        "output": f"step_{i}",
+                        "kind": "transform",
+                        "introduces": [],
+                        "quote": q_aux,
+                    }
+                )
+            ops.append({"name": "op_ledger", "inputs": ["src_0", "src_1"], "output": "step_12", "kind": "transform", "introduces": [], "quote": q_21m})
+            ops.append({"name": "op_eval", "inputs": ["step_10", "step_11", "step_12"], "output": "step_13", "kind": "transform", "introduces": [], "quote": q_21m})
+
+            spec = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "LargeGraphScale",
+                "paper_title": "Large Graph & Scaled Numbers",
+                "nodes": nodes,
+                "tags": ["resourceCost", "hypA"],
+                "sources": sources,
+                "ops": ops,
+                "claims": [
+                    {
+                        "id": "scaledEfficiency",
+                        "statement": "Compare 21.6M vs 900M samples on 25-node graph.",
+                        "quote": q_21m,
+                        "kind": "effectivenessClaim",
+                        "method_node": "step_10",
+                        "evaluation_node": "step_13",
+                        "control_node": "step_11",
+                        "cost_ledger_node": "step_12",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [{"source": "src_0", "dimension": "resourceCost", "unit": "samples", "amount": 21600000, "quote": q_21m}],
+                        "control_usage": [{"source": "src_1", "dimension": "resourceCost", "unit": "samples", "amount": 900000000, "quote": q_21m}],
+                    },
+                    {
+                        "id": "deepConditional",
+                        "statement": "Conditional on all 11 declared sources across 25-node graph.",
+                        "quote": q_aux,
+                        "kind": "conditionalFlow",
+                        "target": "step_13",
+                        "declared_sources": [f"src_{i}" for i in range(11)],
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+
+            # Also verify 1.5 billion, 4.2K, and 100MB (plain 100, NOT scaled by M!)
+            spec_aux = copy.deepcopy(spec)
+            spec_aux["claims"][0]["method_usage"] = [
+                {"source": "src_0", "dimension": "resourceCost", "unit": "tokens", "amount": 1500000000, "quote": q_aux},
+                {"source": "src_0", "dimension": "resourceCost", "unit": "steps", "amount": 4200, "quote": q_aux},
+                {"source": "src_0", "dimension": "resourceCost", "unit": "MB", "amount": 100, "quote": q_aux},
+            ]
+            self.assertEqual(validate_spec(spec_aux, doc=doc)[0], [])
+
+            # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
+            spec_sliced = copy.deepcopy(spec)
+            spec_sliced["claims"][0]["control_usage"][0]["amount"] = 900
+            spec_sliced["claims"][0]["control_usage"][0]["quote"] = q_sliced_900
+            errs_s, _ = validate_spec(spec_sliced, doc=doc)
+            self.assertTrue(any(e.code == "truncated_numeric_quote" for e in errs_s))
+
+            sp = base / "large.json"
+            sp.write_text(json.dumps(spec), encoding="utf-8")
+            out = base / "out"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)]), 0)
+            rep = json.loads((out / "LargeGraphScale_report.json").read_text(encoding="utf-8"))
+            self.assertTrue(rep["lean_verification"]["axioms_ok"])
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+            self.assertEqual(by_id["scaledEfficiency"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["scaledEfficiency"]["findings"]], ["unmatchedControlBudget"])
+            self.assertEqual(by_id["deepConditional"]["verdict"], "admissible")
+
 
 if __name__ == "__main__":
     unittest.main()

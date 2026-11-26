@@ -37,6 +37,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 - **Semantic quote interpretation:** Verbatim quote grounding proves textual existence in the ingested SHA-256 snapshot (anti-hallucination). Whether a quote semantically justifies a `carries` tag, causal edge, or statistical test requires auditor/human review.
 - **Accounting / bookkeeping verification:** Invoice reconciliation, billing-period completeness, actual-vs-requested prose semantics, and cross-document deduplication are intentionally out of scope; known legacy accounting keys (`reconciliations`, `arm`, `receipt`, `charge_event`, `quantity_kind`) are ignored during structural Lean verification and reported explicitly under `## Out of Scope`.
 - **Unmodeled joint source-support constraints:** In `uniqueRecovery`, `lossyChannelOnPath` certifies non-recoverability assuming distinct disconnected `SourceNode`s can vary independently (so colliding inputs of the bottleneck op remain jointly valid while holding outside observations fixed). When two inputs are coupled (e.g., `c = r`), derive both from a shared upstream `SourceNode` (yielding `lossyWithSideInformation` / `unestablished`) or omit `loses` (yielding `untargetedLossyChannel` / `unestablished`).
+- **PDF mathematical typography:** `pdftotext` can drop superscripts/subscripts in formulas; verbatim quote grounding verifies fidelity to the extracted snapshot and every PDF report warns about this under `## Out of Scope`. For formula-heavy math papers, pass the `.tex` source directly (ingested as UTF-8 without `pdftotext`).
 
 ## Quick Start
 
@@ -46,7 +47,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline test suite (24 tests)
+### 2. Run the pipeline test suite (25 tests)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v

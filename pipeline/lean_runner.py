@@ -427,17 +427,22 @@ def run_lean_verification(
     if missing_ids:
         raise RuntimeError(f"Lean pass 1 did not return results for claim(s): {missing_ids}")
 
-    # Pass 2: synthesize standalone kernel-checked `decide` proof file in disjoint namespaces
+    # Pass 2: synthesize standalone kernel-checked `rfl` proof file in disjoint namespaces
+    # (`by rfl` checks exact definitional equality directly in the Lean 4 kernel without
+    # `DecidableEq` elaborator recursion, preventing `maxRecDepth` failures on 20+ node graphs
+    # and long strings while preserving the `{propext, Quot.sound}` axiom boundary).
     proof_lines = [base, "namespace Verdicts", ""]
     for cl in spec["claims"]:
         cid = cl["id"]
         verdict = parsed_by_id[cid]["verdict"]
-        proof_lines.append(f"theorem {cid} : epistemicVerdict Claims.{cid} = .{verdict} := by decide")
+        proof_lines.append("set_option maxRecDepth 100000 in")
+        proof_lines.append(f"theorem {cid} : epistemicVerdict Claims.{cid} = .{verdict} := by rfl")
     proof_lines += ["", "end Verdicts", "", "namespace Findings", ""]
     for cl in spec["claims"]:
         cid = cl["id"]
         findings = parsed_by_id[cid]["findings"]
         findings_lean = "[" + ", ".join(_finding_to_lean_expr(f) for f in findings) + "]"
+        proof_lines.append("set_option maxRecDepth 100000 in")
         proof_lines.append(f"theorem {cid} : auditFlow Claims.{cid} = {findings_lean} := by rfl")
     proof_lines += ["", "end Findings", "", f"end {ns}"]
     proof_source = "\n".join(proof_lines) + "\n"
