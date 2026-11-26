@@ -1,0 +1,6 @@
+name = "epistemic-ledger"
+version = "0.1.0"
+defaultTargets = ["EpistemicLedger"]
+
+[[lean_lib]]
+name = "EpistemicLedger"
