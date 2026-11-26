@@ -410,6 +410,90 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse((out / "AuditorA_report.json").exists())
             self.assertFalse((out / "AuditorA_report.md").exists())
 
+    def test_codex_r3_extract_failure_clears_stale_artifacts_and_conditional_declared_diff_flagged(self) -> None:
+        """Codex R3 polish:
+        (a) Rerunning `extract` with a failing extractor (exit 3) clears prior spec/proof/reports.
+        (b) Two `conditionalFlow` claims with identical verdicts but different `declared_sources`
+            must flag `same_declared_sources = False` and not claim identical full signatures.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            out_ext = base / "ext"
+            rc_ok = cli_main(
+                [
+                    "extract",
+                    "--doc",
+                    str(SAMPLE_DOC),
+                    "--extractor-cmd",
+                    f"cat {SPEC_A}",
+                    "--auditor",
+                    "AuditorA",
+                    "--out",
+                    str(out_ext),
+                ]
+            )
+            self.assertEqual(rc_ok, 0)
+            self.assertTrue((out_ext / "AuditorA_spec.json").is_file())
+            self.assertTrue((out_ext / "AuditorA_Verified.lean").is_file())
+
+            rc_fail = cli_main(
+                [
+                    "extract",
+                    "--doc",
+                    str(SAMPLE_DOC),
+                    "--extractor-cmd",
+                    "python3 -c 'import sys; sys.exit(1)'",
+                    "--auditor",
+                    "AuditorA",
+                    "--out",
+                    str(out_ext),
+                ]
+            )
+            self.assertEqual(rc_fail, 3)
+            self.assertFalse((out_ext / "AuditorA_spec.json").exists())
+            self.assertFalse((out_ext / "AuditorA_Verified.lean").exists())
+            self.assertFalse((out_ext / "AuditorA_report.json").exists())
+            self.assertFalse((out_ext / "AuditorA_report.md").exists())
+
+            # (b) Two conditionalFlow claims: both admissible on modelRegimeA, different declared_sources
+            s1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
+            s1["claims"] = [
+                {
+                    "id": "cond1",
+                    "statement": "Under Regime A, 3D geometry arises.",
+                    "quote": "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss.",
+                    "kind": "conditionalFlow",
+                    "target": "modelRegimeA",
+                    "declared_sources": ["trueSceneState", "measuredRgbFrames"],
+                }
+            ]
+            s2 = json.loads(SPEC_B.read_text(encoding="utf-8"))
+            s2["claims"] = [
+                {
+                    "id": "cond2",
+                    "statement": "Under Regime A, 3D geometry arises.",
+                    "quote": "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss.",
+                    "kind": "conditionalFlow",
+                    "target": "modelRegimeA",
+                    "declared_sources": ["trueSceneState", "measuredRgbFrames", "lidarDepthMaps"],
+                }
+            ]
+            p1, p2 = base / "cond1.json", base / "cond2.json"
+            p1.write_text(json.dumps(s1), encoding="utf-8")
+            p2.write_text(json.dumps(s2), encoding="utf-8")
+            out_cmp = base / "cmp_cond"
+            rc_cmp = cli_main(
+                ["compare", "--doc", str(SAMPLE_DOC), "--spec", str(p1), "--spec", str(p2), "--out", str(out_cmp)]
+            )
+            self.assertEqual(rc_cmp, 0)
+            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
+            row = comp["claim_comparison"][0]
+            self.assertTrue(row["verdicts_agree"])
+            self.assertFalse(row["same_declared_sources"])
+            md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
+            self.assertIn("declared_sources differs", md)
+            self.assertNotIn("identical Lean-verified verdicts and full claim signatures", md)
+
 
 if __name__ == "__main__":
     unittest.main()

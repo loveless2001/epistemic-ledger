@@ -226,10 +226,18 @@ def cmd_extract(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
 
+    # Clear any stale artifacts for this auditor BEFORE invoking the extractor so a failing
+    # extractor (exit 3) can never leave a prior run's spec/proof/report beside the new prompt.
+    spec_path = _safe_out_path(out_dir, f"{args.auditor}_spec.json")
+    _unlink_if_exists(spec_path)
+    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_Verified.lean"))
+    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_report.json"))
+    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_report.md"))
+
     # Single document snapshot shared between extraction prompt and Lean verification
     doc = ingest_document(args.doc, cache_dir=cache_dir)
     prompt = build_extraction_prompt(doc, auditor_name=args.auditor)
-    _safe_out_path(out_dir, f"{args.auditor}_prompt.txt").write_text(prompt, encoding="utf-8")
+    _atomic_write_text(_safe_out_path(out_dir, f"{args.auditor}_prompt.txt"), prompt)
 
     argv_cmd = shlex.split(args.extractor_cmd)
     if not argv_cmd:
@@ -248,8 +256,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 3
 
     spec = _extract_json_block(proc.stdout)
-    spec_path = _safe_out_path(out_dir, f"{args.auditor}_spec.json")
-    spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    _atomic_write_text(spec_path, json.dumps(spec, indent=2))
 
     report, _, ok = _audit_one(
         doc,

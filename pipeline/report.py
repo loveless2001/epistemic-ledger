@@ -216,6 +216,7 @@ def build_comparison_report(
         targets: set[str] = set()
         tags: set[str] = set()
         excluded_channels: set[str] = set()
+        declared_source_sets: set[tuple[str, ...]] = set()
         missing_or_unverified = False
         ambiguous_multi_claim = False
 
@@ -243,6 +244,7 @@ def build_comparison_report(
                     targets.add(tgt)
                     tags.add(str(sig.get("tag", "")))
                     excluded_channels.add(str(sig.get("excluded_channel", "")))
+                    declared_source_sets.add(tuple(sorted(set(sig.get("declared_sources", [])))))
 
         if missing_or_unverified:
             status = "UNVERIFIED_OR_UNMATCHED"
@@ -269,6 +271,7 @@ def build_comparison_report(
                 "same_target_name": complete_1to1 and len(targets) == 1,
                 "same_tag": complete_1to1 and len(tags) == 1,
                 "same_excluded_channel": complete_1to1 and len(excluded_channels) == 1,
+                "same_declared_sources": complete_1to1 and len(declared_source_sets) == 1,
                 "by_auditor": by_aud,
             }
         )
@@ -329,6 +332,8 @@ def build_comparison_report(
             extras.append(f"tag={sig['tag']}")
         if "excluded_channel" in sig:
             extras.append(f"excl={sig['excluded_channel']}")
+        if "declared_sources" in sig:
+            extras.append(f"declared={sorted(set(sig['declared_sources']))}")
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
         return f"**{info['verdict']}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
@@ -349,6 +354,8 @@ def build_comparison_report(
                 diffs.append("tag")
             if not row["same_excluded_channel"]:
                 diffs.append("excluded_channel")
+            if not row["same_declared_sources"]:
+                diffs.append("declared_sources")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
         cells = []
@@ -376,10 +383,11 @@ def build_comparison_report(
             or not r["same_target_name"]
             or not r["same_tag"]
             or not r["same_excluded_channel"]
+            or not r["same_declared_sources"]
         ]
         if not issues and all_grounding_ok:
             md.append(
-                "- None: all auditors passed grounding and reached identical Lean-verified verdicts and full claim signatures (kind, target, tag, excluded_channel) on every matched claim."
+                "- None: all auditors passed grounding and reached identical Lean-verified verdicts and full claim signatures (kind, target, tag, excluded_channel, declared_sources) on every matched claim."
             )
         else:
             for row in issues:
