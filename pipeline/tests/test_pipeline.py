@@ -1550,6 +1550,40 @@ class PipelineTests(unittest.TestCase):
             errs_inf, _ = validate_spec(spec_inflated, doc=doc)
             self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_inf))
 
+            # Codex #27395 / #27416 negative control: clipping `100MB` to `100M` at the end of a quote
+            # MUST fail (`truncated_numeric_quote`) for both `100_000_000 megabytes` and `100 million megabytes`!
+            q_clipped_100m = "Auxiliary run used 1.5 billion tokens and 4.2K steps (100M"
+            for amt, unit in [(100_000_000, "megabytes"), (100, "million megabytes")]:
+                spec_clipped_mb = copy.deepcopy(spec_aux)
+                spec_clipped_mb["claims"][0]["method_usage"] = [
+                    {"source": "src_0", "dimension": "resourceCost", "unit": unit, "amount": amt, "quote": q_clipped_100m},
+                ]
+                errs_cm, _ = validate_spec(spec_clipped_mb, doc=doc)
+                self.assertTrue(
+                    any(e.code == "truncated_numeric_quote" for e in errs_cm),
+                    f"Expected truncated_numeric_quote for clipped 100M ({amt} {unit}), got {errs_cm}",
+                )
+
+            # Also verify other alphanumeric suffix clippings (`100ms` -> `100m`, `100kWh` -> `100k`),
+            # leading decimals (`.109`), and scientific notation (`1e6`) are never falsely grounded as plain ints.
+            edge_doc_path = base / "edge_nums.txt"
+            edge_doc_path.write_text(
+                "Latency stayed at 100ms using 100kWh, score .109 over 1e6 evaluations.\n",
+                encoding="utf-8",
+            )
+            edge_doc = ingest_document(str(edge_doc_path))
+            for q_edge, expected_intact in [
+                ("Latency stayed at 100m", set()),
+                ("Latency stayed at 100ms using 100k", {100}),
+                ("score .109 over 1e6 evaluations.", set()),
+            ]:
+                from pipeline.schema import extract_doc_bounded_quote_integers, verify_quote_in_document
+
+                qm_edge = verify_quote_in_document(edge_doc, q_edge, "test")
+                self.assertTrue(qm_edge.matched, q_edge)
+                intact_e, _ = extract_doc_bounded_quote_integers(q_edge, doc=edge_doc, qm=qm_edge)
+                self.assertEqual({v for v, _, _ in intact_e}, expected_intact, q_edge)
+
             # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
             spec_sliced = copy.deepcopy(spec)
             spec_sliced["claims"][0]["control_usage"][0]["amount"] = 900

@@ -201,6 +201,7 @@ _QUOTE_NUM_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
+_SCI_EXP_RE = re.compile(r"[eE][+-]?\d")
 _UNIT_WORD_MAG_RE = re.compile(r"\b(thousand|million|billion)\b", flags=re.IGNORECASE)
 _UNIT_ABBR_MAG_RE = re.compile(r"(?:^|[^A-Za-z0-9])([KMB])(?:$|[^A-Za-z0-9])")
 
@@ -232,8 +233,12 @@ def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
             continue
         if start > 0 and qtext[start - 1] == "-" and (start == 1 or not qtext[start - 2].isalnum()):
             continue
+        if start > 0 and qtext[start - 1] == "." and (start == 1 or not qtext[start - 2].isalpha()):
+            continue
         num_tok = m.group("num")
         suffix = (m.group("word") or m.group("abbr") or "").lower()
+        if not suffix and end < len(qtext) and _SCI_EXP_RE.match(qtext[end:]):
+            continue
         if suffix:
             mult = _MAGNITUDE_SUFFIXES[suffix]
             if re.fullmatch(r"\d+(?:\.\d+)?", num_tok):
@@ -268,13 +273,19 @@ def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int
             return False
         if prev == "-" and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
             return False
+        if prev == "." and (abs_start == 1 or not doc_text[abs_start - 2].isalpha()):
+            return False
     if abs_end < len(doc_text):
         nxt = doc_text[abs_end]
         if nxt.isdigit():
             return False
         if nxt in ",._" and abs_end + 1 < len(doc_text) and doc_text[abs_end + 1].isdigit():
             return False
+        if abs_end > abs_start and doc_text[abs_end - 1].isalpha() and (nxt.isalnum() or nxt == "_"):
+            return False
         if abs_end > abs_start and doc_text[abs_end - 1].isdigit():
+            if _SCI_EXP_RE.match(doc_text[abs_end:]):
+                return False
             if nxt in "KMBkmb" and (
                 abs_end + 1 == len(doc_text) or not (doc_text[abs_end + 1].isalnum() or doc_text[abs_end + 1] == "_")
             ):
