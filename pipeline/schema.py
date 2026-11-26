@@ -412,6 +412,9 @@ def validate_spec(
             if kind == "forget":
                 allowed = {"name", "inputs", "output", "kind", "tag", "evidence", "quote", "rationale"}
                 required = {"name", "inputs", "output", "kind", "tag", "evidence", "quote"}
+            elif kind == "lossy":
+                allowed = {"name", "inputs", "output", "kind", "introduces", "loses", "quote", "rationale"}
+                required = {"name", "inputs", "output", "kind", "introduces", "quote"}
             else:
                 allowed = {"name", "inputs", "output", "kind", "introduces", "quote", "rationale"}
                 required = {"name", "inputs", "output", "kind", "introduces", "quote"}
@@ -437,6 +440,8 @@ def validate_spec(
                     )
             else:
                 check_tag_list(op["introduces"], f"{p}.introduces")
+                if kind == "lossy" and "loses" in op:
+                    check_tag_list(op["loses"], f"{p}.loses")
             check_quote(op["quote"], f"{p}.quote")
             if "rationale" in op:
                 _check_nonempty_str(op["rationale"], f"{p}.rationale", errors)

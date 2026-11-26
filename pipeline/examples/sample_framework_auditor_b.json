@@ -50,6 +50,7 @@
       "inputs": ["trueSceneState", "measuredRgbFrames"],
       "output": "monocularProjection",
       "kind": "lossy",
+      "loses": ["worldState"],
       "introduces": [],
       "quote": "collapses multiple combinations of surface reflectance and ambient lighting into identical pixel values"
     },

@@ -58,6 +58,8 @@ def _lean_op_kind(op: dict[str, Any]) -> str:
     kind = op["kind"]
     if kind == "forget":
         return f".forget .{op['tag']} .{op['evidence']}"
+    if kind == "lossy" and op.get("loses"):
+        return f".lossyOn {_lean_tag_list(op['loses'])} {_lean_tag_list(op['introduces'])}"
     return f".{kind} {_lean_tag_list(op['introduces'])}"
 
 
@@ -171,6 +173,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .lossyChannelOnPath opName output =>',
         '      "{\\"type\\":\\"lossyChannelOnPath\\",\\"op\\":" ++ jsonStr opName ++',
         '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ "}"',
+        '  | .untargetedLossyChannel opName output tag =>',
+        '      "{\\"type\\":\\"untargetedLossyChannel\\",\\"op\\":" ++ jsonStr opName ++',
+        '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
         '  | .parallelLossyBranches target tag lossyOuts =>',
         '      "{\\"type\\":\\"parallelLossyBranches\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
         '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ ",\\"lossy_outputs\\":" ++ jsonNodeList lossyOuts ++ "}"',
@@ -284,6 +289,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.sharedExperimenterSource Node.{f['shared']}"
     if ft == "lossyChannelOnPath":
         return f'FlowFinding.lossyChannelOnPath "{escape_lean_str(f["op"])}" Node.{f["output"]}'
+    if ft == "untargetedLossyChannel":
+        return f'FlowFinding.untargetedLossyChannel "{escape_lean_str(f["op"])}" Node.{f["output"]} Tag.{f["tag"]}'
     if ft == "parallelLossyBranches":
         return f"FlowFinding.parallelLossyBranches Node.{f['target']} Tag.{f['tag']} {_lean_node_list(f['lossy_outputs'])}"
     if ft == "unaccessedTargetStructure":

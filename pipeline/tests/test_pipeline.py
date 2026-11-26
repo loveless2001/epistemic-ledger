@@ -1252,8 +1252,8 @@ class PipelineTests(unittest.TestCase):
                     {"node": "nVal", "origin": "measured", "carries": ["inputN"], "quote": q_qr},
                 ],
                 "ops": [
-                    {"name": "div2", "inputs": ["nVal"], "output": "qDiv2", "kind": "lossy", "introduces": [], "quote": q_qr},
-                    {"name": "mod2", "inputs": ["nVal"], "output": "rMod2", "kind": "lossy", "introduces": [], "quote": q_qr},
+                    {"name": "div2", "inputs": ["nVal"], "output": "qDiv2", "kind": "lossy", "loses": ["inputN"], "introduces": [], "quote": q_qr},
+                    {"name": "mod2", "inputs": ["nVal"], "output": "rMod2", "kind": "lossy", "loses": ["inputN"], "introduces": [], "quote": q_qr},
                     {"name": "pair_qr", "inputs": ["qDiv2", "rMod2"], "output": "qrPair", "kind": "transform", "introduces": [], "quote": q_qr},
                 ],
                 "claims": [
@@ -1304,6 +1304,57 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["recoverFromQRPair"]["findings"]], ["parallelLossyBranches"])
             self.assertEqual(by_id["recoverFromQOnly"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["recoverFromQOnly"]["findings"]], ["lossyChannelOnPath"])
+
+    def test_codex_27376_tag_specific_vs_untargeted_lossy_projection(self) -> None:
+        """Regression test for Codex `#27376`:
+        Projection `observed = signal` on two independent bits `(signal, noise)`:
+        - With `loses: ["noise"]`: `signalRecovery` -> `admissible`, `noiseRecovery` -> `rejected` (`lossyChannelOnPath`).
+        - With untagged `kind: "lossy"` (no `loses`): BOTH `signalRecovery` and `noiseRecovery` -> `unestablished`
+          (`untargetedLossyChannel`) instead of falsely rejecting `signalRecovery`.
+        """
+        doc_text = "Given two independent bits (signal, noise), the projection stores observed = signal and discards noise.\n"
+        q = doc_text.strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "proj.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            spec = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "ProjAuditor",
+                "paper_title": "Codex 27376 Projection Test",
+                "nodes": ["jointState", "obsTagged", "obsUntagged"],
+                "tags": ["signal", "noise"],
+                "sources": [
+                    {"node": "jointState", "origin": "measured", "carries": ["signal", "noise"], "quote": q},
+                ],
+                "ops": [
+                    {"name": "project_first_tagged", "inputs": ["jointState"], "output": "obsTagged", "kind": "lossy", "loses": ["noise"], "introduces": [], "quote": q},
+                    {"name": "project_first_untagged", "inputs": ["jointState"], "output": "obsUntagged", "kind": "lossy", "introduces": [], "quote": q},
+                ],
+                "claims": [
+                    {"id": "taggedSignal", "statement": "Recover signal from tagged projection.", "quote": q, "kind": "uniqueRecovery", "target": "obsTagged", "tag": "signal"},
+                    {"id": "taggedNoise", "statement": "Recover noise from tagged projection.", "quote": q, "kind": "uniqueRecovery", "target": "obsTagged", "tag": "noise"},
+                    {"id": "untaggedSignal", "statement": "Recover signal from untagged lossy op.", "quote": q, "kind": "uniqueRecovery", "target": "obsUntagged", "tag": "signal"},
+                    {"id": "untaggedNoise", "statement": "Recover noise from untagged lossy op.", "quote": q, "kind": "uniqueRecovery", "target": "obsUntagged", "tag": "noise"},
+                ],
+            }
+            self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+            sp = base / "proj.json"
+            sp.write_text(json.dumps(spec), encoding="utf-8")
+            out = base / "out"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)]), 0)
+            rep = json.loads((out / "ProjAuditor_report.json").read_text(encoding="utf-8"))
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+
+            self.assertEqual(by_id["taggedSignal"]["verdict"], "admissible")
+            self.assertEqual(by_id["taggedNoise"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["taggedNoise"]["findings"]], ["lossyChannelOnPath"])
+            self.assertEqual(by_id["untaggedSignal"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["untaggedSignal"]["findings"]], ["untargetedLossyChannel"])
+            self.assertEqual(by_id["untaggedNoise"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["untaggedNoise"]["findings"]], ["untargetedLossyChannel"])
 
 
 if __name__ == "__main__":

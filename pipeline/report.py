@@ -30,7 +30,12 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "sharedExperimenterSource":
         return f"**[Shared Experimenter Source]** branches share unforgotten experimenter input `{f['shared']}`"
     if ft == "lossyChannelOnPath":
-        return f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` cuts all paths to target and blocks unique recovery"
+        return f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` witnesses tag collision and cuts all paths to target"
+    if ft == "untargetedLossyChannel":
+        return (
+            f"**[Untargeted Lossy Channel]** op `{f['op']}` at `{f['output']}` is marked `lossy` without specifying "
+            f"`loses` for `{f['tag']}`; cannot certify lossless recovery or prove collision on `{f['tag']}` specifically"
+        )
     if ft == "parallelLossyBranches":
         outs = ", ".join(f"`{o}`" for o in f.get("lossy_outputs", []))
         return (

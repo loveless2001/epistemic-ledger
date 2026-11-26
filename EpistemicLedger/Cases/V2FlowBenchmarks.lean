@@ -109,7 +109,7 @@ def graph : FlowGraph Node Tag where
     ]
   ops :=
     [ ⟨"lossy_real_observation", [.trueWorldZ, .webImageCorpus], .realModalityProjection,
-        .lossy []⟩
+        .lossyOn [.worldStateZ] []⟩
     , ⟨"llava_recaption_from_clip", [.realModalityProjection, .clipImageTextPretraining],
         .llavaRecaptioner, .transform []⟩
     , ⟨"train_text_jepa", [.realModalityProjection, .pairingOracle, .llavaRecaptioner],
@@ -841,8 +841,8 @@ def parallelLossyQRPairClaim : FlowClaim QRNode QRTag where
   statement := "Recover n from pair (n div 2, n mod 2)."
   graph :=
     ⟨[⟨.nVal, .measured, [.inputN]⟩],
-     [⟨"div2", [.nVal], .qDiv2, .lossy []⟩,
-      ⟨"mod2", [.nVal], .rMod2, .lossy []⟩,
+     [⟨"div2", [.nVal], .qDiv2, .lossyOn [.inputN] []⟩,
+      ⟨"mod2", [.nVal], .rMod2, .lossyOn [.inputN] []⟩,
       ⟨"pair_qr", [.qDiv2, .rMod2], .qrPair, .transform []⟩]⟩
   kind := .uniqueRecovery .qrPair .inputN
 
@@ -867,6 +867,43 @@ theorem orphan_declared_bet_caught_in_lean :
     epistemicVerdict orphanDeclaredBetClaim = .unestablished ∧
     auditFlow orphanDeclaredBetClaim =
       [FlowFinding.orphanDeclaredBet MathNode.theoremOut MathTag.grh] := by
+  decide
+
+/-! #### Codex `#27376` Regression Tests: Projection `observed = signal` on `(signal, noise)` -/
+
+inductive ProjNode where
+  | jointState | observed
+  deriving DecidableEq, Repr
+
+inductive ProjTag where
+  | signal | noise
+  deriving DecidableEq, Repr
+
+/-- Tag-specific projection `observed = signal` loses ONLY `.noise` (`.lossyOn [.noise] []`):
+    - recovering `.signal` -> `admissible` (lossless on `.signal`),
+    - recovering `.noise` -> `rejected` (`lossyChannelOnPath`). -/
+def taggedProjectionGraph : FlowGraph ProjNode ProjTag :=
+  ⟨[⟨.jointState, .measured, [.signal, .noise]⟩],
+   [⟨"project_first", [.jointState], .observed, .lossyOn [.noise] []⟩]⟩
+
+/-- Untagged projection (`.lossy []`, does not specify which tag collides):
+    both `.signal` and `.noise` return `unestablished` (`untargetedLossyChannel`). -/
+def untaggedProjectionGraph : FlowGraph ProjNode ProjTag :=
+  ⟨[⟨.jointState, .measured, [.signal, .noise]⟩],
+   [⟨"project_first", [.jointState], .observed, .lossy []⟩]⟩
+
+theorem tagged_projection_preserves_signal_rejects_noise :
+    epistemicVerdict ⟨"Recover signal", taggedProjectionGraph, .uniqueRecovery .observed .signal⟩ = .admissible ∧
+    epistemicVerdict ⟨"Recover noise", taggedProjectionGraph, .uniqueRecovery .observed .noise⟩ = .rejected ∧
+    auditFlow ⟨"Recover noise", taggedProjectionGraph, .uniqueRecovery .observed .noise⟩ =
+      [FlowFinding.lossyChannelOnPath "project_first" ProjNode.observed] := by
+  decide
+
+theorem untagged_projection_is_unestablished_for_both_tags :
+    epistemicVerdict ⟨"Recover signal", untaggedProjectionGraph, .uniqueRecovery .observed .signal⟩ = .unestablished ∧
+    epistemicVerdict ⟨"Recover noise", untaggedProjectionGraph, .uniqueRecovery .observed .noise⟩ = .unestablished ∧
+    auditFlow ⟨"Recover signal", untaggedProjectionGraph, .uniqueRecovery .observed .signal⟩ =
+      [FlowFinding.untargetedLossyChannel "project_first" ProjNode.observed ProjTag.signal] := by
   decide
 
 end EpistemicVerdictTests

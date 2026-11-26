@@ -32,10 +32,13 @@ inductive OpKind (σ : Type) where
   /-- Domain partition / cut: propagates all input structures plus `cutStructures`
       (representing structure introduced by the boundary/cut itself). -/
   | partition (cutStructures : List σ)
-  /-- Many-to-one / information-destroying projection (e.g., lossy observation,
-      forcing conflicting interpretations into one positive pair). Propagates input
-      structures and blocks `uniqueRecovery` claims downstream. -/
+  /-- Many-to-one / information-destroying projection where the record does NOT specify which
+      specific tag collides (`untargetedLossyChannel` -> `unestablished` under `epistemicVerdict`,
+      preserving legacy `.rejected` under `flowVerdict`). -/
   | lossy (introduces : List σ)
+  /-- Tag-specific many-to-one projection: explicitly witnesses that two distinct values of each
+      tag in `lostTags` collide to the same output (lossless on tags NOT in `lostTags`). -/
+  | lossyOn (lostTags : List σ) (introduces : List σ)
   /-- Explicit attempt to drop structure `tag`. Blocks `tag` iff `evidence = .shown`. -/
   | forget (tag : σ) (evidence : Invariance)
   deriving DecidableEq, Repr
@@ -149,8 +152,10 @@ inductive FlowFinding (ν σ : Type) where
   | sharedUpstreamStructure (shared : ν) (tag : σ)
   /-- Two allegedly independent branches share an unforgotten `setByExperimenter` source. -/
   | sharedExperimenterSource (shared : ν)
-  /-- A lossy (many-to-one) bottleneck operation cuts all `tag`-carrying paths to a `uniqueRecovery` target. -/
+  /-- A tag-specific lossy bottleneck operation cuts all `tag`-carrying paths to a `uniqueRecovery` target. -/
   | lossyChannelOnPath (opName : String) (output : ν)
+  /-- An untargeted `.lossy` operation sits on a `tag`-carrying path without witnessing collision on `tag` specifically. -/
+  | untargetedLossyChannel (opName : String) (output : ν) (tag : σ)
   /-- Every `tag`-carrying path to `target` crosses a `.lossy` op, but across parallel branches with no
       single `.lossy` bottleneck (e.g. `(n div 2, n mod 2)`): joint injectivity is undecidable from the graph alone. -/
   | parallelLossyBranches (target : ν) (tag : σ) (lossyOutputs : List ν)
@@ -227,6 +232,7 @@ def opIntroduces : OpKind σ → List σ
   | .transform xs => xs
   | .partition xs => xs
   | .lossy xs => xs
+  | .lossyOn _ xs => xs
   | .forget _ _ => []
 
 /-- Does operation `op` explicitly block tag `tag` via proven invariance (`.shown`)? -/
@@ -487,19 +493,29 @@ def failedAuthorForgetsUpstream (g : FlowGraph ν σ) (tag : σ) (target : ν) :
       | _ => none
     else none
 
-/-- Does operation `op` preserve `tag` on a **non-lossy** path (disallowing `.lossy` and `.forget tag .shown`,
-    while still allowing `.forget tag .notShown` to distinguish unverified access from proven lossy destruction)? -/
+/-- Does operation `op` explicitly witness a many-to-one collision on `tag` specifically? -/
+def opLosesTag (op : Op ν σ) (tag : σ) : Bool :=
+  match op.kind with
+  | .lossyOn lostTags _ => decide (tag ∈ lostTags)
+  | _                   => false
+
+/-- Does operation `op` preserve `tag` on a **non-lossy** path (disallowing untargeted `.lossy`,
+    `.lossyOn` containing `tag`, and `.forget tag .shown`, while allowing `.lossyOn` on OTHER tags
+    and `.forget tag .notShown`)? -/
 def opPreservesNonLossyTag (op : Op ν σ) (tag : σ) : Bool :=
   match op.kind with
-  | .lossy _         => false
-  | .forget t .shown => !decide (t = tag)
-  | _                => true
+  | .lossy _            => false
+  | .lossyOn lostTags _ => !decide (tag ∈ lostTags)
+  | .forget t .shown    => !decide (t = tag)
+  | _                   => true
 
 /-- Does operation `op` preserve `tag` on a **confirmed lossless** path
-    (disallowing `.lossy`, `.forget tag .shown`, AND unverified `.forget tag .notShown`)? -/
+    (disallowing untargeted `.lossy`, `.lossyOn` containing `tag`, `.forget tag .shown`,
+    AND unverified `.forget tag .notShown`, while preserving tags NOT in `lostTags`)? -/
 def opPreservesConfirmedLosslessTag (op : Op ν σ) (tag : σ) : Bool :=
   match op.kind with
   | .lossy _            => false
+  | .lossyOn lostTags _ => !decide (tag ∈ lostTags)
   | .forget t .shown    => !decide (t = tag)
   | .forget t .notShown => !decide (t = tag)
   | _                   => true
@@ -538,14 +554,27 @@ def unverifiedForgetsOnSourcePath (g : FlowGraph ν σ) (tag : σ) (target : ν)
       | _ => none
     else none
 
-/-- Lossy operations sitting on a `tag`-carrying path upstream of `target`.
-    A `.lossy` op on an unrelated side-branch that does not carry `tag` does not destroy `tag`. -/
+/-- Lossy operations (tag-specific or untargeted) sitting on a `tag`-carrying path upstream of `target`.
+    A `.lossyOn` op that only loses OTHER tags (not `tag`) does not destroy `tag`. -/
 def lossyOpsOnTagPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
   let reach := tagAncestors g tag target
   g.ops.filterMap fun op =>
     if op.output ∈ reach && op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) then
       match op.kind with
-      | .lossy _ => some (.lossyChannelOnPath op.name op.output)
+      | .lossy _ => some (.untargetedLossyChannel op.name op.output tag)
+      | .lossyOn lostTags _ =>
+        if tag ∈ lostTags then some (.lossyChannelOnPath op.name op.output) else none
+      | _ => none
+    else none
+
+/-- Untagged `.lossy` operations sitting on a `tag`-carrying path upstream of `target`
+    (does not specify whether `tag` itself collides -> `unestablished`). -/
+def untargetedLossyOpsOnTagPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
+  let reach := tagAncestors g tag target
+  g.ops.filterMap fun op =>
+    if op.output ∈ reach && op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) then
+      match op.kind with
+      | .lossy _ => some (.untargetedLossyChannel op.name op.output tag)
       | _ => none
     else none
 
@@ -570,22 +599,20 @@ def sourceOriginsExcludingNode (g : FlowGraph ν σ) (tag : σ) (blocked : ν) (
     let reach := tagAncestorsExcludingNodeAux g.ops tag blocked (g.ops.length + 1) [target]
     (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
 
-/-- Single `.lossy` bottleneck operations whose output node cuts ALL `tag`-carrying source paths
-    to `target` (and is produced exclusively by `.lossy` ops, not a `tag` source itself).
-    When such a bottleneck exists, `target` factors through one many-to-one map and unique recovery
-    is provably impossible (`rejected`). -/
+/-- Single **tag-specific** `.lossyOn` bottleneck operations whose output node cuts ALL `tag`-carrying
+    source paths to `target` (and is produced exclusively by ops witnessing collision on `tag`, not a
+    `tag` source itself). When such a bottleneck exists, two inputs differing on `tag` collide at the
+    cut-vertex and unique recovery of `tag` is provably impossible (`rejected`). -/
 def singleLossyBottlenecks (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
   let reach := tagAncestors g tag target
   g.ops.filterMap fun op =>
     if op.output ∈ reach &&
        op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) &&
        !sourceCarries g op.output tag &&
-       (g.ops.filter (fun o => o.output = op.output)).all (fun o =>
-         match o.kind with | .lossy _ => true | _ => false) &&
+       opLosesTag op tag &&
+       (g.ops.filter (fun o => o.output = op.output)).all (fun o => opLosesTag o tag) &&
        (sourceOriginsExcludingNode g tag op.output target).isEmpty then
-      match op.kind with
-      | .lossy _ => some (.lossyChannelOnPath op.name op.output)
-      | _ => none
+      some (.lossyChannelOnPath op.name op.output)
     else none
 
 /-- Arms excluded from direct cost-metering traversal so a ledger cannot simply mirror an arm output. -/
@@ -645,18 +672,24 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         -- Non-lossy access path exists, but only through an unverified `.forget tag .notShown`
         unverifiedForgetsOnSourcePath c.graph tag target
       else
-        -- Every access path passes through at least one `.lossy` op:
-        -- distinguish a single `.lossy` bottleneck (`rejected`) from parallel `.lossy` branches
-        -- like `(n div 2, n mod 2)` whose joint injectivity is undecidable from the graph (`unestablished`).
+        -- Every access path passes through at least one lossy op:
+        -- 1. Single tag-specific `.lossyOn` bottleneck cutting all paths -> `rejected` (`lossyChannelOnPath`).
+        -- 2. Untagged `.lossy` op (does not specify which tag collides) -> `unestablished` (`untargetedLossyChannel`).
+        -- 3. Parallel tag-specific `.lossyOn` branches like `(n div 2, n mod 2)` -> `unestablished` (`parallelLossyBranches`).
         let bottlenecks := singleLossyBottlenecks c.graph tag target
         if !bottlenecks.isEmpty then
           bottlenecks
         else
-          let lossyOuts :=
-            (lossyOpsOnTagPath c.graph tag target).filterMap fun
-              | .lossyChannelOnPath _ out => some out
-              | _ => none
-          [.parallelLossyBranches target tag lossyOuts.eraseDups]
+          let untargeted := untargetedLossyOpsOnTagPath c.graph tag target
+          if !untargeted.isEmpty then
+            untargeted
+          else
+            let lossyOuts :=
+              (lossyOpsOnTagPath c.graph tag target).filterMap fun
+                | .lossyChannelOnPath _ out => some out
+                | .untargetedLossyChannel _ out _ => some out
+                | _ => none
+            [.parallelLossyBranches target tag lossyOuts.eraseDups]
     recoveryFindings ++ danglingInputsUpstream c.graph target
   | .conditionalFlow target declaredSources =>
     let reach := ancestors c.graph target
@@ -757,6 +790,7 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .sharedUpstreamStructure _ _          => true
   | .sharedExperimenterSource _           => true
   | .lossyChannelOnPath _ _               => true
+  | .untargetedLossyChannel _ _ _         => false
   | .parallelLossyBranches _ _ _          => false
   | .unaccessedTargetStructure _ _        => false
   | .undeclaredUpstreamSource _           => false
@@ -1024,6 +1058,7 @@ private theorem op_not_confirmed_is_notShown {op : Op ν σ} {tag : σ}
   | transform _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
   | partition _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
   | lossy _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
+  | lossyOn _ _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
   | forget t ev =>
     cases ev with
     | shown =>
