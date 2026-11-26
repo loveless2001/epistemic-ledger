@@ -30,7 +30,13 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "sharedExperimenterSource":
         return f"**[Shared Experimenter Source]** branches share unforgotten experimenter input `{f['shared']}`"
     if ft == "lossyChannelOnPath":
-        return f"**[Lossy Channel]** many-to-one op `{f['op']}` at `{f['output']}` blocks unique recovery"
+        return f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` cuts all paths to target and blocks unique recovery"
+    if ft == "parallelLossyBranches":
+        outs = ", ".join(f"`{o}`" for o in f.get("lossy_outputs", []))
+        return (
+            f"**[Parallel Lossy Branches — Undecidable from Graph Alone]** every `{f['tag']}` path to `{f['target']}` "
+            f"crosses a lossy op ({outs}) with no single lossy bottleneck; joint injectivity requires algebraic/domain proof"
+        )
     if ft == "unaccessedTargetStructure":
         return (
             f"**[Unaccessed Structure]** target `{f['target']}` has no upstream SourceNode granting access to `{f['tag']}` "
@@ -68,6 +74,8 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Rule 3 — Hypothesis Known False]** applied theorem at `{f['target']}` requires `{f['hypothesis']}`, which is known false in the declared setting"
     if ft == "undeclaredHypothesisBet":
         return f"**[Rule 3 — Undeclared Hypothesis Bet]** applied theorem at `{f['target']}` relies on unchecked hypothesis `{f['hypothesis']}` omitted from `declared_bets`"
+    if ft == "orphanDeclaredBet":
+        return f"**[Rule 3 — Orphan Declared Bet]** `declared_bets` at `{f['target']}` lists `{f['hypothesis']}` without a matching entry in `hypotheses`"
     if ft == "claimOutOfScope":
         return f"**[Out of Scope]** {f['reason']}"
     return json.dumps(f)

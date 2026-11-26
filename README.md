@@ -13,7 +13,7 @@ A paper's methodology is encoded as a directed graph of `SourceNode`s (`measured
 | `emergesWithout` | Target does not receive `tag` along any unblocked path; no failed `.forget` (`notShown`/`contradicted`) sits on path. |
 | `emergesWithExclusion` | **Policy 3:** checks both Alarm 1 (`excludedChannelLeak` into the explicitly excluded channel) and Alarm 2 (`authorSuppliedStructure` from any unforgotten `setByExperimenter` source or op into `target`). |
 | `independentConvergence` | Two allegedly independent branches share neither an upstream `tag`-carrying node nor an unforgotten `setByExperimenter` source. |
-| `uniqueRecovery` | Verifies a confirmed lossless path from a `SourceNode` carrying `tag` to `target`: rejects if every access path crosses a `.lossy` channel (`lossyChannelOnPath`), marks `unestablished` if access is missing (`unaccessedTargetStructure`) or gated only by `.forget tag .notShown`. |
+| `uniqueRecovery` | Verifies a confirmed lossless path from a `SourceNode` carrying `tag` to `target`: rejects only when a single `.lossy` bottleneck cuts all `tag`-carrying paths (`lossyChannelOnPath`), and marks `unestablished` for parallel `.lossy` branches like `(n div 2, n mod 2)` (`parallelLossyBranches`), missing access (`unaccessedTargetStructure`), or `.forget tag .notShown`. |
 | `conditionalFlow` | Every upstream source reaching `target` is explicitly declared in `declaredSources`. |
 | `effectivenessClaim` | Independent control arm (`missingMatchedControl`, `trivialSelfControl`, `dependentControlArm`), direct forget-proof physical cost-source coverage (`missingCostAccounting`, `trivialCostLedger`, `unusedCostLedger`, `unaccountedCostSource`), and arithmetic parity of declared `(source, unit, amount)` usage entries (`unquantifiedBudget`, `unboundUsageSource`, `unmatchedControlBudget`). |
 | `theoremApplication` | **Rule 3:** checks each precondition (`discharged` / `bet` / `knownFalse`) of a theorem applied at `target`: `.knownFalse` is always `rejected` (`hypothesisKnownFalse`), unchecked `.bet` omitted from `declared_bets` is `unestablished` (`undeclaredHypothesisBet`), and `.discharged` or declared `.bet` is `admissible`. |
@@ -45,7 +45,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline test suite (21 tests)
+### 2. Run the pipeline test suite (22 tests)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v

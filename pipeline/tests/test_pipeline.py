@@ -1221,6 +1221,90 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["mathDeclaredBet"]["verdict"], "admissible")
             self.assertEqual(by_id["mathDeclaredBet"]["findings"], [])
 
+    def test_codex_27373_orphan_declared_bet_and_parallel_lossy_qr_pair(self) -> None:
+        """Regression tests for Codex `#27373`:
+        1. `declared_bets` tag missing from `hypotheses` fails schema validation (`orphan_declared_bet`)
+           AND is also rejected from `admissible` (`unestablished`) if called directly in Lean.
+        2. Parallel lossy branches `(q = n div 2, r = n mod 2)` with no single lossy bottleneck ->
+           `unestablished` (`parallelLossyBranches`), NOT falsely `rejected`; whereas a single lossy
+           bottleneck `q = n div 2` alone -> `rejected` (`lossyChannelOnPath`).
+        """
+        doc_text = (
+            "Let n be in {0,1,2,3}, q = n div 2, r = n mod 2, and pair = (q, r) which recovers n = 2q + r.\n"
+            "Rolle theorem requires equal endpoint values f(0) = f(1) on [0, 1].\n"
+        )
+        q_qr = "Let n be in {0,1,2,3}, q = n div 2, r = n mod 2, and pair = (q, r) which recovers n = 2q + r."
+        q_rolle = "Rolle theorem requires equal endpoint values f(0) = f(1) on [0, 1]."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "qr.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            spec = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "Codex27373",
+                "paper_title": "Codex 27373 Parallel Lossy & Orphan Bet",
+                "nodes": ["nVal", "qDiv2", "rMod2", "qrPair"],
+                "tags": ["inputN", "equalEnds", "continuous"],
+                "sources": [
+                    {"node": "nVal", "origin": "measured", "carries": ["inputN"], "quote": q_qr},
+                ],
+                "ops": [
+                    {"name": "div2", "inputs": ["nVal"], "output": "qDiv2", "kind": "lossy", "introduces": [], "quote": q_qr},
+                    {"name": "mod2", "inputs": ["nVal"], "output": "rMod2", "kind": "lossy", "introduces": [], "quote": q_qr},
+                    {"name": "pair_qr", "inputs": ["qDiv2", "rMod2"], "output": "qrPair", "kind": "transform", "introduces": [], "quote": q_qr},
+                ],
+                "claims": [
+                    {
+                        "id": "recoverFromQRPair",
+                        "statement": "Recover n from parallel lossy projections (n div 2, n mod 2).",
+                        "quote": q_qr,
+                        "kind": "uniqueRecovery",
+                        "target": "qrPair",
+                        "tag": "inputN",
+                    },
+                    {
+                        "id": "recoverFromQOnly",
+                        "statement": "Recover n from q = n div 2 alone (single lossy bottleneck).",
+                        "quote": q_rolle,
+                        "kind": "uniqueRecovery",
+                        "target": "qDiv2",
+                        "tag": "inputN",
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+
+            # Orphan declared_bet MUST fail schema validation
+            bad_orphan = copy.deepcopy(spec)
+            bad_orphan["claims"].append(
+                {
+                    "id": "orphanBet",
+                    "statement": "Rolle theorem with equalEnds only in declared_bets, omitted from hypotheses.",
+                    "quote": q_rolle,
+                    "kind": "theoremApplication",
+                    "target": "qrPair",
+                    "hypotheses": [{"tag": "continuous", "status": "discharged", "quote": q_rolle}],
+                    "declared_bets": ["equalEnds"],
+                }
+            )
+            errs, _ = validate_spec(bad_orphan, doc=doc)
+            self.assertTrue(any(e.code == "orphan_declared_bet" for e in errs))
+
+            sp = base / "qr.json"
+            sp.write_text(json.dumps(spec), encoding="utf-8")
+            out = base / "out"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)]), 0)
+            rep = json.loads((out / "Codex27373_report.json").read_text(encoding="utf-8"))
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+
+            self.assertEqual(by_id["recoverFromQRPair"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["recoverFromQRPair"]["findings"]], ["parallelLossyBranches"])
+            self.assertEqual(by_id["recoverFromQOnly"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["recoverFromQOnly"]["findings"]], ["lossyChannelOnPath"])
+
 
 if __name__ == "__main__":
     unittest.main()

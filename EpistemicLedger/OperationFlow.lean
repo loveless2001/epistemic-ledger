@@ -149,8 +149,11 @@ inductive FlowFinding (ν σ : Type) where
   | sharedUpstreamStructure (shared : ν) (tag : σ)
   /-- Two allegedly independent branches share an unforgotten `setByExperimenter` source. -/
   | sharedExperimenterSource (shared : ν)
-  /-- A lossy (many-to-one) operation sits on a path to a `uniqueRecovery` target. -/
+  /-- A lossy (many-to-one) bottleneck operation cuts all `tag`-carrying paths to a `uniqueRecovery` target. -/
   | lossyChannelOnPath (opName : String) (output : ν)
+  /-- Every `tag`-carrying path to `target` crosses a `.lossy` op, but across parallel branches with no
+      single `.lossy` bottleneck (e.g. `(n div 2, n mod 2)`): joint injectivity is undecidable from the graph alone. -/
+  | parallelLossyBranches (target : ν) (tag : σ) (lossyOutputs : List ν)
   /-- Target of `uniqueRecovery` has no upstream `SourceNode` granting access to `tag`. -/
   | unaccessedTargetStructure (target : ν) (tag : σ)
   /-- An upstream source node reaches `target` but is omitted from `declaredSources`. -/
@@ -187,6 +190,8 @@ inductive FlowFinding (ν σ : Type) where
   | hypothesisKnownFalse (target : ν) (hyp : σ)
   /-- Rule 3: an unchecked hypothesis (`.bet`) of the applied theorem is omitted from `declaredBets`. -/
   | undeclaredHypothesisBet (target : ν) (hyp : σ)
+  /-- Rule 3: `declaredBets` lists `hyp` without any matching entry in `hypotheses`. -/
+  | orphanDeclaredBet (target : ν) (hyp : σ)
   /-- Claim explicitly declared out of scope for structural operation-flow auditing. -/
   | claimOutOfScope (reason : String)
   deriving DecidableEq, Repr
@@ -544,6 +549,45 @@ def lossyOpsOnTagPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (Flo
       | _ => none
     else none
 
+/-- All nodes from which `tag` flows unblocked into `target` WITHOUT traversing `blocked`. -/
+def tagAncestorsExcludingNodeAux
+    (ops : List (Op ν σ)) (tag : σ) (blocked : ν) : Nat → List ν → List ν
+  | 0, visited => visited
+  | fuel + 1, visited =>
+    let preds := ops.foldl
+      (fun acc op =>
+        if op.output ∈ visited && op.output ≠ blocked && opPropagatesTag op tag then
+          acc ++ op.inputs.filter (fun inp => inp ≠ blocked)
+        else acc) []
+    let next := preds.foldl (fun acc x => if x ∈ acc then acc else x :: acc) visited
+    if next.length = visited.length then visited
+    else tagAncestorsExcludingNodeAux ops tag blocked fuel next
+
+/-- Upstream `SourceNode`s carrying `tag` reaching `target` without traversing `blocked`. -/
+def sourceOriginsExcludingNode (g : FlowGraph ν σ) (tag : σ) (blocked : ν) (target : ν) : List ν :=
+  if target = blocked then []
+  else
+    let reach := tagAncestorsExcludingNodeAux g.ops tag blocked (g.ops.length + 1) [target]
+    (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
+
+/-- Single `.lossy` bottleneck operations whose output node cuts ALL `tag`-carrying source paths
+    to `target` (and is produced exclusively by `.lossy` ops, not a `tag` source itself).
+    When such a bottleneck exists, `target` factors through one many-to-one map and unique recovery
+    is provably impossible (`rejected`). -/
+def singleLossyBottlenecks (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
+  let reach := tagAncestors g tag target
+  g.ops.filterMap fun op =>
+    if op.output ∈ reach &&
+       op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) &&
+       !sourceCarries g op.output tag &&
+       (g.ops.filter (fun o => o.output = op.output)).all (fun o =>
+         match o.kind with | .lossy _ => true | _ => false) &&
+       (sourceOriginsExcludingNode g tag op.output target).isEmpty then
+      match op.kind with
+      | .lossy _ => some (.lossyChannelOnPath op.name op.output)
+      | _ => none
+    else none
+
 /-- Arms excluded from direct cost-metering traversal so a ledger cannot simply mirror an arm output. -/
 def ledgerExcludedArms (methodNode : ν) : Option ν → List ν
   | some ctrl => [methodNode, ctrl]
@@ -601,8 +645,18 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         -- Non-lossy access path exists, but only through an unverified `.forget tag .notShown`
         unverifiedForgetsOnSourcePath c.graph tag target
       else
-        -- Every access path from a `tag`-carrying SourceNode passes through a `.lossy` channel
-        lossyOpsOnTagPath c.graph tag target
+        -- Every access path passes through at least one `.lossy` op:
+        -- distinguish a single `.lossy` bottleneck (`rejected`) from parallel `.lossy` branches
+        -- like `(n div 2, n mod 2)` whose joint injectivity is undecidable from the graph (`unestablished`).
+        let bottlenecks := singleLossyBottlenecks c.graph tag target
+        if !bottlenecks.isEmpty then
+          bottlenecks
+        else
+          let lossyOuts :=
+            (lossyOpsOnTagPath c.graph tag target).filterMap fun
+              | .lossyChannelOnPath _ out => some out
+              | _ => none
+          [.parallelLossyBranches target tag lossyOuts.eraseDups]
     recoveryFindings ++ danglingInputsUpstream c.graph target
   | .conditionalFlow target declaredSources =>
     let reach := ancestors c.graph target
@@ -672,6 +726,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
   | .theoremApplication target hypotheses declaredBets =>
+    let hypIds := hypotheses.map (·.id)
     let hypFindings : List (FlowFinding ν σ) :=
       hypotheses.filterMap fun h =>
         match h.status with
@@ -680,7 +735,11 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         | .bet =>
           if h.id ∈ declaredBets then none
           else some (.undeclaredHypothesisBet target h.id)
-    hypFindings ++ danglingInputsUpstream c.graph target
+    let orphanBets : List (FlowFinding ν σ) :=
+      declaredBets.filterMap fun b =>
+        if b ∈ hypIds then none
+        else some (.orphanDeclaredBet target b)
+    hypFindings ++ orphanBets ++ danglingInputsUpstream c.graph target
   | .outOfScope reason => [.claimOutOfScope reason]
 
 def flowVerdict (c : FlowClaim ν σ) : FlowVerdict :=
@@ -698,6 +757,7 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .sharedUpstreamStructure _ _          => true
   | .sharedExperimenterSource _           => true
   | .lossyChannelOnPath _ _               => true
+  | .parallelLossyBranches _ _ _          => false
   | .unaccessedTargetStructure _ _        => false
   | .undeclaredUpstreamSource _           => false
   | .danglingInput _ _                    => false
@@ -715,6 +775,7 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .unmatchedControlBudget _ _ _         => true
   | .hypothesisKnownFalse _ _             => true
   | .undeclaredHypothesisBet _ _          => false
+  | .orphanDeclaredBet _ _                => false
   | .claimOutOfScope _                    => false
 
 /-- Four-state epistemic verdict for a flow claim.
@@ -1596,31 +1657,43 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
 /--
 Theorem 8 (Soundness of Rule 3 — `theoremApplication`):
 If a `theoremApplication target hypotheses declaredBets` claim is `admissible`,
-then NO hypothesis is `.knownFalse`, and EVERY hypothesis is either `.discharged`
-or an explicitly declared `.bet` (`h.id ∈ declaredBets`).
+then:
+  (1) NO hypothesis is `.knownFalse`, and EVERY hypothesis is either `.discharged`
+      or an explicitly declared `.bet` (`h.id ∈ declaredBets`), AND
+  (2) EVERY tag in `declaredBets` has a matching entry in `hypotheses` (no orphan declared bets).
 -/
 theorem admissible_theoremApplication_implies_hypotheses_satisfied
     (c : FlowClaim ν σ) (target : ν) (hypotheses : List (Hypothesis σ)) (declaredBets : List σ)
     (hkind : c.kind = .theoremApplication target hypotheses declaredBets)
     (hadm : flowVerdict c = .admissible) :
-    ∀ h ∈ hypotheses, h.status = .discharged ∨ (h.status = .bet ∧ h.id ∈ declaredBets) := by
+    (∀ h ∈ hypotheses, h.status = .discharged ∨ (h.status = .bet ∧ h.id ∈ declaredBets)) ∧
+    (∀ b ∈ declaredBets, ∃ h ∈ hypotheses, h.id = b) := by
   unfold flowVerdict at hadm
   split at hadm
   · rename_i hempty
     have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
     rw [auditFlow, hkind] at hnil
     dsimp only at hnil
-    have hhyps := (List.append_eq_nil_iff.mp hnil).1
-    intro h hh
-    have hfm := List.filterMap_eq_nil_iff.mp hhyps h hh
-    cases hs : h.status with
-    | discharged => exact Or.inl rfl
-    | knownFalse => simp [hs] at hfm
-    | bet =>
-      simp only [hs] at hfm
+    have h12 := (List.append_eq_nil_iff.mp hnil).1
+    have hhyps := (List.append_eq_nil_iff.mp h12).1
+    have horphans := (List.append_eq_nil_iff.mp h12).2
+    constructor
+    · intro h hh
+      have hfm := List.filterMap_eq_nil_iff.mp hhyps h hh
+      cases hs : h.status with
+      | discharged => exact Or.inl rfl
+      | knownFalse => simp [hs] at hfm
+      | bet =>
+        simp only [hs] at hfm
+        split at hfm
+        · rename_i hdecl
+          exact Or.inr ⟨rfl, hdecl⟩
+        · simp at hfm
+    · intro b hb
+      have hfm := List.filterMap_eq_nil_iff.mp horphans b hb
       split at hfm
-      · rename_i hdecl
-        exact Or.inr ⟨rfl, hdecl⟩
+      · rename_i hmem
+        exact List.mem_map.mp hmem
       · simp at hfm
   · cases hadm
 

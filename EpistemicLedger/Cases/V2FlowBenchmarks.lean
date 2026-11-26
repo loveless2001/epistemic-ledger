@@ -824,6 +824,51 @@ theorem math_undeclared_bet_unestablished :
       [FlowFinding.undeclaredHypothesisBet MathNode.theoremOut MathTag.grh] := by
   decide
 
+/-! #### Codex `#27373` Regression Tests: Parallel Lossy `(n div 2, n mod 2)` & Orphan `declaredBets` -/
+
+inductive QRNode where
+  | nVal | qDiv2 | rMod2 | qrPair
+  deriving DecidableEq, Repr
+
+inductive QRTag where
+  | inputN
+  deriving DecidableEq, Repr
+
+/-- Codex `#27373`: `q = n div 2` and `r = n mod 2` are individually `.lossy`, yet `(q, r)` recovers `n = 2q + r`.
+    With no single `.lossy` bottleneck, the graph alone cannot decide joint injectivity -> `unestablished`
+    (`parallelLossyBranches`), NOT falsely `rejected`! -/
+def parallelLossyQRPairClaim : FlowClaim QRNode QRTag where
+  statement := "Recover n from pair (n div 2, n mod 2)."
+  graph :=
+    ⟨[⟨.nVal, .measured, [.inputN]⟩],
+     [⟨"div2", [.nVal], .qDiv2, .lossy []⟩,
+      ⟨"mod2", [.nVal], .rMod2, .lossy []⟩,
+      ⟨"pair_qr", [.qDiv2, .rMod2], .qrPair, .transform []⟩]⟩
+  kind := .uniqueRecovery .qrPair .inputN
+
+/-- Codex `#27373`: keeping `grh` in `declaredBets` while omitting it from `hypotheses` -> `unestablished`
+    (`orphanDeclaredBet`), never `admissible`! -/
+def orphanDeclaredBetClaim : FlowClaim MathNode MathTag where
+  statement := "Orphan declared bet with no matching hypothesis entry."
+  graph := mathGraph
+  kind := .theoremApplication .theoremOut
+    [⟨.nonzeroDenominator, .discharged⟩]
+    [.grh]
+
+theorem parallel_lossy_qr_pair_is_unestablished_not_rejected :
+    flowVerdict parallelLossyQRPairClaim = .rejected ∧
+    epistemicVerdict parallelLossyQRPairClaim = .unestablished ∧
+    auditFlow parallelLossyQRPairClaim =
+      [FlowFinding.parallelLossyBranches QRNode.qrPair QRTag.inputN [QRNode.qDiv2, QRNode.rMod2]] := by
+  decide
+
+theorem orphan_declared_bet_caught_in_lean :
+    flowVerdict orphanDeclaredBetClaim = .rejected ∧
+    epistemicVerdict orphanDeclaredBetClaim = .unestablished ∧
+    auditFlow orphanDeclaredBetClaim =
+      [FlowFinding.orphanDeclaredBet MathNode.theoremOut MathTag.grh] := by
+  decide
+
 end EpistemicVerdictTests
 
 end EpistemicLedger.Cases.V2FlowBenchmarks

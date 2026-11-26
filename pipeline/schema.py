@@ -650,7 +650,19 @@ def validate_spec(
                         check_quote(h["quote"], f"{hp}.quote")
                         if "rationale" in h:
                             _check_nonempty_str(h["rationale"], f"{hp}.rationale", errors)
-                check_tag_list(cl["declared_bets"], f"{p}.declared_bets")
+                    check_tag_list(cl["declared_bets"], f"{p}.declared_bets")
+                    if isinstance(cl["declared_bets"], list):
+                        for j, b in enumerate(cl["declared_bets"]):
+                            if isinstance(b, str) and b in tag_set and b not in seen_hyps:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{p}.declared_bets[{j}]",
+                                        "orphan_declared_bet",
+                                        f"declared_bets tag {b!r} has no matching entry in hypotheses",
+                                    )
+                                )
+                if not isinstance(hyps, list) or len(hyps) == 0:
+                    check_tag_list(cl["declared_bets"], f"{p}.declared_bets")
             elif kind == "outOfScope":
                 _check_nonempty_str(cl["reason"], f"{p}.reason", errors)
             else:  # conditionalFlow

@@ -171,6 +171,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .lossyChannelOnPath opName output =>',
         '      "{\\"type\\":\\"lossyChannelOnPath\\",\\"op\\":" ++ jsonStr opName ++',
         '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ "}"',
+        '  | .parallelLossyBranches target tag lossyOuts =>',
+        '      "{\\"type\\":\\"parallelLossyBranches\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
+        '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ ",\\"lossy_outputs\\":" ++ jsonNodeList lossyOuts ++ "}"',
         '  | .unaccessedTargetStructure target tag =>',
         '      "{\\"type\\":\\"unaccessedTargetStructure\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
         '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
@@ -218,6 +221,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '      ",\\"hypothesis\\":" ++ jsonStr (tagName hyp) ++ "}"',
         '  | .undeclaredHypothesisBet target hyp =>',
         '      "{\\"type\\":\\"undeclaredHypothesisBet\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
+        '      ",\\"hypothesis\\":" ++ jsonStr (tagName hyp) ++ "}"',
+        '  | .orphanDeclaredBet target hyp =>',
+        '      "{\\"type\\":\\"orphanDeclaredBet\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
         '      ",\\"hypothesis\\":" ++ jsonStr (tagName hyp) ++ "}"',
         '  | .claimOutOfScope reason =>',
         '      "{\\"type\\":\\"claimOutOfScope\\",\\"reason\\":" ++ jsonStr reason ++ "}"',
@@ -278,6 +284,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.sharedExperimenterSource Node.{f['shared']}"
     if ft == "lossyChannelOnPath":
         return f'FlowFinding.lossyChannelOnPath "{escape_lean_str(f["op"])}" Node.{f["output"]}'
+    if ft == "parallelLossyBranches":
+        return f"FlowFinding.parallelLossyBranches Node.{f['target']} Tag.{f['tag']} {_lean_node_list(f['lossy_outputs'])}"
     if ft == "unaccessedTargetStructure":
         return f"FlowFinding.unaccessedTargetStructure Node.{f['target']} Tag.{f['tag']}"
     if ft == "undeclaredUpstreamSource":
@@ -312,6 +320,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.hypothesisKnownFalse Node.{f['target']} Tag.{f['hypothesis']}"
     if ft == "undeclaredHypothesisBet":
         return f"FlowFinding.undeclaredHypothesisBet Node.{f['target']} Tag.{f['hypothesis']}"
+    if ft == "orphanDeclaredBet":
+        return f"FlowFinding.orphanDeclaredBet Node.{f['target']} Tag.{f['hypothesis']}"
     if ft == "claimOutOfScope":
         return f'FlowFinding.claimOutOfScope "{escape_lean_str(f["reason"])}"'
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")
