@@ -32,7 +32,10 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "lossyChannelOnPath":
         return f"**[Lossy Channel]** many-to-one op `{f['op']}` at `{f['output']}` blocks unique recovery"
     if ft == "unaccessedTargetStructure":
-        return f"**[Unaccessed Structure]** target `{f['target']}` has no upstream SourceNode granting access to `{f['tag']}`"
+        return (
+            f"**[Unaccessed Structure]** target `{f['target']}` has no upstream SourceNode granting access to `{f['tag']}` "
+            f"(absence of observation in the declared graph is not evidence of absence in reality)"
+        )
     if ft == "undeclaredUpstreamSource":
         return f"**[Undeclared Source]** upstream source `{f['source']}` omitted from conditional claim"
     if ft == "danglingInput":
@@ -61,7 +64,25 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
+    if ft == "claimOutOfScope":
+        return f"**[Out of Scope]** {f['reason']}"
     return json.dumps(f)
+
+
+def _format_verdict_table(verdict: str) -> str:
+    if verdict == "admissible":
+        return "admissible (consistent within declared slice)"
+    return verdict
+
+
+def _format_verdict_heading(verdict: str) -> str:
+    if verdict == "admissible":
+        return "ADMISSIBLE (consistent within declared slice)"
+    if verdict == "unestablished":
+        return "UNESTABLISHED (data/design stops at map edge)"
+    if verdict == "outOfScope":
+        return "OUT OF SCOPE"
+    return verdict.upper()
 
 
 def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -97,6 +118,7 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "control_node",
         "cost_ledger_node",
         "cost_tag",
+        "reason",
     ):
         if k in meta:
             sig[k] = meta[k]
@@ -131,9 +153,19 @@ def build_single_report_dict(
     has_effectiveness = isinstance(spec, dict) and any(
         isinstance(c, dict) and c.get("kind") == "effectivenessClaim" for c in spec.get("claims", [])
     )
+    oos_claim_ids = [
+        str(c.get("id"))
+        for c in (spec.get("claims", []) if isinstance(spec, dict) else [])
+        if isinstance(c, dict) and c.get("kind") == "outOfScope" and c.get("id")
+    ]
     out_of_scope = [OUT_OF_SCOPE_CORE]
     if has_effectiveness:
         out_of_scope.append(OUT_OF_SCOPE_ACCOUNTING)
+    if oos_claim_ids:
+        out_of_scope.append(
+            f"Explicitly out-of-scope claim(s) ({', '.join(oos_claim_ids)}): "
+            "declared outside structural operation-flow verification (e.g., normative, legal-policy, or value-balancing disputes)."
+        )
     ignored_fields = collect_out_of_scope_spec_fields(spec)
     if ignored_fields:
         out_of_scope.append(
@@ -218,12 +250,14 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         sig = _claim_signature(meta)
         if sig.get("kind") == "effectivenessClaim":
             endpoint = f"{sig.get('method_node')} → {sig.get('evaluation_node')} (ctrl={sig.get('control_node')}, ledger={sig.get('cost_ledger_node')})"
+        elif sig.get("kind") == "outOfScope":
+            endpoint = "out-of-scope"
         else:
             endpoint = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
             if "excluded_channel" in sig:
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{c['verdict']}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'])}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
@@ -234,14 +268,14 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         meta = claim_by_id[c["id"]]
         prov = meta.get("provenance", "authorClaimed")
         lines += [
-            f"### `{c['id']}` — **{c['verdict'].upper()}** (`{prov}`)",
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'])}** (`{prov}`)",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
         if meta.get("kind") == "effectivenessClaim" and (meta.get("method_usage") or meta.get("control_usage")):
             lines.append(f"- **Out of scope (accounting/bookkeeping):** {OUT_OF_SCOPE_ACCOUNTING}")
         if not c["findings"]:
-            lines.append("- **Findings:** None (clean under checked rules).")
+            lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
         else:
             lines.append("- **Findings:**")
             for f in c["findings"]:
@@ -353,6 +387,11 @@ def build_comparison_report(
                                 sort_keys=True,
                             )
                         )
+                    elif sig.get("kind") == "outOfScope":
+                        tgt = "out-of-scope"
+                        tags.add("")
+                        effectiveness_controls.add(("", ""))
+                        usage_signatures.add("")
                     else:
                         tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
                         tags.add(str(sig.get("tag", "")))
@@ -464,6 +503,8 @@ def build_comparison_report(
             extras.append(f"ctrl={sig.get('control_node')}")
             extras.append(f"ledger={sig.get('cost_ledger_node')}")
             extras.append(f"cost_tag={sig.get('cost_tag')}")
+        elif sig.get("kind") == "outOfScope":
+            tgt = "out-of-scope"
         else:
             tgt = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
             if "tag" in sig:
@@ -474,7 +515,7 @@ def build_comparison_report(
                 extras.append(f"declared={sorted(set(sig['declared_sources']))}")
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
-        return f"**{info['verdict']}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
+        return f"**{_format_verdict_table(info['verdict'])}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
 
     for row in rows:
         q_short = row["claim_quote"]
@@ -570,6 +611,7 @@ CRITICAL RULES:
    - `method_usage` and `control_usage`: lists of `{{"source": "<node>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing amount>"}}` (empty `[]` if unquantified in the paper).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
+9. If a claim is a normative value judgment, legal-policy balancing dispute, or financial/bookkeeping question rather than a structural causal/experimental flow claim, do NOT force it into an emergence or effectiveness claim; instead emit `kind: "outOfScope"` with a concise `"reason"` string explaining why it lies outside structural operation-flow verification.
 
 JSON TEMPLATE:
 {{

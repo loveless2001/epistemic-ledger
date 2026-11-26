@@ -84,6 +84,8 @@ def _lean_claim_kind(cl: dict[str, Any]) -> str:
         mu = _lean_usage_list(cl["method_usage"])
         cu = _lean_usage_list(cl["control_usage"])
         return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu}"
+    if kind == "outOfScope":
+        return f'.outOfScope "{escape_lean_str(cl["reason"])}"'
     return f".conditionalFlow .{cl['target']} {_lean_node_list(cl['declared_sources'])}"
 
 
@@ -120,9 +122,11 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .notShown => "notShown"',
         '  | .contradicted => "contradicted"',
         "",
-        "def verdictName : FlowVerdict → String",
+        "def epistemicVerdictName : EpistemicVerdict → String",
         '  | .admissible => "admissible"',
+        '  | .unestablished => "unestablished"',
         '  | .rejected => "rejected"',
+        '  | .outOfScope => "outOfScope"',
         "",
         "def jsonEscape (s : String) : String :=",
         '  s.foldl (fun acc c => acc ++ match c with',
@@ -201,6 +205,8 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .unmatchedControlBudget methodNode ctrl costTag =>',
         '      "{\\"type\\":\\"unmatchedControlBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
+        '  | .claimOutOfScope reason =>',
+        '      "{\\"type\\":\\"claimOutOfScope\\",\\"reason\\":" ++ jsonStr reason ++ "}"',
         "",
         "def findingsToJson (fs : List (FlowFinding Node Tag)) : String :=",
         '  "[" ++ String.intercalate "," (fs.map findingToJson) ++ "]"',
@@ -288,6 +294,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.unboundUsageSource Node.{f['arm']} Node.{f['source']} Tag.{f['cost_tag']}"
     if ft == "unmatchedControlBudget":
         return f"FlowFinding.unmatchedControlBudget Node.{f['method']} Node.{f['control']} Tag.{f['cost_tag']}"
+    if ft == "claimOutOfScope":
+        return f'FlowFinding.claimOutOfScope "{escape_lean_str(f["reason"])}"'
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")
 
 
@@ -346,7 +354,7 @@ def run_lean_verification(
 ) -> LeanVerificationResult:
     """Two-pass Lean 4 kernel verification:
     0. Ensure `EpistemicLedger.OperationFlow` `.olean` is built & fresh (works on clean clones).
-    1. Evaluate `flowVerdict` and `auditFlow` inside `lake env lean`.
+    1. Evaluate `epistemicVerdict` and `auditFlow` inside `lake env lean`.
     2. Synthesize standalone `decide` proof file in separate `Claims`/`Verdicts`/`Findings`
        sub-namespaces, verify with Lean kernel + axiom whitelist `{propext, Quot.sound}`,
        and atomically publish `out_lean_path` ONLY after all checks succeed.
@@ -362,7 +370,7 @@ def run_lean_verification(
         cid = cl["id"]
         eval_lines.append(
             f'#eval IO.println ("EPISTEMIC_JSON:" ++ "{{\\"id\\":\\"{cid}\\",\\"verdict\\":" ++ '
-            f'jsonStr (verdictName (flowVerdict Claims.{cid})) ++ ",\\"findings\\":" ++ '
+            f'jsonStr (epistemicVerdictName (epistemicVerdict Claims.{cid})) ++ ",\\"findings\\":" ++ '
             f'findingsToJson (auditFlow Claims.{cid}) ++ "}}")'
         )
     eval_lines.append(f"end {ns}")
@@ -384,13 +392,13 @@ def run_lean_verification(
     for cl in spec["claims"]:
         cid = cl["id"]
         verdict = parsed_by_id[cid]["verdict"]
-        proof_lines.append(f"theorem {cid} : flowVerdict Claims.{cid} = .{verdict} := by decide")
+        proof_lines.append(f"theorem {cid} : epistemicVerdict Claims.{cid} = .{verdict} := by decide")
     proof_lines += ["", "end Verdicts", "", "namespace Findings", ""]
     for cl in spec["claims"]:
         cid = cl["id"]
         findings = parsed_by_id[cid]["findings"]
         findings_lean = "[" + ", ".join(_finding_to_lean_expr(f) for f in findings) + "]"
-        proof_lines.append(f"theorem {cid} : auditFlow Claims.{cid} = {findings_lean} := by decide")
+        proof_lines.append(f"theorem {cid} : auditFlow Claims.{cid} = {findings_lean} := by rfl")
     proof_lines += ["", "end Findings", "", f"end {ns}"]
     proof_source = "\n".join(proof_lines) + "\n"
 

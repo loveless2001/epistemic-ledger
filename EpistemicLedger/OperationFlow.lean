@@ -109,6 +109,9 @@ inductive FlowClaimKind (ν σ : Type) where
       (costTag : σ)
       (methodUsage : List (ResourceUsage ν σ))
       (controlUsage : List (ResourceUsage ν σ))
+  /-- Claim explicitly lies outside structural operation-flow verification
+      (e.g., normative legal balancing, value judgments, policy weighing, or financial bookkeeping). -/
+  | outOfScope (reason : String)
   deriving DecidableEq, Repr
 
 /-- A claim audited against an operation graph. -/
@@ -168,12 +171,30 @@ inductive FlowFinding (ν σ : Type) where
   | unboundUsageSource (armNode : ν) (sourceNode : ν) (costTag : σ)
   /-- Tier 2: quantitative `costTag` budgets differ between `methodNode` and `controlNode` (e.g. 1 vs 100 GPU-hrs). -/
   | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
+  /-- Claim explicitly declared out of scope for structural operation-flow auditing. -/
+  | claimOutOfScope (reason : String)
   deriving DecidableEq, Repr
 
-/-- Verdict for a flow claim. -/
+/-- Legacy two-state verdict for a flow claim (retained untouched for backwards compatibility). -/
 inductive FlowVerdict where
   | admissible
   | rejected
+  deriving DecidableEq, Repr
+
+/-- Four-state epistemic verdict separating:
+    - `admissible`: no structural findings inside the declared observation slice
+      (consistent within declared slice — never certifies reality outside the graph).
+    - `unestablished`: data or experimental design stops at the edge of the map
+      (missing control, missing cost ledger, unquantified budget, `.notShown` forget,
+      undeclared upstream source, or dangling graph input — not a proven structural contradiction).
+    - `rejected`: direct structural or empirical contradiction inside the declared graph.
+    - `outOfScope`: claim lies outside structural operation-flow verification
+      (e.g., normative legal balancing, value judgments, or financial bookkeeping). -/
+inductive EpistemicVerdict where
+  | admissible
+  | unestablished
+  | rejected
+  | outOfScope
   deriving DecidableEq, Repr
 
 variable {ν σ : Type} [DecidableEq ν] [DecidableEq σ]
@@ -532,9 +553,50 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
     costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
+  | .outOfScope reason => [.claimOutOfScope reason]
 
 def flowVerdict (c : FlowClaim ν σ) : FlowVerdict :=
   if (auditFlow c).isEmpty then .admissible else .rejected
+
+/-- Classify a finding as a direct structural/empirical contradiction (`true` → `rejected`)
+    versus a data/design/graph-boundary gap (`false` → `unestablished`). -/
+def FlowFinding.isContradiction : FlowFinding ν σ → Bool
+  | .smuggledStructure _ _ _              => true
+  | .excludedChannelLeak _ _ _            => true
+  | .authorSuppliedStructure _ _ _        => true
+  | .failedForgetOnPath _ _ .contradicted => true
+  | .failedForgetOnPath _ _ .notShown     => false
+  | .failedForgetOnPath _ _ .shown        => false
+  | .sharedUpstreamStructure _ _          => true
+  | .sharedExperimenterSource _           => true
+  | .lossyChannelOnPath _ _               => true
+  | .unaccessedTargetStructure _ _        => true
+  | .undeclaredUpstreamSource _           => false
+  | .danglingInput _ _                    => false
+  | .missingCostAccounting _ _            => false
+  | .trivialCostLedger _ _                => true
+  | .unusedCostLedger _ _                 => false
+  | .unaccountedCostSource _ _ _          => true
+  | .unusedMethodNode _ _                 => false
+  | .missingMatchedControl _              => false
+  | .trivialSelfControl _                 => true
+  | .dependentControlArm _ _              => true
+  | .unusedControlNode _ _                => false
+  | .unquantifiedBudget _ _               => false
+  | .unboundUsageSource _ _ _             => false
+  | .unmatchedControlBudget _ _ _         => true
+  | .claimOutOfScope _                    => false
+
+/-- Four-state epistemic verdict for a flow claim.
+    Preserves legacy `flowVerdict` untouched for full backwards compatibility. -/
+def epistemicVerdict (c : FlowClaim ν σ) : EpistemicVerdict :=
+  match c.kind with
+  | .outOfScope _ => .outOfScope
+  | _ =>
+    let findings := auditFlow c
+    if findings.isEmpty then .admissible
+    else if findings.any FlowFinding.isContradiction then .rejected
+    else .unestablished
 
 /-! ### General Soundness & Anti-Degeneration Theorems (no Classical.choice) -/
 
@@ -910,5 +972,98 @@ theorem admissible_effectiveness_has_control_and_charged_cost
         exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval, hmatch⟩
     exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
   · cases hadm
+
+/--
+Theorem 7a (Equivalence of `admissible` between 4-state `epistemicVerdict` and legacy `flowVerdict`):
+A claim is `EpistemicVerdict.admissible` if and only if it is `FlowVerdict.admissible`.
+In particular, an `outOfScope` claim is never `admissible` under either verdict.
+-/
+theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν σ) :
+    epistemicVerdict c = .admissible ↔ flowVerdict c = .admissible := by
+  cases hk : c.kind with
+  | outOfScope r =>
+    simp [epistemicVerdict, flowVerdict, auditFlow, hk]
+  | emergesWithout _ _
+  | emergesWithExclusion _ _ _
+  | independentConvergence _ _ _
+  | uniqueRecovery _ _
+  | conditionalFlow _ _
+  | effectivenessClaim _ _ _ _ _ _ _ =>
+    unfold epistemicVerdict flowVerdict
+    rw [hk]
+    dsimp only
+    cases hempty : (auditFlow c).isEmpty with
+    | true => simp
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      cases (auditFlow c).any FlowFinding.isContradiction <;> simp
+
+/--
+Theorem 7b (Characterization of `EpistemicVerdict.outOfScope`):
+`epistemicVerdict c = .outOfScope` if and only if `c.kind` is `.outOfScope r` for some reason `r`.
+-/
+theorem epistemicVerdict_outOfScope_iff (c : FlowClaim ν σ) :
+    epistemicVerdict c = .outOfScope ↔ ∃ r, c.kind = .outOfScope r := by
+  constructor
+  · intro h
+    cases hk : c.kind with
+    | outOfScope r => exact ⟨r, rfl⟩
+    | emergesWithout _ _
+    | emergesWithExclusion _ _ _
+    | independentConvergence _ _ _
+    | uniqueRecovery _ _
+    | conditionalFlow _ _
+    | effectivenessClaim _ _ _ _ _ _ _ =>
+      unfold epistemicVerdict at h
+      rw [hk] at h
+      dsimp only at h
+      split at h
+      · cases h
+      · split at h <;> cases h
+  · rintro ⟨r, hr⟩
+    simp [epistemicVerdict, hr]
+
+/--
+Theorem 7c (Characterization of `EpistemicVerdict.rejected`):
+`epistemicVerdict c = .rejected` if and only if `c` is not `outOfScope` and `auditFlow c`
+contains a direct structural/empirical contradiction finding (`f.isContradiction = true`).
+-/
+theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
+    epistemicVerdict c = .rejected ↔
+    (∀ r, c.kind ≠ .outOfScope r) ∧ ∃ f ∈ auditFlow c, f.isContradiction = true := by
+  cases hk : c.kind with
+  | outOfScope r =>
+    constructor
+    · intro h
+      simp [epistemicVerdict, hk] at h
+    · rintro ⟨hnot, _⟩
+      exact absurd rfl (hnot r)
+  | emergesWithout _ _
+  | emergesWithExclusion _ _ _
+  | independentConvergence _ _ _
+  | uniqueRecovery _ _
+  | conditionalFlow _ _
+  | effectivenessClaim _ _ _ _ _ _ _ =>
+    unfold epistemicVerdict
+    rw [hk]
+    dsimp only
+    constructor
+    · intro h
+      refine ⟨(fun _ hEq => by cases hEq), ?_⟩
+      cases hempty : (auditFlow c).isEmpty with
+      | true => simp [hempty] at h
+      | false =>
+        simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
+        cases hany : (auditFlow c).any FlowFinding.isContradiction with
+        | false => simp [hany] at h
+        | true => exact List.any_eq_true.mp hany
+    · rintro ⟨_, f, hf, hcontra⟩
+      have hne : (auditFlow c).isEmpty = false := by
+        cases hl : auditFlow c with
+        | nil => rw [hl] at hf; cases hf
+        | cons _ _ => rfl
+      have hany : (auditFlow c).any FlowFinding.isContradiction = true :=
+        List.any_eq_true.mpr ⟨f, hf, hcontra⟩
+      simp [hne, hany]
 
 end EpistemicLedger.OperationFlow

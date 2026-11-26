@@ -16,8 +16,20 @@ A paper's methodology is encoded as a directed graph of `SourceNode`s (`measured
 | `uniqueRecovery` | No `.lossy` (many-to-one) channel sits upstream of `target`, and `target` actually has upstream access to `tag`. |
 | `conditionalFlow` | Every upstream source reaching `target` is explicitly declared in `declaredSources`. |
 | `effectivenessClaim` | Independent control arm (`missingMatchedControl`, `trivialSelfControl`, `dependentControlArm`), direct forget-proof physical cost-source coverage (`missingCostAccounting`, `trivialCostLedger`, `unusedCostLedger`, `unaccountedCostSource`), and arithmetic parity of declared `(source, unit, amount)` usage entries (`unquantifiedBudget`, `unboundUsageSource`, `unmatchedControlBudget`). |
+| `outOfScope` | Explicitly records a claim outside structural operation-flow verification (e.g., normative legal balancing, value judgments, or financial bookkeeping) with a mandatory `reason` string. |
 
-Every claim also checks graph completeness (`danglingInput`).
+Every structural claim also checks graph completeness (`danglingInput`).
+
+## Four-State Epistemic Verdict (`EpistemicVerdict`)
+
+`epistemicVerdict` (preserving legacy 2-state `flowVerdict` untouched for historical proofs) classifies every claim into four kernel-checked states:
+
+| Verdict | Meaning |
+|---|---|
+| `admissible` | **Consistent within declared slice** — zero structural findings in the modeled graph (never certifies unmodeled reality). |
+| `unestablished` | **Data/design stops at the map edge** — missing control, missing cost ledger, unquantified budget, `.notShown` forget, undeclared upstream source, or dangling graph input (not a proven structural contradiction). |
+| `rejected` | **Direct structural/empirical contradiction** — smuggled/author-supplied structure, excluded-channel leak, contradicted forget, shared upstream/experimenter branch, lossy channel, unaccessed target structure, dependent/self control, unaccounted cost source, or unmatched numeric budgets. |
+| `outOfScope` | **Outside structural operation-flow scope** — normative, legal-policy, or bookkeeping dispute explicitly marked via `kind: "outOfScope"`. |
 
 ## Out of Scope (Explicitly Reported in Every Output)
 
@@ -32,7 +44,7 @@ Every claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline test suite (18 tests)
+### 2. Run the pipeline test suite (19 tests)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v

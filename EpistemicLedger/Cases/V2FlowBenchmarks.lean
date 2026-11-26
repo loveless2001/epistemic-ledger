@@ -639,4 +639,35 @@ theorem society_rejected_no_control_no_cost :
 
 end EffectivenessTests
 
+/-! ### Four-State `EpistemicVerdict` Tests (`admissible` / `unestablished` / `rejected` / `outOfScope`) -/
+namespace EpistemicVerdictTests
+
+open EffectivenessTests
+
+def normativeLegalBalancingClaim : FlowClaim EffectivenessTests.Node EffectivenessTests.Tag where
+  statement := "Whether an unlawful Terry stop is attenuated by a pre-existing arrest warrant under the Fourth Amendment."
+  graph := EffectivenessTests.societyNoControlNoCost.graph
+  kind := .outOfScope "Normative Fourth Amendment attenuation balancing is a legal-policy value judgment, not a causal-flow claim."
+
+theorem separate_accounts_epistemic_admissible :
+    epistemicVerdict EffectivenessTests.separateAccountsEqualDollars = .admissible := by
+  decide
+
+theorem society_missing_control_and_cost_epistemic_unestablished :
+    epistemicVerdict EffectivenessTests.societyNoControlNoCost = .unestablished := by
+  decide
+
+theorem uneven_quantities_epistemic_rejected :
+    epistemicVerdict EffectivenessTests.unevenQuantitiesSameCluster = .rejected := by
+  decide
+
+theorem normative_balancing_epistemic_out_of_scope :
+    epistemicVerdict normativeLegalBalancingClaim = .outOfScope ∧
+    FlowFinding.claimOutOfScope
+      "Normative Fourth Amendment attenuation balancing is a legal-policy value judgment, not a causal-flow claim."
+      ∈ auditFlow normativeLegalBalancingClaim := by
+  decide
+
+end EpistemicVerdictTests
+
 end EpistemicLedger.Cases.V2FlowBenchmarks

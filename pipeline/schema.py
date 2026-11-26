@@ -79,6 +79,7 @@ VALID_CLAIM_KINDS = frozenset(
         "uniqueRecovery",
         "conditionalFlow",
         "effectivenessClaim",
+        "outOfScope",
     }
 )
 VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
@@ -488,6 +489,8 @@ def validate_spec(
                     "control_usage",
                 }
                 base_opt = base_opt | OUT_OF_SCOPE_EFFECTIVENESS_KEYS
+            elif kind == "outOfScope":
+                extra = {"reason"}
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -597,6 +600,8 @@ def validate_spec(
                     )
                 check_usage_list(cl["method_usage"], f"{p}.method_usage")
                 check_usage_list(cl["control_usage"], f"{p}.control_usage")
+            elif kind == "outOfScope":
+                _check_nonempty_str(cl["reason"], f"{p}.reason", errors)
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):

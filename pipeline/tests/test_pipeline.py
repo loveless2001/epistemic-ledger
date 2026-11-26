@@ -254,7 +254,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             res = run_lean_verification(spec, repo_root=REPO_ROOT, out_lean_path=Path(tmp) / "Dangling.lean")
             by_id = {c.claim_id: c for c in res.claims}
-            self.assertEqual(by_id["claimA_clean_measured"].verdict, "rejected")
+            self.assertEqual(by_id["claimA_clean_measured"].verdict, "unestablished")
             self.assertTrue(
                 any(
                     f["type"] == "danglingInput" and f["missing"] == "measuredRgbFrames"
@@ -668,7 +668,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["dependentControlRejected"]["findings"]], ["dependentControlArm"])
             self.assertEqual(by_id["clonedControlLedgerRejected"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["clonedControlLedgerRejected"]["findings"]], ["unaccountedCostSource"])
-            self.assertEqual(by_id["unquantifiedBudgetRejected"]["verdict"], "rejected")
+            self.assertEqual(by_id["unquantifiedBudgetRejected"]["verdict"], "unestablished")
             self.assertIn("unquantifiedBudget", [f["type"] for f in by_id["unquantifiedBudgetRejected"]["findings"]])
 
             # Codex R2 P2-3: `compare` must flag provenance & usage differences even when verdicts agree!
@@ -828,6 +828,113 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(any("Ignored out-of-scope accounting/bookkeeping fields" in s for s in comp_oos["out_of_scope"]))
             self.assertIn("## Out of Scope", comp_oos_md)
             self.assertIn("Ignored out-of-scope accounting/bookkeeping fields", comp_oos_md)
+
+    def test_four_state_verdicts_admissible_unestablished_rejected_out_of_scope(self) -> None:
+        """4-state `EpistemicVerdict` end-to-end test:
+        - `admissible` (rendered as `admissible (consistent within declared slice)` in Markdown)
+        - `unestablished` (data/design stops at map edge: e.g. missing control + missing cost ledger)
+        - `rejected` (direct structural contradiction: e.g. excludedChannelLeak)
+        - `outOfScope` (explicit normative/legal-policy claim with required non-empty `reason`)
+        """
+        doc = ingest_document(str(SAMPLE_DOC))
+        q_clean = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
+        q_leak = "Under Regime C, 3D geometry emerges without 3D prediction targets in the training loss."
+        q_header = "We investigate whether 3D spatial structure emerges in neural representations trained without 3D prediction targets across two experimental regimes."
+
+        spec = json.loads(SPEC_A.read_text(encoding="utf-8"))
+        spec["auditor"] = "FourStateA"
+        spec["claims"] = [
+            copy.deepcopy(spec["claims"][0]),  # admissible
+            {
+                "id": "claimUnestablishedGap",
+                "statement": "Regime A is more cost-effective without matched control or cost ledger.",
+                "quote": q_header,
+                "provenance": "reviewerStressTest",
+                "kind": "effectivenessClaim",
+                "method_node": "modelRegimeA",
+                "evaluation_node": "modelRegimeA",
+                "control_node": None,
+                "cost_ledger_node": None,
+                "cost_tag": "geometry3D",
+                "method_usage": [],
+                "control_usage": [],
+            },
+            copy.deepcopy(spec["claims"][2]),  # rejected (excludedChannelLeak)
+            {
+                "id": "claimNormativeOutOfScope",
+                "statement": "Whether releasing 3D models is ethically justified outweighs privacy risk.",
+                "quote": q_leak,
+                "provenance": "authorClaimed",
+                "kind": "outOfScope",
+                "reason": (
+                    "Normative policy/ethics balancing is outside structural operation-flow verification: "
+                    "even when all parties agree on the exact causal graph and empirical facts, weighing "
+                    "competing legal, moral, or institutional values requires human judgment rather than "
+                    "formal graph auditing."
+                ),
+            },
+        ]
+        # Anchor outOfScope to a distinct verbatim quote from sample_framework.md
+        spec["claims"][3]["quote"] = "Spatial Emergence Framework (Synthetic Benchmark Document)"
+
+        self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+
+        # Missing or empty `reason` on `outOfScope` MUST fail schema validation
+        bad_missing = copy.deepcopy(spec)
+        del bad_missing["claims"][3]["reason"]
+        self.assertTrue(any(e.code == "missing_key" for e in validate_spec(bad_missing, doc=doc)[0]))
+
+        bad_empty = copy.deepcopy(spec)
+        bad_empty["claims"][3]["reason"] = "   "
+        self.assertTrue(any(e.code == "invalid_string" for e in validate_spec(bad_empty, doc=doc)[0]))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp_a = Path(tmp) / "four_a.json"
+            sp_b = Path(tmp) / "four_b.json"
+            sp_a.write_text(json.dumps(spec), encoding="utf-8")
+            spec_b = copy.deepcopy(spec)
+            spec_b["auditor"] = "FourStateB"
+            sp_b.write_text(json.dumps(spec_b), encoding="utf-8")
+
+            out_run = Path(tmp) / "run_out"
+            rc = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(sp_a), "--out", str(out_run)])
+            self.assertEqual(rc, 0)
+
+            rep = json.loads((out_run / "FourStateA_report.json").read_text(encoding="utf-8"))
+            md = (out_run / "FourStateA_report.md").read_text(encoding="utf-8")
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+
+            self.assertEqual(by_id["claimA_clean_measured"]["verdict"], "admissible")
+            self.assertEqual(by_id["claimUnestablishedGap"]["verdict"], "unestablished")
+            self.assertEqual(by_id["claimC_depth_in_loss"]["verdict"], "rejected")
+            self.assertEqual(by_id["claimNormativeOutOfScope"]["verdict"], "outOfScope")
+            self.assertEqual(
+                by_id["claimNormativeOutOfScope"]["findings"],
+                [
+                    {
+                        "type": "claimOutOfScope",
+                        "reason": (
+                            "Normative policy/ethics balancing is outside structural operation-flow verification: "
+                            "even when all parties agree on the exact causal graph and empirical facts, weighing "
+                            "competing legal, moral, or institutional values requires human judgment rather than "
+                            "formal graph auditing."
+                        ),
+                    }
+                ],
+            )
+            self.assertIn("admissible (consistent within declared slice)", md)
+            self.assertIn("UNESTABLISHED (data/design stops at map edge)", md)
+            self.assertIn("OUT OF SCOPE", md)
+            self.assertIn("**[Out of Scope]** Normative policy/ethics balancing", md)
+            self.assertIn("Explicitly out-of-scope claim(s) (claimNormativeOutOfScope)", md)
+
+            # `compare` aligns all 4 verdict states cleanly
+            out_cmp = Path(tmp) / "cmp_out"
+            rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(sp_a), "--spec", str(sp_b), "--out", str(out_cmp)])
+            self.assertEqual(rc_cmp, 0)
+            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(comp["claim_comparison"]), 4)
+            self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
 
 
 if __name__ == "__main__":
