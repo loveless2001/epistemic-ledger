@@ -61,53 +61,14 @@ structure FlowGraph (ν σ : Type) where
   ops : List (Op ν σ)
   deriving DecidableEq, Repr
 
-/-- Whether a resource quantity represents actual measured expenditure versus a non-actual
-figure (request, allocation, cap, projection, or unknown prose mention) (v2.3.3). -/
-inductive UsageQuantityKind where
-  | actualSpend
-  | requestedOrAllocated
-  | estimatedOrProjected
-  | unknown
-  deriving DecidableEq, Repr
-
-/-- Evidence status binding a `ResourceUsage` line item (arm, source, unit, amount, receipt)
-to documentary evidence (v2.3.3). A claim CANNOT be certified `admissible` unless every cost-tag
-usage line item has `quantityKind = .actualSpend` AND `attribution = .verifiedRecord`.
-Plain prose without source-grounded structured billing/run receipt IDs is classified
-`.unverifiedProse` rather than `.verifiedRecord`. -/
-inductive UsageAttribution where
-  | verifiedRecord
-  | unverifiedProse
-  | contradicted
-  deriving DecidableEq, Repr
-
-/-- Quantitative resource expenditure for one distinct line item / receipt on an arm's cost source (v2.3.4).
-Binds each exact natural-number quantity (`unit`, `amount`) to the specific `arm`, `source` node,
-unique `receipt` identifier, underlying `chargeEventId` (linking e.g. a job log and its invoice to
-the same charge event), `quantityKind`, and mechanically checked `attribution` status. -/
+/-- Quantitative resource expenditure for one arm of an effectiveness comparison (v2.3.1).
+Binds each exact natural-number quantity (`unit`, `amount`) to the specific `source` node
+carrying `dimension` so numbers cannot float free of their measured cost source. -/
 structure ResourceUsage (ν σ : Type) where
-  arm : ν
   source : ν
-  receipt : String
-  chargeEventId : String
   dimension : σ
   unit : String
   amount : Nat
-  quantityKind : UsageQuantityKind
-  attribution : UsageAttribution
-  deriving DecidableEq, Repr
-
-/-- Period/scope reconciliation for one arm's total expenditure on `(dimension, unit)` (v2.3.4).
-Without a `.verifiedRecord` reconciliation covering `reconciledTotal = some tot` and every
-`expectedReceipts` ID referenced by that arm's graph/ledger, matching selected usage items only
-establishes "selected items sum equally", NOT "total actual spend is equal". -/
-structure ArmReconciliation (ν σ : Type) where
-  arm : ν
-  dimension : σ
-  unit : String
-  reconciledTotal : Option Nat
-  expectedReceipts : List String
-  attribution : UsageAttribution
   deriving DecidableEq, Repr
 
 /-- What a claim asserts about structural flow in the graph. -/
@@ -148,7 +109,6 @@ inductive FlowClaimKind (ν σ : Type) where
       (costTag : σ)
       (methodUsage : List (ResourceUsage ν σ))
       (controlUsage : List (ResourceUsage ν σ))
-      (reconciliations : List (ArmReconciliation ν σ))
   deriving DecidableEq, Repr
 
 /-- A claim audited against an operation graph. -/
@@ -206,30 +166,6 @@ inductive FlowFinding (ν σ : Type) where
   /-- Tier 2: a `ResourceUsage` entry cites `source` that does not belong to that arm's raw `costTag` origins,
       or a raw `costTag` source of an arm has no positive `ResourceUsage` entry. -/
   | unboundUsageSource (armNode : ν) (sourceNode : ν) (costTag : σ)
-  /-- Tier 2 (v2.3.2): a `ResourceUsage` entry has an empty or duplicated `receipt` ID (within an arm
-      or across arms), blocking double/triple-counting of the same expense. -/
-  | duplicateUsageReceipt (armNode : ν) (receiptId : String) (costTag : σ)
-  /-- Tier 2 (v2.3.4): two `ResourceUsage` entries link to the same underlying charge/run event
-      (e.g. `JOB-C1` and invoice `INV-C1` billing `JOB-C1`), blocking cross-document double counting. -/
-  | duplicateChargeEvent (armNode : ν) (eventId : String) (costTag : σ)
-  /-- Tier 2 (v2.3.3): a `ResourceUsage` entry records a non-actual quantity (e.g. requested,
-      allocated, estimated, or unknown) rather than actual measured spend. -/
-  | nonActualUsageQuantity (armNode : ν) (sourceNode : ν) (receiptId : String) (costTag : σ)
-      (qkind : UsageQuantityKind)
-  /-- Tier 2 (v2.3.3): a `ResourceUsage` entry's arm/source/unit/amount/receipt attribution is
-      `.unverifiedProse` or `.contradicted` (or its `arm` mismatches the arm list it appears in). -/
-  | unverifiedUsageAttribution (armNode : ν) (sourceNode : ν) (receiptId : String) (costTag : σ)
-      (status : UsageAttribution)
-  /-- Tier 2 (v2.3.4): selected usage items for `(armNode, costTag, unit)` lack a verified
-      scope/period total reconciliation (total actual spend is unverified). -/
-  | unreconciledArmTotal (armNode : ν) (costTag : σ) (unit : String)
-  /-- Tier 2 (v2.3.4): selected usage sum for `(armNode, costTag, unit)` disagrees with the
-      reconciled scope/period total (catches omitted sessions or double-counted items). -/
-  | reconciliationTotalMismatch (armNode : ν) (costTag : σ) (unit : String)
-      (selectedSum : Nat) (reconciledTotal : Nat)
-  /-- Tier 2 (v2.3.4): a structured receipt/job ID referenced by an arm's graph or reconciliation
-      manifest is missing from that arm's `ResourceUsage` list (catches cherry-picking). -/
-  | omittedLedgerReceipt (armNode : ν) (receiptId : String) (costTag : σ)
   /-- Tier 2: quantitative `costTag` budgets differ between `methodNode` and `controlNode` (e.g. 1 vs 100 GPU-hrs). -/
   | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
   deriving DecidableEq, Repr
@@ -394,95 +330,18 @@ def budgetsMatchNumerically
       let ca := usageAmountFor controlUsage costTag u
       ma > 0 && ma = ca
 
-/-- Check that every `ResourceUsage` entry for `costTag` is attributed to `armNode` as
-`.actualSpend` with `.verifiedRecord` status, binds to a real raw cost source of `armNode`,
+/-- Check that every `ResourceUsage` entry for `costTag` binds to a real raw cost source of `armNode`,
 and every raw cost source of `armNode` has at least one positive usage entry. -/
 def usageBindingFindings
     (armNode : ν) (armRawCosts : List ν) (us : List (ResourceUsage ν σ)) (costTag : σ) :
     List (FlowFinding ν σ) :=
-  let dimEntries := us.filter (fun u => u.dimension = costTag)
-  let qkindErrs := dimEntries.filterMap fun u =>
-    if u.quantityKind ≠ .actualSpend then
-      some (.nonActualUsageQuantity armNode u.source u.receipt costTag u.quantityKind)
-    else none
-  let attrErrs := dimEntries.filterMap fun u =>
-    if u.arm ≠ armNode then
-      some (.unverifiedUsageAttribution armNode u.source u.receipt costTag .contradicted)
-    else if u.attribution ≠ .verifiedRecord then
-      some (.unverifiedUsageAttribution armNode u.source u.receipt costTag u.attribution)
-    else none
-  let positive := dimEntries.filter (fun u => u.amount > 0)
-  let stray := positive.filterMap fun u =>
+  let relevant := us.filter (fun u => u.dimension = costTag && u.amount > 0)
+  let stray := relevant.filterMap fun u =>
     if u.source ∉ armRawCosts then some (.unboundUsageSource armNode u.source costTag) else none
-  let coveredSources := positive.map (·.source)
+  let coveredSources := relevant.map (·.source)
   let missing := armRawCosts.filterMap fun src =>
     if src ∉ coveredSources then some (.unboundUsageSource armNode src costTag) else none
-  qkindErrs ++ attrErrs ++ stray ++ missing
-
-/-- Structural-recursion helper checking for empty or duplicate receipt IDs across usage entries. -/
-def dupReceiptsAux (costTag : σ) (seen : List String) :
-    List (ν × String) → List (FlowFinding ν σ)
-  | [] => []
-  | (armNode, rid) :: rest =>
-    if rid.isEmpty || rid ∈ seen then
-      .duplicateUsageReceipt armNode rid costTag :: dupReceiptsAux costTag seen rest
-    else
-      dupReceiptsAux costTag (rid :: seen) rest
-
-/-- Every `costTag` usage line item across method and control must carry a non-empty, globally
-distinct `receipt` identifier AND distinct underlying `chargeEventId` so one expense (e.g. a
-job log and its invoice) cannot be summed multiple times. -/
-def dupChargeEventsAux (costTag : σ) (seen : List String) :
-    List (ν × String) → List (FlowFinding ν σ)
-  | [] => []
-  | (armNode, eid) :: rest =>
-    if eid.isEmpty || eid ∈ seen then
-      .duplicateChargeEvent armNode eid costTag :: dupChargeEventsAux costTag seen rest
-    else
-      dupChargeEventsAux costTag (eid :: seen) rest
-
-def duplicateReceiptFindings
-    (methodNode ctrl : ν) (methodUsage controlUsage : List (ResourceUsage ν σ)) (costTag : σ) :
-    List (FlowFinding ν σ) :=
-  let mDim := methodUsage.filter (fun u => u.dimension = costTag)
-  let cDim := controlUsage.filter (fun u => u.dimension = costTag)
-  let mRec := mDim.map (fun u => (methodNode, u.receipt))
-  let cRec := cDim.map (fun u => (ctrl, u.receipt))
-  let mEvt := mDim.map (fun u => (methodNode, u.chargeEventId))
-  let cEvt := cDim.map (fun u => (ctrl, u.chargeEventId))
-  dupReceiptsAux costTag [] (mRec ++ cRec) ++ dupChargeEventsAux costTag [] (mEvt ++ cEvt)
-
-/-- Verify that an arm's selected `costTag` usage items reconcile against a `.verifiedRecord`
-period/scope total and cover every expected receipt/job ID referenced by the arm's graph/ledger. -/
-def armReconciliationFindings
-    (armNode : ν) (armUsage : List (ResourceUsage ν σ))
-    (reconciliations : List (ArmReconciliation ν σ))
-    (costTag : σ) (units : List String) : List (FlowFinding ν σ) :=
-  units.flatMap fun u =>
-    let matching := reconciliations.filter (fun r => r.arm = armNode && r.dimension = costTag && r.unit = u)
-    let armDimUnit := armUsage.filter (fun x => x.dimension = costTag && x.unit = u)
-    let presentIds := (armDimUnit.map (·.receipt) ++ armDimUnit.map (·.chargeEventId)).eraseDups
-    let selectedSum := usageAmountFor armUsage costTag u
-    if matching.isEmpty then
-      [.unreconciledArmTotal armNode costTag u]
-    else
-      let hasVerifiedTotal :=
-        matching.any (fun r => r.attribution = .verifiedRecord && r.reconciledTotal.isSome)
-      let unrecErr : List (FlowFinding ν σ) :=
-        if !hasVerifiedTotal then [.unreconciledArmTotal armNode costTag u] else []
-      let perRecErrs : List (FlowFinding ν σ) :=
-        matching.flatMap fun r =>
-          let totErr : List (FlowFinding ν σ) :=
-            match r.reconciledTotal with
-            | none => []
-            | some tot =>
-              if selectedSum ≠ tot then [.reconciliationTotalMismatch armNode costTag u selectedSum tot]
-              else []
-          let omitErr : List (FlowFinding ν σ) :=
-            r.expectedReceipts.filterMap fun rid =>
-              if rid ∉ presentIds then some (.omittedLedgerReceipt armNode rid costTag) else none
-          totErr ++ omitErr
-      unrecErr ++ perRecErrs
+  stray ++ missing
 
 /-- Every upstream `SourceNode` carrying `tag` that can flow unblocked into `target`
 (excludes tags fabricated solely by intermediate operations). -/
@@ -613,7 +472,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         some (.undeclaredUpstreamSource s.node)
       else none
     undeclared ++ danglingInputsUpstream c.graph target
-  | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage reconciliations =>
+  | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage =>
     let methodRawCosts := rawSourceOrigins c.graph costTag methodNode
     let evalAnc := ancestors c.graph evaluationNode
     let costMissing : List (FlowFinding ν σ) :=
@@ -666,15 +525,9 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
             []
           else
             [.unmatchedControlBudget methodNode ctrl costTag]
-        let allUnits := (mUnits ++ cUnits).eraseDups
-        let recErr :=
-          armReconciliationFindings methodNode methodUsage reconciliations costTag allUnits
-            ++ armReconciliationFindings ctrl controlUsage reconciliations costTag allUnits
         let bindErr :=
           usageBindingFindings methodNode methodRawCosts methodUsage costTag
             ++ usageBindingFindings ctrl ctrlRawCosts controlUsage costTag
-            ++ duplicateReceiptFindings methodNode ctrl methodUsage controlUsage costTag
-            ++ recErr
         selfErr ++ depErr ++ unusedErr ++ budgetErr ++ bindErr ++ danglingInputsUpstream c.graph ctrl
     costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
@@ -910,18 +763,14 @@ If an `effectivenessClaim` is `admissible`, then:
       `ledger` without passing through `methodNode` or `controlNode`
       (`src ∈ rawSourceOriginsExcluding c.graph costTag (ledgerExcludedArms methodNode controlNode) ledger`),
   (4) `controlNode = some ctrl` with `ctrl ≠ methodNode`, `methodNode ∉ ancestors ctrl`,
-      `ctrl ∉ ancestors methodNode`, `ctrl ∈ ancestors evaluationNode`,
-      `budgetsMatchNumerically methodUsage controlUsage costTag = true`, AND every `costTag`
-      usage line item in `methodUsage` / `controlUsage` has matching `arm`,
-      `quantityKind = .actualSpend`, and `attribution = .verifiedRecord`
-      (no requested/allocated/estimated figures and no unverified prose mentions).
+      `ctrl ∉ ancestors methodNode`, `ctrl ∈ ancestors evaluationNode`, and
+      `budgetsMatchNumerically methodUsage controlUsage costTag = true`.
 -/
 theorem admissible_effectiveness_has_control_and_charged_cost
     (c : FlowClaim ν σ) (methodNode evaluationNode : ν)
     (controlNode costLedgerNode : Option ν) (costTag : σ)
     (methodUsage controlUsage : List (ResourceUsage ν σ))
-    (reconciliations : List (ArmReconciliation ν σ))
-    (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage reconciliations)
+    (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage)
     (hadm : flowVerdict c = .admissible) :
     (rawSourceOrigins c.graph costTag methodNode ≠ []) ∧
     (methodNode ∈ ancestors c.graph evaluationNode) ∧
@@ -938,11 +787,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       methodNode ∉ ancestors c.graph ctrl ∧
       ctrl ∉ ancestors c.graph methodNode ∧
       ctrl ∈ ancestors c.graph evaluationNode ∧
-      budgetsMatchNumerically methodUsage controlUsage costTag = true ∧
-      (∀ u ∈ methodUsage, u.dimension = costTag →
-        u.arm = methodNode ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord) ∧
-      (∀ u ∈ controlUsage, u.dimension = costTag →
-        u.arm = ctrl ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord)) := by
+      budgetsMatchNumerically methodUsage controlUsage costTag = true) := by
   unfold flowVerdict at hadm
   split at hadm
   · rename_i hempty
@@ -1018,11 +863,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
         methodNode ∉ ancestors c.graph ctrl ∧
         ctrl ∉ ancestors c.graph methodNode ∧
         ctrl ∈ ancestors c.graph evaluationNode ∧
-        budgetsMatchNumerically methodUsage controlUsage costTag = true ∧
-        (∀ u ∈ methodUsage, u.dimension = costTag →
-          u.arm = methodNode ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord) ∧
-        (∀ u ∈ controlUsage, u.dimension = costTag →
-          u.arm = ctrl ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord) := by
+        budgetsMatchNumerically methodUsage controlUsage costTag = true := by
       cases hc : controlNode with
       | none =>
         rw [hc] at hctrl
@@ -1038,11 +879,6 @@ theorem admissible_effectiveness_has_control_and_charged_cost
         have hdep := (List.append_eq_nil_iff.mp hc3).2
         have hunused := (List.append_eq_nil_iff.mp hc2).2
         have hbud := (List.append_eq_nil_iff.mp hc1).2
-        have hbind := (List.append_eq_nil_iff.mp hc0).2
-        have hbindNoRec := (List.append_eq_nil_iff.mp hbind).1
-        have hbindMC := (List.append_eq_nil_iff.mp hbindNoRec).1
-        have hbindM := (List.append_eq_nil_iff.mp hbindMC).1
-        have hbindC := (List.append_eq_nil_iff.mp hbindMC).2
         have hne : ctrl ≠ methodNode := by
           split at hself
           · simp at hself
@@ -1071,53 +907,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
           · split at hbud
             · assumption
             · simp at hbud
-        have hmethodAttr : ∀ u ∈ methodUsage, u.dimension = costTag →
-            u.arm = methodNode ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord := by
-          intro u hu hdim
-          unfold usageBindingFindings at hbindM
-          dsimp only at hbindM
-          have hqa := (List.append_eq_nil_iff.mp (List.append_eq_nil_iff.mp hbindM).1).1
-          have hqk := (List.append_eq_nil_iff.mp hqa).1
-          have hattr := (List.append_eq_nil_iff.mp hqa).2
-          have huFilt : u ∈ methodUsage.filter (fun x => decide (x.dimension = costTag)) :=
-            List.mem_filter.mpr ⟨hu, decide_eq_true hdim⟩
-          have hqfm := List.filterMap_eq_nil_iff.mp hqk u huFilt
-          have hqEq : u.quantityKind = .actualSpend := by
-            split at hqfm
-            · simp at hqfm
-            · rename_i hneQ
-              exact Decidable.byContradiction hneQ
-          have hfm := List.filterMap_eq_nil_iff.mp hattr u huFilt
-          split at hfm
-          · simp at hfm
-          · split at hfm
-            · simp at hfm
-            · rename_i hneArm hneAttr
-              exact ⟨Decidable.byContradiction hneArm, hqEq, Decidable.byContradiction hneAttr⟩
-        have hctrlAttr : ∀ u ∈ controlUsage, u.dimension = costTag →
-            u.arm = ctrl ∧ u.quantityKind = .actualSpend ∧ u.attribution = .verifiedRecord := by
-          intro u hu hdim
-          unfold usageBindingFindings at hbindC
-          dsimp only at hbindC
-          have hqa := (List.append_eq_nil_iff.mp (List.append_eq_nil_iff.mp hbindC).1).1
-          have hqk := (List.append_eq_nil_iff.mp hqa).1
-          have hattr := (List.append_eq_nil_iff.mp hqa).2
-          have huFilt : u ∈ controlUsage.filter (fun x => decide (x.dimension = costTag)) :=
-            List.mem_filter.mpr ⟨hu, decide_eq_true hdim⟩
-          have hqfm := List.filterMap_eq_nil_iff.mp hqk u huFilt
-          have hqEq : u.quantityKind = .actualSpend := by
-            split at hqfm
-            · simp at hqfm
-            · rename_i hneQ
-              exact Decidable.byContradiction hneQ
-          have hfm := List.filterMap_eq_nil_iff.mp hattr u huFilt
-          split at hfm
-          · simp at hfm
-          · split at hfm
-            · simp at hfm
-            · rename_i hneArm hneAttr
-              exact ⟨Decidable.byContradiction hneArm, hqEq, Decidable.byContradiction hneAttr⟩
-        exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval, hmatch, hmethodAttr, hctrlAttr⟩
+        exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval, hmatch⟩
     exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
   · cases hadm
 

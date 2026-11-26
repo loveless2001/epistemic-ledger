@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pipeline.schema import compute_claim_usage_details
-
 ALLOWED_AXIOMS = frozenset({"propext", "Quot.sound"})
 AXIOM_LINE_RE = re.compile(r"^'([^']+)' depends on axioms: \[([^\]]*)\]$")
 NO_AXIOM_LINE_RE = re.compile(r"^'([^']+)' does not depend on any axioms$")
@@ -63,37 +61,14 @@ def _lean_op_kind(op: dict[str, Any]) -> str:
     return f".{kind} {_lean_tag_list(op['introduces'])}"
 
 
-def _lean_usage_list(usages: list[dict[str, Any]], details: list[tuple[str, str, str]]) -> str:
+def _lean_usage_list(usages: list[dict[str, Any]]) -> str:
     if not usages:
         return "[]"
-    items = [
-        f'⟨.{u["arm"]}, .{u["source"]}, "{escape_lean_str(u["receipt"])}", "{escape_lean_str(evt)}", '
-        f'.{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}, .{qkind}, .{attr}⟩'
-        for u, (evt, qkind, attr) in zip(usages, details)
-    ]
+    items = [f'⟨.{u["source"]}, .{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}⟩' for u in usages]
     return "[" + ", ".join(items) + "]"
 
 
-def _lean_str_list(xs: list[str]) -> str:
-    if not xs:
-        return "[]"
-    return "[" + ", ".join(f'"{escape_lean_str(x)}"' for x in xs) + "]"
-
-
-def _lean_reconciliation_list(recs: list[dict[str, Any]]) -> str:
-    if not recs:
-        return "[]"
-    items = []
-    for r in recs:
-        tot = "none" if r["reconciled_total"] is None else f'(some {r["reconciled_total"]})'
-        items.append(
-            f'⟨.{r["arm"]}, .{r["dimension"]}, "{escape_lean_str(r["unit"])}", {tot}, '
-            f'{_lean_str_list(r["expected_receipts"])}, .{r["attribution"]}⟩'
-        )
-    return "[" + ", ".join(items) + "]"
-
-
-def _lean_claim_kind(spec: dict[str, Any], cl: dict[str, Any]) -> str:
+def _lean_claim_kind(cl: dict[str, Any]) -> str:
     kind = cl["kind"]
     if kind == "emergesWithout":
         return f".emergesWithout .{cl['target']} .{cl['tag']}"
@@ -106,11 +81,9 @@ def _lean_claim_kind(spec: dict[str, Any], cl: dict[str, Any]) -> str:
     if kind == "effectivenessClaim":
         ctrl = "none" if cl["control_node"] is None else f"(some .{cl['control_node']})"
         ledger = "none" if cl["cost_ledger_node"] is None else f"(some .{cl['cost_ledger_node']})"
-        m_det, c_det, recs = compute_claim_usage_details(spec, cl)
-        mu = _lean_usage_list(cl["method_usage"], m_det)
-        cu = _lean_usage_list(cl["control_usage"], c_det)
-        rl = _lean_reconciliation_list(recs)
-        return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu} {rl}"
+        mu = _lean_usage_list(cl["method_usage"])
+        cu = _lean_usage_list(cl["control_usage"])
+        return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu}"
     return f".conditionalFlow .{cl['target']} {_lean_node_list(cl['declared_sources'])}"
 
 
@@ -145,17 +118,6 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         "def invName : Invariance → String",
         '  | .shown => "shown"',
         '  | .notShown => "notShown"',
-        '  | .contradicted => "contradicted"',
-        "",
-        "def qkindName : UsageQuantityKind → String",
-        '  | .actualSpend => "actualSpend"',
-        '  | .requestedOrAllocated => "requestedOrAllocated"',
-        '  | .estimatedOrProjected => "estimatedOrProjected"',
-        '  | .unknown => "unknown"',
-        "",
-        "def attrName : UsageAttribution → String",
-        '  | .verifiedRecord => "verifiedRecord"',
-        '  | .unverifiedProse => "unverifiedProse"',
         '  | .contradicted => "contradicted"',
         "",
         "def verdictName : FlowVerdict → String",
@@ -236,30 +198,6 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .unboundUsageSource armNode srcNode costTag =>',
         '      "{\\"type\\":\\"unboundUsageSource\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
         '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
-        '  | .duplicateUsageReceipt armNode rid costTag =>',
-        '      "{\\"type\\":\\"duplicateUsageReceipt\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"receipt\\":" ++ jsonStr rid ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
-        '  | .duplicateChargeEvent armNode eid costTag =>',
-        '      "{\\"type\\":\\"duplicateChargeEvent\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"event\\":" ++ jsonStr eid ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
-        '  | .nonActualUsageQuantity armNode srcNode rid costTag qk =>',
-        '      "{\\"type\\":\\"nonActualUsageQuantity\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"receipt\\":" ++ jsonStr rid ++',
-        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ ",\\"quantity_kind\\":" ++ jsonStr (qkindName qk) ++ "}"',
-        '  | .unverifiedUsageAttribution armNode srcNode rid costTag status =>',
-        '      "{\\"type\\":\\"unverifiedUsageAttribution\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"receipt\\":" ++ jsonStr rid ++',
-        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ ",\\"status\\":" ++ jsonStr (attrName status) ++ "}"',
-        '  | .unreconciledArmTotal armNode costTag unit =>',
-        '      "{\\"type\\":\\"unreconciledArmTotal\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ ",\\"unit\\":" ++ jsonStr unit ++ "}"',
-        '  | .reconciliationTotalMismatch armNode costTag unit selSum recTot =>',
-        '      "{\\"type\\":\\"reconciliationTotalMismatch\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ ",\\"unit\\":" ++ jsonStr unit ++',
-        '      ",\\"selected_sum\\":" ++ toString selSum ++ ",\\"reconciled_total\\":" ++ toString recTot ++ "}"',
-        '  | .omittedLedgerReceipt armNode rid costTag =>',
-        '      "{\\"type\\":\\"omittedLedgerReceipt\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
-        '      ",\\"receipt\\":" ++ jsonStr rid ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
         '  | .unmatchedControlBudget methodNode ctrl costTag =>',
         '      "{\\"type\\":\\"unmatchedControlBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
@@ -297,7 +235,7 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
             f"def {cl['id']} : FlowClaim Node Tag where",
             f'  statement := "{stmt_esc}"',
             "  graph := graph",
-            f"  kind := {_lean_claim_kind(spec, cl)}",
+            f"  kind := {_lean_claim_kind(cl)}",
             "",
         ]
     lines += ["end Claims", ""]
@@ -348,29 +286,6 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.unquantifiedBudget Node.{f['method']} Tag.{f['cost_tag']}"
     if ft == "unboundUsageSource":
         return f"FlowFinding.unboundUsageSource Node.{f['arm']} Node.{f['source']} Tag.{f['cost_tag']}"
-    if ft == "duplicateUsageReceipt":
-        return f'FlowFinding.duplicateUsageReceipt Node.{f["arm"]} "{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]}'
-    if ft == "duplicateChargeEvent":
-        return f'FlowFinding.duplicateChargeEvent Node.{f["arm"]} "{escape_lean_str(f["event"])}" Tag.{f["cost_tag"]}'
-    if ft == "nonActualUsageQuantity":
-        return (
-            f'FlowFinding.nonActualUsageQuantity Node.{f["arm"]} Node.{f["source"]} '
-            f'"{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]} UsageQuantityKind.{f["quantity_kind"]}'
-        )
-    if ft == "unverifiedUsageAttribution":
-        return (
-            f'FlowFinding.unverifiedUsageAttribution Node.{f["arm"]} Node.{f["source"]} '
-            f'"{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]} UsageAttribution.{f["status"]}'
-        )
-    if ft == "unreconciledArmTotal":
-        return f'FlowFinding.unreconciledArmTotal Node.{f["arm"]} Tag.{f["cost_tag"]} "{escape_lean_str(f["unit"])}"'
-    if ft == "reconciliationTotalMismatch":
-        return (
-            f'FlowFinding.reconciliationTotalMismatch Node.{f["arm"]} Tag.{f["cost_tag"]} '
-            f'"{escape_lean_str(f["unit"])}" {f["selected_sum"]} {f["reconciled_total"]}'
-        )
-    if ft == "omittedLedgerReceipt":
-        return f'FlowFinding.omittedLedgerReceipt Node.{f["arm"]} "{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]}'
     if ft == "unmatchedControlBudget":
         return f"FlowFinding.unmatchedControlBudget Node.{f['method']} Node.{f['control']} Tag.{f['cost_tag']}"
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")

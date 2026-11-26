@@ -54,41 +54,6 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unquantified Budget]** `{f['method']}` lacks numeric `{f['cost_tag']}` resource usage quantities for both arms"
     if ft == "unboundUsageSource":
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
-    if ft == "duplicateUsageReceipt":
-        return f"**[Duplicate Usage Receipt]** arm `{f['arm']}` reuses or omits receipt `{f['receipt']}` for `{f['cost_tag']}`"
-    if ft == "duplicateChargeEvent":
-        return f"**[Duplicate Charge Event]** arm `{f['arm']}` double-counts linked charge/run event `{f['event']}` across documents for `{f['cost_tag']}`"
-    if ft == "nonActualUsageQuantity":
-        return (
-            f"**[Non-Actual Usage Quantity]** usage item `{f['receipt']}` on `{f['arm']}` "
-            f"(`{f['source']}`, `{f['cost_tag']}`) is `{f.get('quantity_kind', 'unknown')}`, not actual measured spend"
-        )
-    if ft == "unverifiedUsageAttribution":
-        status = f.get("status", "unverifiedProse")
-        if status == "contradicted":
-            return (
-                f"**[Contradicted Budget Attribution]** usage item `{f['receipt']}` on `{f['arm']}` "
-                f"(`{f['source']}`, `{f['cost_tag']}`) is contradicted by its quote (wrong arm/source, non-actual quantity, negated spend, or prose restatement)"
-            )
-        return (
-            f"**[Unverified Prose Budget]** usage item `{f['receipt']}` on `{f['arm']}` "
-            f"(`{f['source']}`, `{f['cost_tag']}`) lacks a source-grounded structured billing/run receipt or unambiguous arm attribution — actual budget parity unverified"
-        )
-    if ft == "unreconciledArmTotal":
-        return (
-            f"**[Unreconciled Arm Total]** selected `{f['cost_tag']}` (`{f['unit']}`) items for `{f['arm']}` "
-            f"lack a verified period/scope total reconciliation — total actual spend unverified"
-        )
-    if ft == "reconciliationTotalMismatch":
-        return (
-            f"**[Reconciliation Total Mismatch]** selected `{f['cost_tag']}` (`{f['unit']}`) sum for `{f['arm']}` "
-            f"({f['selected_sum']}) disagrees with reconciled scope total ({f['reconciled_total']})"
-        )
-    if ft == "omittedLedgerReceipt":
-        return (
-            f"**[Omitted Ledger Receipt]** receipt `{f['receipt']}` referenced by `{f['arm']}` graph/ledger "
-            f"is missing from `{f['cost_tag']}` usage"
-        )
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
     return json.dumps(f)
@@ -98,25 +63,14 @@ def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         [
             {
-                "arm": u.get("arm"),
                 "source": u.get("source"),
-                "receipt": u.get("receipt"),
                 "dimension": u.get("dimension"),
                 "unit": u.get("unit"),
                 "amount": u.get("amount"),
-                "quantity_kind": u.get("quantity_kind", "actualSpend"),
             }
             for u in usages
         ],
-        key=lambda x: (
-            str(x["arm"]),
-            str(x["source"]),
-            str(x["receipt"]),
-            str(x["dimension"]),
-            str(x["unit"]),
-            int(x["amount"] or 0),
-            str(x["quantity_kind"]),
-        ),
+        key=lambda x: (str(x["source"]), str(x["dimension"]), str(x["unit"]), int(x["amount"] or 0)),
     )
 
 
@@ -145,21 +99,19 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         sig["method_usage"] = _norm_usage_key(meta["method_usage"])
     if "control_usage" in meta:
         sig["control_usage"] = _norm_usage_key(meta["control_usage"])
-    if "reconciliations" in meta:
-        sig["reconciliations"] = sorted(
-            [
-                {
-                    "arm": r.get("arm"),
-                    "dimension": r.get("dimension"),
-                    "unit": r.get("unit"),
-                    "reconciled_total": r.get("reconciled_total"),
-                    "receipt": r.get("receipt"),
-                }
-                for r in meta["reconciliations"]
-            ],
-            key=lambda x: (str(x["arm"]), str(x["dimension"]), str(x["unit"]), str(x["receipt"])),
-        )
     return sig
+
+
+OUT_OF_SCOPE_CORE = (
+    "Semantic interpretation of quotes (whether a quote justifies a tag, causal edge, or statistical test) "
+    "is out of scope for Lean verification and requires auditor/human review."
+)
+OUT_OF_SCOPE_ACCOUNTING = (
+    "Financial/bookkeeping verification (invoice reconciliation, billing-period completeness, "
+    "actual-vs-requested prose semantics, and cross-document deduplication) is out of scope for "
+    "EpistemicLedger; Lean checks structural control independence, forget-proof cost-source coverage, "
+    "and arithmetic parity of declared (source, unit, amount) entries."
+)
 
 
 def build_single_report_dict(
@@ -171,6 +123,12 @@ def build_single_report_dict(
     auditor_label: str | None = None,
 ) -> dict[str, Any]:
     declared_auditor = spec.get("auditor") if isinstance(spec, dict) else "invalid"
+    has_effectiveness = isinstance(spec, dict) and any(
+        isinstance(c, dict) and c.get("kind") == "effectivenessClaim" for c in spec.get("claims", [])
+    )
+    out_of_scope = [OUT_OF_SCOPE_CORE]
+    if has_effectiveness:
+        out_of_scope.append(OUT_OF_SCOPE_ACCOUNTING)
     return {
         "schema_version": "epistemic-ledger-report/v2.1",
         "document": {
@@ -182,6 +140,7 @@ def build_single_report_dict(
         "declared_auditor": declared_auditor,
         "paper_title": spec.get("paper_title", "") if isinstance(spec, dict) else "",
         "grounding_and_schema_ok": len(errors) == 0,
+        "out_of_scope": out_of_scope,
         "validation_errors": [
             {"path": e.path, "code": e.code, "message": e.message} for e in errors
         ],
@@ -263,25 +222,11 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
+        if meta.get("kind") == "effectivenessClaim" and (meta.get("method_usage") or meta.get("control_usage")):
+            lines.append(f"- **Out of scope (accounting/bookkeeping):** {OUT_OF_SCOPE_ACCOUNTING}")
         if not c["findings"]:
             lines.append("- **Findings:** None (clean under checked rules).")
         else:
-            if (
-                meta.get("kind") == "effectivenessClaim"
-                and all(
-                    (f.get("type") == "unverifiedUsageAttribution" and f.get("status") == "unverifiedProse")
-                    or f.get("type") == "unreconciledArmTotal"
-                    for f in c["findings"]
-                )
-            ):
-                if any(f.get("type") == "unverifiedUsageAttribution" for f in c["findings"]):
-                    lines.append(
-                        "- **Budget status:** Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED** (plain prose without source-grounded structured billing/run receipt IDs)."
-                    )
-                else:
-                    lines.append(
-                        "- **Budget status:** Selected verified line items sum to equal totals, but **total actual spend is UNVERIFIED / UNRECONCILED** (missing verified period/scope total reconciliation for one or both arms)."
-                    )
             lines.append("- **Findings:**")
             for f in c["findings"]:
                 lines.append(f"  - {format_finding_human(f)}")
@@ -388,11 +333,7 @@ def build_comparison_report(
                         effectiveness_controls.add((str(sig.get("control_node")), str(sig.get("cost_ledger_node"))))
                         usage_signatures.add(
                             json.dumps(
-                                {
-                                    "m": sig.get("method_usage", []),
-                                    "c": sig.get("control_usage", []),
-                                    "r": sig.get("reconciliations", []),
-                                },
+                                {"m": sig.get("method_usage", []), "c": sig.get("control_usage", [])},
                                 sort_keys=True,
                             )
                         )
@@ -590,15 +531,14 @@ def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA
 Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.3`.
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the complete integer `amount` paired with `unit` must appear inside its `quote` (disjoint document spans across distinct line items). Do NOT paraphrase or invent numbers.
+1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the exact numeric `amount` must appear inside its `quote`. Do NOT paraphrase or invent numbers.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
 4. Set `"provenance"` on every claim: `"authorClaimed"` if explicitly claimed by the authors, or `"reviewerStressTest"` if testing a reviewer-posed counterfactual question.
 5. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`).
 6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
-   - `method_usage` and `control_usage`: lists of `{{"arm": "<arm_node>", "source": "<source_node>", "receipt": "<TXN-.../INV-.../RUN-...>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quantity_kind": "actualSpend|requestedOrAllocated|estimatedOrProjected|unknown", "quote": "<verbatim quote with intact source-doc number + unit + receipt ID>"}}` (empty `[]` if unquantified; plain prose without source-grounded structured billing/run receipt IDs is flagged `unverifiedProse` rather than certified `admissible`).
-   - `reconciliations` (optional): list of `{{"arm": "<arm_node>", "dimension": "<cost_tag>", "unit": "<str>", "reconciled_total": <int>, "receipt": "<LEDGER-...>", "quote": "<verbatim period/scope total summary quote>"}}` reconciling total actual spend per arm (without verified reconciliation, selected lines alone are reported as unreconciled).
+   - `method_usage` and `control_usage`: lists of `{{"source": "<node>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing amount>"}}` (empty `[]` if unquantified in the paper).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 
