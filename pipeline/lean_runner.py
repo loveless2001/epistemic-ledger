@@ -68,6 +68,12 @@ def _lean_usage_list(usages: list[dict[str, Any]]) -> str:
     return "[" + ", ".join(items) + "]"
 
 
+def _lean_hypothesis_list(hyps: list[dict[str, Any]]) -> str:
+    if not hyps:
+        return "[]"
+    return "[" + ", ".join(f"⟨.{h['tag']}, .{h['status']}⟩" for h in hyps) + "]"
+
+
 def _lean_claim_kind(cl: dict[str, Any]) -> str:
     kind = cl["kind"]
     if kind == "emergesWithout":
@@ -84,6 +90,8 @@ def _lean_claim_kind(cl: dict[str, Any]) -> str:
         mu = _lean_usage_list(cl["method_usage"])
         cu = _lean_usage_list(cl["control_usage"])
         return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu}"
+    if kind == "theoremApplication":
+        return f".theoremApplication .{cl['target']} {_lean_hypothesis_list(cl['hypotheses'])} {_lean_tag_list(cl['declared_bets'])}"
     if kind == "outOfScope":
         return f'.outOfScope "{escape_lean_str(cl["reason"])}"'
     return f".conditionalFlow .{cl['target']} {_lean_node_list(cl['declared_sources'])}"
@@ -205,6 +213,12 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .unmatchedControlBudget methodNode ctrl costTag =>',
         '      "{\\"type\\":\\"unmatchedControlBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
+        '  | .hypothesisKnownFalse target hyp =>',
+        '      "{\\"type\\":\\"hypothesisKnownFalse\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
+        '      ",\\"hypothesis\\":" ++ jsonStr (tagName hyp) ++ "}"',
+        '  | .undeclaredHypothesisBet target hyp =>',
+        '      "{\\"type\\":\\"undeclaredHypothesisBet\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
+        '      ",\\"hypothesis\\":" ++ jsonStr (tagName hyp) ++ "}"',
         '  | .claimOutOfScope reason =>',
         '      "{\\"type\\":\\"claimOutOfScope\\",\\"reason\\":" ++ jsonStr reason ++ "}"',
         "",
@@ -294,6 +308,10 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.unboundUsageSource Node.{f['arm']} Node.{f['source']} Tag.{f['cost_tag']}"
     if ft == "unmatchedControlBudget":
         return f"FlowFinding.unmatchedControlBudget Node.{f['method']} Node.{f['control']} Tag.{f['cost_tag']}"
+    if ft == "hypothesisKnownFalse":
+        return f"FlowFinding.hypothesisKnownFalse Node.{f['target']} Tag.{f['hypothesis']}"
+    if ft == "undeclaredHypothesisBet":
+        return f"FlowFinding.undeclaredHypothesisBet Node.{f['target']} Tag.{f['hypothesis']}"
     if ft == "claimOutOfScope":
         return f'FlowFinding.claimOutOfScope "{escape_lean_str(f["reason"])}"'
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")

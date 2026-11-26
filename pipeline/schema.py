@@ -71,6 +71,7 @@ LEAN_RESERVED = frozenset(
 VALID_ORIGINS = frozenset({"setByExperimenter", "measured"})
 VALID_OP_KINDS = frozenset({"transform", "partition", "lossy", "forget"})
 VALID_INVARIANCE = frozenset({"shown", "notShown", "contradicted"})
+VALID_DISCHARGE = frozenset({"discharged", "bet", "knownFalse"})
 VALID_CLAIM_KINDS = frozenset(
     {
         "emergesWithout",
@@ -79,6 +80,7 @@ VALID_CLAIM_KINDS = frozenset(
         "uniqueRecovery",
         "conditionalFlow",
         "effectivenessClaim",
+        "theoremApplication",
         "outOfScope",
     }
 )
@@ -489,6 +491,8 @@ def validate_spec(
                     "control_usage",
                 }
                 base_opt = base_opt | OUT_OF_SCOPE_EFFECTIVENESS_KEYS
+            elif kind == "theoremApplication":
+                extra = {"target", "hypotheses", "declared_bets"}
             elif kind == "outOfScope":
                 extra = {"reason"}
             else:  # conditionalFlow
@@ -600,6 +604,53 @@ def validate_spec(
                     )
                 check_usage_list(cl["method_usage"], f"{p}.method_usage")
                 check_usage_list(cl["control_usage"], f"{p}.control_usage")
+            elif kind == "theoremApplication":
+                check_defined_endpoint(cl["target"], f"{p}.target")
+                hyps = cl["hypotheses"]
+                if not isinstance(hyps, list) or len(hyps) == 0:
+                    errors.append(
+                        ValidationErrorItem(
+                            f"{p}.hypotheses",
+                            "empty_list",
+                            "theoremApplication must declare at least one hypothesis",
+                        )
+                    )
+                else:
+                    seen_hyps: set[str] = set()
+                    for j, h in enumerate(hyps):
+                        hp = f"{p}.hypotheses[{j}]"
+                        if not _check_allowed_keys(
+                            h,
+                            {"tag", "status", "quote", "rationale"},
+                            {"tag", "status", "quote"},
+                            hp,
+                            errors,
+                        ):
+                            continue
+                        if not isinstance(h["tag"], str) or h["tag"] not in tag_set:
+                            errors.append(ValidationErrorItem(f"{hp}.tag", "unknown_tag", f"Unknown tag {h['tag']!r}"))
+                        else:
+                            if h["tag"] in seen_hyps:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{hp}.tag",
+                                        "duplicate_hypothesis",
+                                        f"Duplicate hypothesis tag {h['tag']!r} in claim {cl.get('id')!r}",
+                                    )
+                                )
+                            seen_hyps.add(h["tag"])
+                        if h["status"] not in VALID_DISCHARGE:
+                            errors.append(
+                                ValidationErrorItem(
+                                    f"{hp}.status",
+                                    "invalid_enum",
+                                    f"status must be in {sorted(VALID_DISCHARGE)}",
+                                )
+                            )
+                        check_quote(h["quote"], f"{hp}.quote")
+                        if "rationale" in h:
+                            _check_nonempty_str(h["rationale"], f"{hp}.rationale", errors)
+                check_tag_list(cl["declared_bets"], f"{p}.declared_bets")
             elif kind == "outOfScope":
                 _check_nonempty_str(cl["reason"], f"{p}.reason", errors)
             else:  # conditionalFlow

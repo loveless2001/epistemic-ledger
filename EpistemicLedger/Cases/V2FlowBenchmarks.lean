@@ -736,6 +736,94 @@ theorem unaccessed_recovery_is_unestablished_in_epistemic_verdict :
     epistemicVerdict unaccessedRecoveryClaim = .unestablished := by
   decide
 
+/-! #### Codex `#27370` Finding 2 Regression Tests: `(x, round(x))` and `uniqueRecovery` via `.notShown` -/
+
+/-- Codex `#27370` 2a: output is pair `(x, round(x))` — direct lossless path from `x` exists,
+    so `uniqueRecovery` on `x` is `admissible` even though a parallel branch rounds `x`. -/
+def pairRawAndRoundedSignalClaim : FlowClaim RNode RTag where
+  statement := "Recovering raw signal x from pair (x, round(x))."
+  graph :=
+    ⟨[⟨.srcTag, .measured, [.signal]⟩],
+     [⟨"round_signal", [.srcTag], .roundedNoise, .lossy []⟩,
+      ⟨"make_pair_raw_and_rounded", [.srcTag, .roundedNoise], .pairOut, .transform []⟩]⟩
+  kind := .uniqueRecovery .pairOut .signal
+
+/-- Codex `#27370` 2b: sole access path passes through `.forget .signal .notShown` ->
+    `unestablished` (neither `admissible` nor `rejected`), with `failedForgetOnPath`. -/
+def recoveryThroughNotShownForgetClaim : FlowClaim RNode RTag where
+  statement := "Claiming unique recovery when the sole access path crosses an unverified forget."
+  graph :=
+    ⟨[⟨.srcTag, .measured, [.signal]⟩],
+     [⟨"unverified_forget", [.srcTag], .forgotten, .forget .signal .notShown⟩,
+      ⟨"readout", [.forgotten], .target, .transform []⟩]⟩
+  kind := .uniqueRecovery .target .signal
+
+theorem pair_raw_and_rounded_signal_admissible :
+    epistemicVerdict pairRawAndRoundedSignalClaim = .admissible := by
+  decide
+
+theorem recovery_through_notShown_is_unestablished :
+    flowVerdict recoveryThroughNotShownForgetClaim = .rejected ∧
+    epistemicVerdict recoveryThroughNotShownForgetClaim = .unestablished ∧
+    auditFlow recoveryThroughNotShownForgetClaim =
+      [FlowFinding.failedForgetOnPath "unverified_forget" RTag.signal Invariance.notShown] := by
+  decide
+
+/-! #### Rule 3 (`theoremApplication`) Tests: JEPA & Mathematical Preconditions -/
+
+inductive MathNode where
+  | realWorld | theoremOut
+  deriving DecidableEq, Repr
+
+inductive MathTag where
+  | injectiveRendering | populationMinimizers | grh | nonzeroDenominator
+  deriving DecidableEq, Repr
+
+def mathGraph : FlowGraph MathNode MathTag :=
+  ⟨[⟨.realWorld, .measured, []⟩],
+   [⟨"apply_theorem", [.realWorld], .theoremOut, .transform []⟩]⟩
+
+/-- JEPA Theorem 1 applied to real lossy modalities: `injectiveRendering` is `.knownFalse` -> `rejected`. -/
+def jepaKnownFalseHypClaim : FlowClaim MathNode MathTag where
+  statement := "JEPA Theorem 1 holds on real lossy cameras."
+  graph := mathGraph
+  kind := .theoremApplication .theoremOut
+    [⟨.injectiveRendering, .knownFalse⟩, ⟨.populationMinimizers, .bet⟩]
+    [.injectiveRendering] -- even declaring a knownFalse hypothesis never excuses it!
+
+/-- Math theorem assuming GRH with GRH openly declared -> `admissible`. -/
+def mathDeclaredBetClaim : FlowClaim MathNode MathTag where
+  statement := "Assuming GRH, theorem X holds for all n >= N0."
+  graph := mathGraph
+  kind := .theoremApplication .theoremOut
+    [⟨.grh, .bet⟩, ⟨.nonzeroDenominator, .discharged⟩]
+    [.grh]
+
+/-- Math abstract dropping GRH (unchecked `.bet` omitted from `declaredBets`) -> `unestablished`. -/
+def mathUndeclaredBetClaim : FlowClaim MathNode MathTag where
+  statement := "Unconditionally, theorem X holds."
+  graph := mathGraph
+  kind := .theoremApplication .theoremOut
+    [⟨.grh, .bet⟩, ⟨.nonzeroDenominator, .discharged⟩]
+    []
+
+theorem jepa_known_false_hypothesis_rejected :
+    epistemicVerdict jepaKnownFalseHypClaim = .rejected ∧
+    FlowFinding.hypothesisKnownFalse MathNode.theoremOut MathTag.injectiveRendering
+      ∈ auditFlow jepaKnownFalseHypClaim := by
+  decide
+
+theorem math_declared_bet_admissible :
+    epistemicVerdict mathDeclaredBetClaim = .admissible := by
+  decide
+
+theorem math_undeclared_bet_unestablished :
+    flowVerdict mathUndeclaredBetClaim = .rejected ∧
+    epistemicVerdict mathUndeclaredBetClaim = .unestablished ∧
+    auditFlow mathUndeclaredBetClaim =
+      [FlowFinding.undeclaredHypothesisBet MathNode.theoremOut MathTag.grh] := by
+  decide
+
 end EpistemicVerdictTests
 
 end EpistemicLedger.Cases.V2FlowBenchmarks

@@ -1033,11 +1033,193 @@ class PipelineTests(unittest.TestCase):
             comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
             self.assertEqual(len(comp["claim_comparison"]), 4)
             self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
-            self.assertEqual(comp["claim_comparison"][0]["quote_match_mode"], "span_overlap")
-            self.assertGreater(comp["claim_comparison"][0]["min_span_iou"], 0.95)
-            self.assertEqual(comp["claim_comparison"][1]["quote_match_mode"], "exact")
+            by_cid = {r["by_auditor"]["SpanA"]["claim_id"]: r for r in comp["claim_comparison"]}
+            self.assertEqual(by_cid["soleNotShown"]["quote_match_mode"], "span_overlap")
+            self.assertGreater(by_cid["soleNotShown"]["min_span_iou"], 0.95)
+            self.assertEqual(by_cid["notShownPlusBypass"]["quote_match_mode"], "exact")
             comp_md = (out / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("span overlap, IoU=", comp_md)
+            self.assertIn("pairwise min IoU=", comp_md)
+
+    def test_codex_27370_order_independent_compare_unique_recovery_and_rule3_theorem_application(self) -> None:
+        """Regression tests for Codex `#27370` + Rule 3 (`theoremApplication`) end-to-end:
+        1. Order-independent `compare`: 3-sentence doc where M bridges L and R (`IoU(M,L)=IoU(M,R)>0.5`,
+           `IoU(L,R)<=0.5`) yields identical `AMBIGUOUS` (`ambiguous_span_chain`, true pairwise `min_span_iou`)
+           under both `[M, L, R]` and `[L, R, M]` `--spec` orderings.
+        2. `uniqueRecovery`:
+           - `(x, round(x))` with direct lossless path -> `admissible`,
+           - sole access through `.forget x .notShown` -> `unestablished` (`failedForgetOnPath`).
+        3. Rule 3 (`theoremApplication`):
+           - `.knownFalse` hypothesis -> `rejected` (even if listed in `declared_bets`),
+           - undeclared `.bet` -> `unestablished` (`undeclaredHypothesisBet`),
+           - `.discharged` + declared `.bet` -> `admissible`,
+           - empty `hypotheses` or duplicate hypothesis tag -> schema error.
+        """
+        doc_text = (
+            "The first cohort improved. Both cohorts were measured. The second cohort declined.\n"
+            "Theorem 1 assumes injective rendering and population minimizers, whereas real cameras are lossy.\n"
+            "Assuming GRH, the bound holds for all n >= N0.\n"
+        )
+        q_m = "The first cohort improved. Both cohorts were measured. The second cohort declined."
+        q_l = "The first cohort improved. Both cohorts were measured."
+        q_r = "Both cohorts were measured. The second cohort declined."
+        q_jepa = "Theorem 1 assumes injective rendering and population minimizers, whereas real cameras are lossy."
+        q_grh = "Assuming GRH, the bound holds for all n >= N0."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "doc.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            def make_bridge_spec(aud: str, quote: str) -> dict:
+                return {
+                    "schema_version": "epistemic-ledger/v2.3",
+                    "auditor": aud,
+                    "paper_title": "Bridge Order Test",
+                    "nodes": ["x", "out"],
+                    "tags": ["sig"],
+                    "sources": [{"node": "x", "origin": "measured", "carries": ["sig"], "quote": quote}],
+                    "ops": [{"name": "pass", "inputs": ["x"], "output": "out", "kind": "transform", "introduces": [], "quote": quote}],
+                    "claims": [
+                        {
+                            "id": "c1",
+                            "statement": "Conditional on x.",
+                            "quote": quote,
+                            "kind": "conditionalFlow",
+                            "target": "out",
+                            "declared_sources": ["x"],
+                        }
+                    ],
+                }
+
+            pm, pl, pr = base / "m.json", base / "l.json", base / "r.json"
+            pm.write_text(json.dumps(make_bridge_spec("AudM", q_m)), encoding="utf-8")
+            pl.write_text(json.dumps(make_bridge_spec("AudL", q_l)), encoding="utf-8")
+            pr.write_text(json.dumps(make_bridge_spec("AudR", q_r)), encoding="utf-8")
+
+            out_mlr, out_lrm = base / "cmp_mlr", base / "cmp_lrm"
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pm), "--spec", str(pl), "--spec", str(pr), "--out", str(out_mlr)]),
+                0,
+            )
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pl), "--spec", str(pr), "--spec", str(pm), "--out", str(out_lrm)]),
+                0,
+            )
+            c_mlr = json.loads((out_mlr / "comparison.json").read_text(encoding="utf-8"))["claim_comparison"]
+            c_lrm = json.loads((out_lrm / "comparison.json").read_text(encoding="utf-8"))["claim_comparison"]
+            self.assertEqual(len(c_mlr), 1)
+            self.assertEqual(len(c_lrm), 1)
+            for row in (c_mlr[0], c_lrm[0]):
+                self.assertEqual(row["status"], "AMBIGUOUS")
+                self.assertFalse(row["verdicts_agree"])
+                self.assertEqual(row["quote_match_mode"], "ambiguous_span_chain")
+                self.assertLess(row["min_span_iou"], 0.4)
+            self.assertEqual(c_mlr[0]["char_offset"], c_lrm[0]["char_offset"])
+            self.assertEqual(c_mlr[0]["min_span_iou"], c_lrm[0]["min_span_iou"])
+            self.assertIn("ambiguous span chain", (out_mlr / "comparison.md").read_text(encoding="utf-8"))
+
+            # 2 & 3: uniqueRecovery `(x, round(x))` + `.notShown` access + Rule 3 (`theoremApplication`)
+            spec_r3 = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "Rule3Auditor",
+                "paper_title": "UniqueRecovery & Rule 3 Test",
+                "nodes": ["rawX", "roundedX", "pairRawRounded", "forgotX", "readForgot", "theoremOut"],
+                "tags": ["signalX", "injectiveRendering", "populationMinimizers", "grh"],
+                "sources": [
+                    {"node": "rawX", "origin": "measured", "carries": ["signalX"], "quote": q_m},
+                ],
+                "ops": [
+                    {"name": "round_x", "inputs": ["rawX"], "output": "roundedX", "kind": "lossy", "introduces": [], "quote": q_m},
+                    {"name": "make_pair", "inputs": ["rawX", "roundedX"], "output": "pairRawRounded", "kind": "transform", "introduces": [], "quote": q_m},
+                    {"name": "forget_x_unverified", "inputs": ["rawX"], "output": "forgotX", "kind": "forget", "tag": "signalX", "evidence": "notShown", "quote": q_m},
+                    {"name": "read_forgot", "inputs": ["forgotX"], "output": "readForgot", "kind": "transform", "introduces": [], "quote": q_m},
+                    {"name": "apply_thm", "inputs": ["rawX"], "output": "theoremOut", "kind": "transform", "introduces": [], "quote": q_jepa},
+                ],
+                "claims": [
+                    {
+                        "id": "pairRawAndRounded",
+                        "statement": "Pair (x, round(x)) preserves x via lossless branch.",
+                        "quote": q_l,
+                        "kind": "uniqueRecovery",
+                        "target": "pairRawRounded",
+                        "tag": "signalX",
+                    },
+                    {
+                        "id": "recoveryViaNotShown",
+                        "statement": "Sole access passes through unverified forget.",
+                        "quote": q_r,
+                        "kind": "uniqueRecovery",
+                        "target": "readForgot",
+                        "tag": "signalX",
+                    },
+                    {
+                        "id": "jepaKnownFalse",
+                        "statement": "Theorem 1 applies to real lossy cameras.",
+                        "quote": q_jepa,
+                        "kind": "theoremApplication",
+                        "target": "theoremOut",
+                        "hypotheses": [
+                            {"tag": "injectiveRendering", "status": "knownFalse", "quote": q_jepa},
+                            {"tag": "populationMinimizers", "status": "bet", "quote": q_jepa},
+                        ],
+                        "declared_bets": ["injectiveRendering"],  # knownFalse cannot be excused!
+                    },
+                    {
+                        "id": "mathUndeclaredBet",
+                        "statement": "Bound holds unconditionally (silently omits GRH).",
+                        "quote": q_grh,
+                        "kind": "theoremApplication",
+                        "target": "theoremOut",
+                        "hypotheses": [
+                            {"tag": "grh", "status": "bet", "quote": q_grh},
+                        ],
+                        "declared_bets": [],
+                    },
+                    {
+                        "id": "mathDeclaredBet",
+                        "statement": "Assuming GRH, the bound holds.",
+                        "quote": q_m,
+                        "kind": "theoremApplication",
+                        "target": "theoremOut",
+                        "hypotheses": [
+                            {"tag": "grh", "status": "bet", "quote": q_grh},
+                            {"tag": "signalX", "status": "discharged", "quote": q_m},
+                        ],
+                        "declared_bets": ["grh"],
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec_r3, doc=doc)[0], [])
+
+            # Schema guards: empty hypotheses and duplicate hypothesis tag must fail
+            bad_empty = copy.deepcopy(spec_r3)
+            bad_empty["claims"][3]["hypotheses"] = []
+            self.assertTrue(any(e.code == "empty_list" for e in validate_spec(bad_empty, doc=doc)[0]))
+
+            bad_dup = copy.deepcopy(spec_r3)
+            bad_dup["claims"][3]["hypotheses"].append({"tag": "grh", "status": "discharged", "quote": q_grh})
+            self.assertTrue(any(e.code == "duplicate_hypothesis" for e in validate_spec(bad_dup, doc=doc)[0]))
+
+            sp_r3 = base / "r3.json"
+            sp_r3.write_text(json.dumps(spec_r3), encoding="utf-8")
+            out_r3 = base / "out_r3"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_r3), "--out", str(out_r3)]), 0)
+            rep_r3 = json.loads((out_r3 / "Rule3Auditor_report.json").read_text(encoding="utf-8"))
+            by_id = {c["id"]: c for c in rep_r3["lean_verification"]["claims"]}
+
+            self.assertEqual(by_id["pairRawAndRounded"]["verdict"], "admissible")
+            self.assertEqual(by_id["recoveryViaNotShown"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["recoveryViaNotShown"]["findings"]], ["failedForgetOnPath"])
+            self.assertEqual(by_id["jepaKnownFalse"]["verdict"], "rejected")
+            self.assertEqual(
+                [f["type"] for f in by_id["jepaKnownFalse"]["findings"]],
+                ["hypothesisKnownFalse", "undeclaredHypothesisBet"],
+            )
+            self.assertEqual(by_id["mathUndeclaredBet"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["mathUndeclaredBet"]["findings"]], ["undeclaredHypothesisBet"])
+            self.assertEqual(by_id["mathDeclaredBet"]["verdict"], "admissible")
+            self.assertEqual(by_id["mathDeclaredBet"]["findings"], [])
 
 
 if __name__ == "__main__":

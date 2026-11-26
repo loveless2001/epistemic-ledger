@@ -64,6 +64,10 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
+    if ft == "hypothesisKnownFalse":
+        return f"**[Rule 3 — Hypothesis Known False]** applied theorem at `{f['target']}` requires `{f['hypothesis']}`, which is known false in the declared setting"
+    if ft == "undeclaredHypothesisBet":
+        return f"**[Rule 3 — Undeclared Hypothesis Bet]** applied theorem at `{f['target']}` relies on unchecked hypothesis `{f['hypothesis']}` omitted from `declared_bets`"
     if ft == "claimOutOfScope":
         return f"**[Out of Scope]** {f['reason']}"
     return json.dumps(f)
@@ -118,10 +122,16 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "control_node",
         "cost_ledger_node",
         "cost_tag",
+        "declared_bets",
         "reason",
     ):
         if k in meta:
             sig[k] = meta[k]
+    if "hypotheses" in meta:
+        sig["hypotheses"] = sorted(
+            [{"tag": h.get("tag"), "status": h.get("status")} for h in meta["hypotheses"]],
+            key=lambda x: (str(x["tag"]), str(x["status"])),
+        )
     if "method_usage" in meta:
         sig["method_usage"] = _norm_usage_key(meta["method_usage"])
     if "control_usage" in meta:
@@ -250,6 +260,8 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         sig = _claim_signature(meta)
         if sig.get("kind") == "effectivenessClaim":
             endpoint = f"{sig.get('method_node')} → {sig.get('evaluation_node')} (ctrl={sig.get('control_node')}, ledger={sig.get('cost_ledger_node')})"
+        elif sig.get("kind") == "theoremApplication":
+            endpoint = f"{sig.get('target')} (hyps={len(sig.get('hypotheses', []))}, bets={len(sig.get('declared_bets', []))})"
         elif sig.get("kind") == "outOfScope":
             endpoint = "out-of-scope"
         else:
@@ -278,6 +290,7 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
         else:
             lines.append("- **Findings:**")
+            hyp_quotes = {h["tag"]: h["quote"] for h in meta.get("hypotheses", [])}
             for f in c["findings"]:
                 lines.append(f"  - {format_finding_human(f)}")
                 origin = f.get("origin") or f.get("shared") or f.get("source")
@@ -286,6 +299,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 op_name = f.get("op")
                 if op_name and op_name in op_quotes:
                     lines.append(f"    - *Evidence (`{op_name}`):* \"{op_quotes[op_name]}\"")
+                hyp_tag = f.get("hypothesis")
+                if hyp_tag and hyp_tag in hyp_quotes:
+                    lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
         lines.append("")
 
     return "\n".join(lines)
@@ -324,22 +340,22 @@ def build_comparison_report(
 ) -> tuple[dict[str, Any], str]:
     """Compare 2+ auditor reports on the same document snapshot.
 
-    Claims are aligned by verbatim quote character span in this snapshot: exact spans match
-    with IoU = 1.0, and minor boundary/punctuation differences (e.g. trailing period or short
-    clause trim) align when character-span IoU strictly exceeds 0.5 (`IoU > 0.5`, which
-    mathematically prevents chaining two disjoint sentences via a spanning block).
-    Every claim emitted by an auditor for a given anchor cluster is preserved as a list (never
-    overwritten): if any auditor attaches multiple claims to the same cluster, the row is
-    marked `AMBIGUOUS` (`verdicts_agree = False`) and all claims are shown.
-    Full claim signatures (`kind`, `target`, `tag`, `excluded_channel`) are also compared.
+    Claims are aligned by an order-independent connected-component clustering of quote
+    character spans where an undirected edge exists iff `IoU(span_a, span_b) > 0.5`.
+    Within each component, true all-pairs `min_span_iou` is computed:
+    - If every pair exceeds `0.5` (a complete clique), claims reconcile normally
+      (`exact` when all quotes are identical, `span_overlap` otherwise).
+    - If a spanning quote bridges two quotes whose pairwise `IoU <= 0.5`, the component is
+      flagged `AMBIGUOUS` (`quote_match_mode = "ambiguous_span_chain"`, `verdicts_agree = False`)
+      identically under every permutation of `--spec` order.
+    Every claim emitted by an auditor in a component is preserved as a list (multiple claims
+    from one auditor are also flagged `AMBIGUOUS`).
     """
     auditors = [r["auditor"] for r in reports]
     all_grounding_ok = all(r["grounding_and_schema_ok"] for r in reports)
 
-    # Cluster verified claims by exact or overlapping quote span (IoU > 0.5)
-    # Each cluster: {"span": (start, end), "quote": canonical_quote, "by_auditor": {aud: [claims]}, "ious": [float]}
-    clusters: list[dict[str, Any]] = []
-
+    # Collect all verified claim items across auditors
+    items: list[dict[str, Any]] = []
     for rep, spec in zip(reports, specs):
         aud = rep["auditor"]
         lv = rep.get("lean_verification")
@@ -352,48 +368,76 @@ def build_comparison_report(
             if anchor is None:
                 continue
             start, end, norm_quote = anchor
-            span = (start, end)
-
-            best_idx: int | None = None
-            best_iou = 0.0
-            for ci, cl in enumerate(clusters):
-                iou = _span_iou(span, cl["span"])
-                if iou > SPAN_OVERLAP_IOU_THRESHOLD and iou > best_iou:
-                    best_iou = iou
-                    best_idx = ci
-
-            if best_idx is None:
-                cluster = {
-                    "span": span,
-                    "quote": norm_quote,
-                    "by_auditor": {},
-                    "ious": [1.0],
-                    "quotes_seen": {norm_quote},
-                }
-                clusters.append(cluster)
-            else:
-                cluster = clusters[best_idx]
-                cluster["ious"].append(best_iou)
-                cluster["quotes_seen"].add(norm_quote)
-
-            cluster["by_auditor"].setdefault(aud, []).append(
+            items.append(
                 {
-                    "claim_id": c["id"],
-                    "verdict": c["verdict"],
+                    "auditor": aud,
+                    "span": (start, end),
                     "quote": norm_quote,
-                    "span": [start, end],
-                    "signature": _claim_signature(meta),
-                    "finding_types": [f["type"] for f in c["findings"]],
-                    "findings": c["findings"],
+                    "claim": {
+                        "claim_id": c["id"],
+                        "verdict": c["verdict"],
+                        "quote": norm_quote,
+                        "span": [start, end],
+                        "signature": _claim_signature(meta),
+                        "finding_types": [f["type"] for f in c["findings"]],
+                        "findings": c["findings"],
+                    },
                 }
             )
 
+    # Order-independent connected components under undirected edge `IoU > 0.5`
+    n = len(items)
+    visited = [False] * n
+    components: list[list[dict[str, Any]]] = []
+    for i in range(n):
+        if visited[i]:
+            continue
+        comp_indices: list[int] = []
+        stack = [i]
+        visited[i] = True
+        while stack:
+            cur = stack.pop()
+            comp_indices.append(cur)
+            for j in range(n):
+                if not visited[j] and _span_iou(items[cur]["span"], items[j]["span"]) > SPAN_OVERLAP_IOU_THRESHOLD:
+                    visited[j] = True
+                    stack.append(j)
+        components.append([items[k] for k in comp_indices])
+
+    # Sort components deterministically by canonical (min_start, min_end, min_quote)
+    def _comp_canon(comp: list[dict[str, Any]]) -> tuple[int, int, str]:
+        best = min(comp, key=lambda it: (it["span"][0], it["span"][1], it["quote"]))
+        return (best["span"][0], best["span"][1], best["quote"])
+
+    components.sort(key=_comp_canon)
+
     rows: list[dict[str, Any]] = []
-    for idx, cluster in enumerate(clusters, 1):
-        char_offset, char_end = cluster["span"]
-        norm_quote = cluster["quote"]
-        quote_match_mode = "exact" if len(cluster["quotes_seen"]) == 1 else "span_overlap"
-        min_span_iou = round(min(cluster["ious"]), 4)
+    for idx, comp in enumerate(components, 1):
+        char_offset, char_end, norm_quote = _comp_canon(comp)
+        quotes_seen = {it["quote"] for it in comp}
+        if len(comp) <= 1:
+            min_pairwise_iou = 1.0
+        else:
+            min_pairwise_iou = min(
+                _span_iou(comp[a]["span"], comp[b]["span"])
+                for a in range(len(comp))
+                for b in range(a + 1, len(comp))
+            )
+        is_clique = min_pairwise_iou > SPAN_OVERLAP_IOU_THRESHOLD
+        if len(quotes_seen) == 1:
+            quote_match_mode = "exact"
+        elif is_clique:
+            quote_match_mode = "span_overlap"
+        else:
+            quote_match_mode = "ambiguous_span_chain"
+        min_span_iou = round(min_pairwise_iou, 4)
+
+        by_aud_claims: dict[str, list[dict[str, Any]]] = {}
+        for it in comp:
+            by_aud_claims.setdefault(it["auditor"], []).append(it["claim"])
+        for aud_key in by_aud_claims:
+            by_aud_claims[aud_key].sort(key=lambda c: (c["span"][0], c["span"][1], c["claim_id"], c["verdict"]))
+
         by_aud: dict[str, Any] = {}
         verdicts: set[str] = set()
         kinds: set[str] = set()
@@ -404,6 +448,8 @@ def build_comparison_report(
         effectiveness_controls: set[tuple[str, str]] = set()
         provenances: set[str] = set()
         usage_signatures: set[str] = set()
+        hypothesis_signatures: set[str] = set()
+        declared_bet_sets: set[tuple[str, ...]] = set()
         missing_or_unverified = False
         ambiguous_multi_claim = False
 
@@ -412,11 +458,11 @@ def build_comparison_report(
             if not rep["grounding_and_schema_ok"] or rep.get("lean_verification") is None:
                 by_aud[aud] = {"status": "UNVERIFIED", "claims": []}
                 missing_or_unverified = True
-            elif aud not in cluster["by_auditor"]:
+            elif aud not in by_aud_claims:
                 by_aud[aud] = {"status": "UNMATCHED", "claims": []}
                 missing_or_unverified = True
             else:
-                clist = cluster["by_auditor"][aud]
+                clist = by_aud_claims[aud]
                 if len(clist) > 1:
                     ambiguous_multi_claim = True
                     by_aud[aud] = {"status": "AMBIGUOUS_MULTI_CLAIM", "claims": clist}
@@ -438,6 +484,11 @@ def build_comparison_report(
                                 sort_keys=True,
                             )
                         )
+                    elif sig.get("kind") == "theoremApplication":
+                        tgt = str(sig.get("target"))
+                        tags.add("")
+                        effectiveness_controls.add(("", ""))
+                        usage_signatures.add("")
                     elif sig.get("kind") == "outOfScope":
                         tgt = "out-of-scope"
                         tags.add("")
@@ -451,11 +502,13 @@ def build_comparison_report(
                     targets.add(tgt)
                     excluded_channels.add(str(sig.get("excluded_channel", "")))
                     declared_source_sets.add(tuple(sorted(set(sig.get("declared_sources", [])))))
+                    hypothesis_signatures.add(json.dumps(sig.get("hypotheses", []), sort_keys=True))
+                    declared_bet_sets.add(tuple(sorted(set(sig.get("declared_bets", [])))))
 
         if missing_or_unverified:
             status = "UNVERIFIED_OR_UNMATCHED"
             verdicts_agree = False
-        elif ambiguous_multi_claim:
+        elif ambiguous_multi_claim or not is_clique:
             status = "AMBIGUOUS"
             verdicts_agree = False
         elif len(verdicts) == 1:
@@ -465,7 +518,7 @@ def build_comparison_report(
             status = "DISAGREE"
             verdicts_agree = False
 
-        complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim)
+        complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim) and is_clique
         rows.append(
             {
                 "anchor_index": idx,
@@ -484,6 +537,8 @@ def build_comparison_report(
                 "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
                 "same_provenance": complete_1to1 and len(provenances) == 1,
                 "same_usage": complete_1to1 and len(usage_signatures) == 1,
+                "same_hypotheses": complete_1to1 and len(hypothesis_signatures) == 1,
+                "same_declared_bets": complete_1to1 and len(declared_bet_sets) == 1,
                 "by_auditor": by_aud,
             }
         )
@@ -523,7 +578,7 @@ def build_comparison_report(
         f"- **Document SHA-256:** `{doc.sha256[:16]}...`",
         f"- **Auditors:** {', '.join(f'`{a}`' for a in auditors)}",
         f"- **All Grounding & Schema Checks Passed:** `{all_grounding_ok}`",
-        "- **Matching Rule:** Claims are aligned by verbatim quote character span in this snapshot (exact match or overlapping span with `IoU > 0.5`, handling trailing punctuation / minor boundary trims without merging disjoint sentences); multiple claims on one anchor are flagged `AMBIGUOUS`.",
+        "- **Matching Rule:** Claims are aligned via order-independent connected components of verbatim quote spans (`IoU > 0.5`); cliques reconcile as `exact`/`span_overlap`, while non-clique bridged chains (`pairwise min IoU <= 0.5`) and multi-claim anchors are flagged `AMBIGUOUS`.",
         "",
     ]
 
@@ -557,6 +612,12 @@ def build_comparison_report(
             extras.append(f"ctrl={sig.get('control_node')}")
             extras.append(f"ledger={sig.get('cost_ledger_node')}")
             extras.append(f"cost_tag={sig.get('cost_tag')}")
+        elif sig.get("kind") == "theoremApplication":
+            tgt = str(sig.get("target"))
+            hyps_str = ", ".join(f"{h['tag']}={h['status']}" for h in sig.get("hypotheses", []))
+            extras.append(f"hyps=[{hyps_str}]")
+            if sig.get("declared_bets"):
+                extras.append(f"bets={sorted(set(sig['declared_bets']))}")
         elif sig.get("kind") == "outOfScope":
             tgt = "out-of-scope"
         else:
@@ -595,6 +656,10 @@ def build_comparison_report(
                 diffs.append("provenance")
             if not row["same_usage"]:
                 diffs.append("usage")
+            if not row.get("same_hypotheses", True):
+                diffs.append("hypotheses")
+            if not row.get("same_declared_bets", True):
+                diffs.append("declared_bets")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
         cells = []
@@ -606,7 +671,9 @@ def build_comparison_report(
                 cells.append("; ".join(_fmt_claim_cell(c) for c in entry["claims"]))
         anchor_label = f"@{row['char_offset']}: \"{q_short}\""
         if row.get("quote_match_mode") == "span_overlap":
-            anchor_label += f" *(span overlap, IoU={row['min_span_iou']:.2f})*"
+            anchor_label += f" *(span overlap, pairwise min IoU={row['min_span_iou']:.2f})*"
+        elif row.get("quote_match_mode") == "ambiguous_span_chain":
+            anchor_label += f" *(ambiguous span chain, pairwise min IoU={row['min_span_iou']:.2f})*"
         md.append(
             f"| {row['anchor_index']} | {anchor_label} | {status_cell} | "
             + " | ".join(cells)
@@ -629,6 +696,8 @@ def build_comparison_report(
             or not r["same_control_and_ledger"]
             or not r["same_provenance"]
             or not r["same_usage"]
+            or not r.get("same_hypotheses", True)
+            or not r.get("same_declared_bets", True)
         ]
         if not issues and all_grounding_ok:
             md.append(
@@ -669,6 +738,10 @@ CRITICAL RULES:
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 9. If a claim is a normative value judgment, legal-policy balancing dispute, or financial/bookkeeping question rather than a structural causal/experimental flow claim, do NOT force it into an emergence or effectiveness claim; instead emit `kind: "outOfScope"` with a concise `"reason"` string explaining why it lies outside structural operation-flow verification.
+10. When a claim applies a mathematical theorem or formal model to a target object (Rule 3), use `kind: "theoremApplication"` with:
+    - `target`: node receiving the theorem application
+    - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
+    - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
 
 JSON TEMPLATE:
 {{

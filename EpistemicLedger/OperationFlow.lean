@@ -109,6 +109,18 @@ inductive FlowClaimKind (ν σ : Type) where
       (costTag : σ)
       (methodUsage : List (ResourceUsage ν σ))
       (controlUsage : List (ResourceUsage ν σ))
+  /-- Rule 3 (Theorem Hypothesis / Domain Precondition Verification):
+      A theorem or formal model applied at `target` requires each precondition in `hypotheses`
+      to hold for the target object:
+      - `.discharged`: shown to hold for the target -> clean.
+      - `.bet`: unchecked for the target -> clean iff declared in `declaredBets`, otherwise
+        `undeclaredHypothesisBet` (`unestablished`).
+      - `.knownFalse`: contradicted by the paper's own setting/limitations ->
+        `hypothesisKnownFalse` (`rejected`), never excused by `declaredBets`. -/
+  | theoremApplication
+      (target : ν)
+      (hypotheses : List (Hypothesis σ))
+      (declaredBets : List σ)
   /-- Claim explicitly lies outside structural operation-flow verification
       (e.g., normative legal balancing, value judgments, policy weighing, or financial bookkeeping). -/
   | outOfScope (reason : String)
@@ -171,6 +183,10 @@ inductive FlowFinding (ν σ : Type) where
   | unboundUsageSource (armNode : ν) (sourceNode : ν) (costTag : σ)
   /-- Tier 2: quantitative `costTag` budgets differ between `methodNode` and `controlNode` (e.g. 1 vs 100 GPU-hrs). -/
   | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
+  /-- Rule 3: a hypothesis of the applied theorem is known not to hold for `target`. -/
+  | hypothesisKnownFalse (target : ν) (hyp : σ)
+  /-- Rule 3: an unchecked hypothesis (`.bet`) of the applied theorem is omitted from `declaredBets`. -/
+  | undeclaredHypothesisBet (target : ν) (hyp : σ)
   /-- Claim explicitly declared out of scope for structural operation-flow auditing. -/
   | claimOutOfScope (reason : String)
   deriving DecidableEq, Repr
@@ -466,6 +482,57 @@ def failedAuthorForgetsUpstream (g : FlowGraph ν σ) (tag : σ) (target : ν) :
       | _ => none
     else none
 
+/-- Does operation `op` preserve `tag` on a **non-lossy** path (disallowing `.lossy` and `.forget tag .shown`,
+    while still allowing `.forget tag .notShown` to distinguish unverified access from proven lossy destruction)? -/
+def opPreservesNonLossyTag (op : Op ν σ) (tag : σ) : Bool :=
+  match op.kind with
+  | .lossy _         => false
+  | .forget t .shown => !decide (t = tag)
+  | _                => true
+
+/-- Does operation `op` preserve `tag` on a **confirmed lossless** path
+    (disallowing `.lossy`, `.forget tag .shown`, AND unverified `.forget tag .notShown`)? -/
+def opPreservesConfirmedLosslessTag (op : Op ν σ) (tag : σ) : Bool :=
+  match op.kind with
+  | .lossy _            => false
+  | .forget t .shown    => !decide (t = tag)
+  | .forget t .notShown => !decide (t = tag)
+  | _                   => true
+
+/-- Backward reachability along edges satisfying a custom propagation predicate `pred`. -/
+def tagAncestorsByAux (ops : List (Op ν σ)) (pred : Op ν σ → Bool) : Nat → List ν → List ν
+  | 0, visited => visited
+  | fuel + 1, visited =>
+    let preds := ops.foldl
+      (fun acc op =>
+        if op.output ∈ visited && pred op then acc ++ op.inputs else acc) []
+    let next := preds.foldl (fun acc x => if x ∈ acc then acc else x :: acc) visited
+    if next.length = visited.length then visited
+    else tagAncestorsByAux ops pred fuel next
+
+/-- Upstream `SourceNode`s carrying `tag` reaching `target` along non-lossy paths
+    (may traverse `.forget tag .notShown`, but never `.lossy` or `.forget tag .shown`). -/
+def nonLossySourceOrigins (g : FlowGraph ν σ) (tag : σ) (target : ν) : List ν :=
+  let reach := tagAncestorsByAux g.ops (fun op => opPreservesNonLossyTag op tag) (g.ops.length + 1) [target]
+  (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
+
+/-- Upstream `SourceNode`s carrying `tag` reaching `target` along **confirmed lossless** paths
+    (neither `.lossy`, nor `.forget tag .shown`, nor unverified `.forget tag .notShown`). -/
+def losslessSourceOrigins (g : FlowGraph ν σ) (tag : σ) (target : ν) : List ν :=
+  let reach := tagAncestorsByAux g.ops (fun op => opPreservesConfirmedLosslessTag op tag) (g.ops.length + 1) [target]
+  (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
+
+/-- Unverified `.forget tag .notShown` operations sitting on a non-lossy source path to `target`. -/
+def unverifiedForgetsOnSourcePath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
+  let reach := tagAncestorsByAux g.ops (fun op => opPreservesNonLossyTag op tag) (g.ops.length + 1) [target]
+  g.ops.filterMap fun op =>
+    if op.output ∈ reach && op.inputs.any (fun inp => !(nonLossySourceOrigins g tag inp).isEmpty) then
+      match op.kind with
+      | .forget t .notShown =>
+        if t = tag then some (.failedForgetOnPath op.name t .notShown) else none
+      | _ => none
+    else none
+
 /-- Lossy operations sitting on a `tag`-carrying path upstream of `target`.
     A `.lossy` op on an unrelated side-branch that does not carry `tag` does not destroy `tag`. -/
 def lossyOpsOnTagPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
@@ -525,12 +592,18 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
       ++ danglingInputsUpstream c.graph branchA
       ++ danglingInputsUpstream c.graph branchB
   | .uniqueRecovery target tag =>
-    let lossy := lossyOpsOnTagPath c.graph tag target
-    let access :=
-      if (sourceOrigins c.graph tag target).isEmpty then
+    let recoveryFindings : List (FlowFinding ν σ) :=
+      if !(losslessSourceOrigins c.graph tag target).isEmpty then
+        []
+      else if (sourceOrigins c.graph tag target).isEmpty then
         [.unaccessedTargetStructure target tag]
-      else []
-    lossy ++ access ++ danglingInputsUpstream c.graph target
+      else if !(nonLossySourceOrigins c.graph tag target).isEmpty then
+        -- Non-lossy access path exists, but only through an unverified `.forget tag .notShown`
+        unverifiedForgetsOnSourcePath c.graph tag target
+      else
+        -- Every access path from a `tag`-carrying SourceNode passes through a `.lossy` channel
+        lossyOpsOnTagPath c.graph tag target
+    recoveryFindings ++ danglingInputsUpstream c.graph target
   | .conditionalFlow target declaredSources =>
     let reach := ancestors c.graph target
     let undeclared := c.graph.sources.filterMap fun s =>
@@ -598,6 +671,16 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
     costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
+  | .theoremApplication target hypotheses declaredBets =>
+    let hypFindings : List (FlowFinding ν σ) :=
+      hypotheses.filterMap fun h =>
+        match h.status with
+        | .discharged => none
+        | .knownFalse => some (.hypothesisKnownFalse target h.id)
+        | .bet =>
+          if h.id ∈ declaredBets then none
+          else some (.undeclaredHypothesisBet target h.id)
+    hypFindings ++ danglingInputsUpstream c.graph target
   | .outOfScope reason => [.claimOutOfScope reason]
 
 def flowVerdict (c : FlowClaim ν σ) : FlowVerdict :=
@@ -630,6 +713,8 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .unquantifiedBudget _ _               => false
   | .unboundUsageSource _ _ _             => false
   | .unmatchedControlBudget _ _ _         => true
+  | .hypothesisKnownFalse _ _             => true
+  | .undeclaredHypothesisBet _ _          => false
   | .claimOutOfScope _                    => false
 
 /-- Four-state epistemic verdict for a flow claim.
@@ -1427,7 +1512,8 @@ theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν
   | independentConvergence _ _ _
   | uniqueRecovery _ _
   | conditionalFlow _ _
-  | effectivenessClaim _ _ _ _ _ _ _ =>
+  | effectivenessClaim _ _ _ _ _ _ _
+  | theoremApplication _ _ _ =>
     unfold epistemicVerdict flowVerdict
     rw [hk]
     dsimp only
@@ -1452,7 +1538,8 @@ theorem epistemicVerdict_outOfScope_iff (c : FlowClaim ν σ) :
     | independentConvergence _ _ _
     | uniqueRecovery _ _
     | conditionalFlow _ _
-    | effectivenessClaim _ _ _ _ _ _ _ =>
+    | effectivenessClaim _ _ _ _ _ _ _
+    | theoremApplication _ _ _ =>
       unfold epistemicVerdict at h
       rw [hk] at h
       dsimp only at h
@@ -1482,7 +1569,8 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
   | independentConvergence _ _ _
   | uniqueRecovery _ _
   | conditionalFlow _ _
-  | effectivenessClaim _ _ _ _ _ _ _ =>
+  | effectivenessClaim _ _ _ _ _ _ _
+  | theoremApplication _ _ _ =>
     unfold epistemicVerdict
     rw [hk]
     dsimp only
@@ -1504,5 +1592,36 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
       have hany : (auditFlow c).any FlowFinding.isContradiction = true :=
         List.any_eq_true.mpr ⟨f, hf, hcontra⟩
       simp [hne, hany]
+
+/--
+Theorem 8 (Soundness of Rule 3 — `theoremApplication`):
+If a `theoremApplication target hypotheses declaredBets` claim is `admissible`,
+then NO hypothesis is `.knownFalse`, and EVERY hypothesis is either `.discharged`
+or an explicitly declared `.bet` (`h.id ∈ declaredBets`).
+-/
+theorem admissible_theoremApplication_implies_hypotheses_satisfied
+    (c : FlowClaim ν σ) (target : ν) (hypotheses : List (Hypothesis σ)) (declaredBets : List σ)
+    (hkind : c.kind = .theoremApplication target hypotheses declaredBets)
+    (hadm : flowVerdict c = .admissible) :
+    ∀ h ∈ hypotheses, h.status = .discharged ∨ (h.status = .bet ∧ h.id ∈ declaredBets) := by
+  unfold flowVerdict at hadm
+  split at hadm
+  · rename_i hempty
+    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
+    rw [auditFlow, hkind] at hnil
+    dsimp only at hnil
+    have hhyps := (List.append_eq_nil_iff.mp hnil).1
+    intro h hh
+    have hfm := List.filterMap_eq_nil_iff.mp hhyps h hh
+    cases hs : h.status with
+    | discharged => exact Or.inl rfl
+    | knownFalse => simp [hs] at hfm
+    | bet =>
+      simp only [hs] at hfm
+      split at hfm
+      · rename_i hdecl
+        exact Or.inr ⟨rfl, hdecl⟩
+      · simp at hfm
+  · cases hadm
 
 end EpistemicLedger.OperationFlow
