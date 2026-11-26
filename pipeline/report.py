@@ -186,6 +186,57 @@ OUT_OF_SCOPE_PDF_MATH = (
 )
 
 
+def _compute_declaration_locations(
+    doc: IngestedDocument, spec: dict[str, Any], claim_meta: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Mechanically locate where each declared assumption (`declared_bets` on `theoremApplication`)
+    or declared source (`declared_sources` on `conditionalFlow`) appears relative to the claim quote.
+
+    Does NOT alter any verdict: annotates whether each declaration overlaps the claim sentence
+    (`in_claim`) or appears elsewhere in the document body (`elsewhere_in_document` with `@offset`).
+    """
+    kind = claim_meta.get("kind")
+    if kind not in ("theoremApplication", "conditionalFlow"):
+        return []
+    claim_quote = claim_meta.get("quote", "")
+    claim_span = _claim_anchor_span(doc, claim_quote)
+    if claim_span is None:
+        return []
+    c_start, c_end, _ = claim_span
+    dehy_claim = dehyphenate_and_normalize(claim_quote)
+
+    targets: list[tuple[str, str, str]] = []
+    if kind == "theoremApplication":
+        hyp_quotes = {h["tag"]: h["quote"] for h in claim_meta.get("hypotheses", []) if isinstance(h, dict) and "tag" in h and "quote" in h}
+        for bet_tag in claim_meta.get("declared_bets", []):
+            if bet_tag in hyp_quotes:
+                targets.append(("declared_bet", str(bet_tag), hyp_quotes[bet_tag]))
+    elif kind == "conditionalFlow":
+        src_quotes = {s["node"]: s["quote"] for s in spec.get("sources", []) if isinstance(s, dict) and "node" in s and "quote" in s}
+        for src_node in claim_meta.get("declared_sources", []):
+            if src_node in src_quotes:
+                targets.append(("declared_source", str(src_node), src_quotes[src_node]))
+
+    entries: list[dict[str, Any]] = []
+    for decl_kind, item_name, decl_quote in targets:
+        d_span = _claim_anchor_span(doc, decl_quote)
+        if d_span is None:
+            continue
+        d_start, d_end, _ = d_span
+        dehy_decl = dehyphenate_and_normalize(decl_quote)
+        overlaps = min(c_end, d_end) > max(c_start, d_start) or (dehy_decl in dehy_claim) or (dehy_claim in dehy_decl)
+        entries.append(
+            {
+                "kind": decl_kind,
+                "item": item_name,
+                "location": "in_claim" if overlaps else "elsewhere_in_document",
+                "char_offset": c_start if (overlaps and not (min(c_end, d_end) > max(c_start, d_start))) else d_start,
+                "char_end": c_end if (overlaps and not (min(c_end, d_end) > max(c_start, d_start))) else d_end,
+            }
+        )
+    return entries
+
+
 def build_single_report_dict(
     doc: IngestedDocument,
     spec: dict[str, Any],
@@ -261,6 +312,11 @@ def build_single_report_dict(
                     "findings": c.findings,
                     "axioms": c.axioms,
                     "kernel_verified": c.kernel_verified,
+                    "declaration_locations": _compute_declaration_locations(
+                        doc,
+                        spec,
+                        next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {}),
+                    ),
                 }
                 for c in lean_result.claims
             ],
@@ -328,6 +384,18 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         ]
         if meta.get("kind") == "effectivenessClaim" and (meta.get("method_usage") or meta.get("control_usage")):
             lines.append(f"- **Out of scope (accounting/bookkeeping):** {OUT_OF_SCOPE_ACCOUNTING}")
+        decl_locs = c.get("declaration_locations") or []
+        if decl_locs:
+            lines.append("- **Declared assumptions / sources locations:**")
+            for dl in decl_locs:
+                if dl["location"] == "in_claim":
+                    lines.append(
+                        f"  - `{dl['item']}` (`{dl['kind']}`): declared in claim sentence (offset @{dl['char_offset']})"
+                    )
+                else:
+                    lines.append(
+                        f"  - `{dl['item']}` (`{dl['kind']}`): declared in document body (offset @{dl['char_offset']}, outside claim quote)"
+                    )
         if not c["findings"]:
             lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
         else:

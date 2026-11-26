@@ -1548,6 +1548,71 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["scaledEfficiency"]["findings"]], ["unmatchedControlBudget"])
             self.assertEqual(by_id["deepConditional"]["verdict"], "admissible")
 
+            # Claude #27390: mechanical declaration_locations notes (`in_claim` vs `elsewhere_in_document`)
+            # without altering verdicts!
+            doc2_text = (
+                "Abstract: Assuming GRH, the main circuit bound holds over every field.\n"
+                "Section 3: The contracting case rests on Lean formalization and external axioms.\n"
+            )
+            q_abs = "Assuming GRH, the main circuit bound holds over every field."
+            q_sec3 = "The contracting case rests on Lean formalization and external axioms."
+            doc2_path = base / "decl_loc.txt"
+            doc2_path.write_text(doc2_text, encoding="utf-8")
+            spec_dl = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "DeclLocAuditor",
+                "paper_title": "Declaration Location Test",
+                "nodes": ["inClaimSrc", "bodySrc", "thmOut"],
+                "tags": ["grh", "leanAx"],
+                "sources": [
+                    {"node": "inClaimSrc", "origin": "setByExperimenter", "carries": ["grh"], "quote": "Assuming GRH, the main circuit bound"},
+                    {"node": "bodySrc", "origin": "setByExperimenter", "carries": ["leanAx"], "quote": q_sec3},
+                ],
+                "ops": [
+                    {"name": "prove", "inputs": ["inClaimSrc", "bodySrc"], "output": "thmOut", "kind": "transform", "introduces": [], "quote": q_abs},
+                ],
+                "claims": [
+                    {
+                        "id": "thmWithMixedDeclLocs",
+                        "statement": "Main circuit bound holds given GRH and Lean formalization.",
+                        "quote": q_abs,
+                        "kind": "theoremApplication",
+                        "target": "thmOut",
+                        "hypotheses": [
+                            {"tag": "grh", "status": "bet", "quote": "Assuming GRH, the main circuit bound"},
+                            {"tag": "leanAx", "status": "bet", "quote": q_sec3},
+                        ],
+                        "declared_bets": ["grh", "leanAx"],
+                    },
+                    {
+                        "id": "condWithMixedDeclLocs",
+                        "statement": "Conditional on both sources.",
+                        "quote": q_abs,
+                        "kind": "conditionalFlow",
+                        "target": "thmOut",
+                        "declared_sources": ["inClaimSrc", "bodySrc"],
+                    },
+                ],
+            }
+            sp_dl = base / "decl_loc.json"
+            sp_dl.write_text(json.dumps(spec_dl), encoding="utf-8")
+            out_dl = base / "out_dl"
+            self.assertEqual(cli_main(["run", "--doc", str(doc2_path), "--spec", str(sp_dl), "--out", str(out_dl)]), 0)
+            rep_dl = json.loads((out_dl / "DeclLocAuditor_report.json").read_text(encoding="utf-8"))
+            md_dl = (out_dl / "DeclLocAuditor_report.md").read_text(encoding="utf-8")
+            dl_by_id = {c["id"]: c for c in rep_dl["lean_verification"]["claims"]}
+
+            self.assertEqual(dl_by_id["thmWithMixedDeclLocs"]["verdict"], "admissible")
+            thm_locs = {x["item"]: x["location"] for x in dl_by_id["thmWithMixedDeclLocs"]["declaration_locations"]}
+            self.assertEqual(thm_locs, {"grh": "in_claim", "leanAx": "elsewhere_in_document"})
+
+            self.assertEqual(dl_by_id["condWithMixedDeclLocs"]["verdict"], "admissible")
+            cond_locs = {x["item"]: x["location"] for x in dl_by_id["condWithMixedDeclLocs"]["declaration_locations"]}
+            self.assertEqual(cond_locs, {"inClaimSrc": "in_claim", "bodySrc": "elsewhere_in_document"})
+
+            self.assertIn("declared in claim sentence", md_dl)
+            self.assertIn("declared in document body (offset @", md_dl)
+
 
 if __name__ == "__main__":
     unittest.main()
