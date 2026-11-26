@@ -37,21 +37,23 @@ def dehyphenate_and_normalize(text: str) -> str:
     return normalize_whitespace(joined)
 
 
-def _extract_pdf_text(pdf_path: Path) -> str:
+def _extract_pdf_text_from_bytes(pdf_bytes: bytes, source_label: str) -> str:
+    """Extract text directly from the exact in-memory bytes that were hashed (no TOCTOU)."""
     try:
         proc = subprocess.run(
-            ["pdftotext", str(pdf_path), "-"],
+            ["pdftotext", "-", "-"],
+            input=pdf_bytes,
             check=True,
             capture_output=True,
-            text=True,
         )
-        return proc.stdout
+        return proc.stdout.decode("utf-8", errors="replace")
     except FileNotFoundError as exc:
         raise RuntimeError(
             "pdftotext is required to ingest PDF files but was not found in PATH"
         ) from exc
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"pdftotext failed on {pdf_path}: {exc.stderr.strip()}") from exc
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"pdftotext failed on {source_label}: {stderr}") from exc
 
 
 def _fetch_arxiv_pdf(arxiv_id: str, cache_dir: Path) -> Path:
@@ -84,7 +86,7 @@ def ingest_document(source_ref: str, cache_dir: Path | None = None) -> IngestedD
     digest = hashlib.sha256(raw_bytes).hexdigest()
 
     if resolved.suffix.lower() == ".pdf":
-        raw_text = _extract_pdf_text(resolved)
+        raw_text = _extract_pdf_text_from_bytes(raw_bytes, str(resolved))
     else:
         raw_text = raw_bytes.decode("utf-8")
 

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,59 @@ def _safe_stem(raw_auditor: Any, fallback: str) -> str:
     return fallback
 
 
+def _atomic_write_text(dest: Path, content: str) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(dest.parent),
+            prefix=f".{dest.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tf:
+            tf.write(content)
+            tmp_path = Path(tf.name)
+        os.replace(tmp_path, dest)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _unlink_if_exists(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _allocate_unique_stems(raw_specs: list[Any]) -> list[str]:
+    """Guarantee collision-free internal file/column stems for any multiset of auditor names
+    (e.g. `AuditorA, AuditorA, AuditorA_1` -> `AuditorA_2, AuditorA_3, AuditorA_1`)."""
+    base_stems = [
+        _safe_stem(s.get("auditor") if isinstance(s, dict) else None, f"spec_{idx + 1}")
+        for idx, s in enumerate(raw_specs)
+    ]
+    counts: dict[str, int] = {}
+    for st in base_stems:
+        counts[st] = counts.get(st, 0) + 1
+
+    reserved: set[str] = set(base_stems)
+    unique_stems: list[str] = []
+    for st in base_stems:
+        if counts[st] == 1:
+            unique_stems.append(st)
+        else:
+            k = 1
+            while f"{st}_{k}" in reserved:
+                k += 1
+            chosen = f"{st}_{k}"
+            reserved.add(chosen)
+            unique_stems.append(chosen)
+    assert len(set(unique_stems)) == len(unique_stems)
+    return unique_stems
+
+
 def _audit_one(
     doc: IngestedDocument,
     spec_path: Path,
@@ -70,20 +125,25 @@ def _audit_one(
     label = auditor_label_override or stem
 
     lean_path = _safe_out_path(out_dir, f"{stem}_Verified.lean")
+    report_json_path = _safe_out_path(out_dir, f"{stem}_report.json")
+    report_md_path = _safe_out_path(out_dir, f"{stem}_report.md")
+
+    # Clear any stale artifacts for this stem BEFORE running Lean so a failed rerun
+    # (including a Lean/build crash) can never leave an old proof or old `axioms_ok: true` report behind.
+    _unlink_if_exists(lean_path)
+    _unlink_if_exists(report_json_path)
+    _unlink_if_exists(report_md_path)
+
     lean_result = None
     if not errors:
         ns = f"EpistemicLedger.Generated.{stem}"
         lean_result = run_lean_verification(spec, repo_root=repo_root, out_lean_path=lean_path, namespace=ns)
-    else:
-        # Never leave a stale proof file behind on a failed audit!
-        if lean_path.exists():
-            lean_path.unlink()
 
     report = build_single_report_dict(doc, spec, errors, quotes, lean_result, auditor_label=label)
     md = render_single_report_markdown(report, spec)
 
-    _safe_out_path(out_dir, f"{stem}_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    _safe_out_path(out_dir, f"{stem}_report.md").write_text(md, encoding="utf-8")
+    _atomic_write_text(report_json_path, json.dumps(report, indent=2))
+    _atomic_write_text(report_md_path, md)
     return report, spec, len(errors) == 0
 
 
@@ -108,24 +168,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
     # Single document snapshot shared across every auditor and the final comparison
     doc = ingest_document(args.doc, cache_dir=cache_dir)
 
-    # Disambiguate file stems & auditor labels so duplicate/invalid names never overwrite
-    raw_specs = [json.loads(Path(sp).read_text(encoding="utf-8")) for sp in args.specs]
-    base_stems = [
-        _safe_stem(s.get("auditor") if isinstance(s, dict) else None, f"spec_{idx + 1}")
-        for idx, s in enumerate(raw_specs)
-    ]
-    counts: dict[str, int] = {}
-    for st in base_stems:
-        counts[st] = counts.get(st, 0) + 1
+    out_dir.mkdir(parents=True, exist_ok=True)
+    comp_json_path = _safe_out_path(out_dir, "comparison.json")
+    comp_md_path = _safe_out_path(out_dir, "comparison.md")
+    _unlink_if_exists(comp_json_path)
+    _unlink_if_exists(comp_md_path)
 
-    seen_so_far: dict[str, int] = {}
-    unique_stems: list[str] = []
-    for st in base_stems:
-        if counts[st] > 1:
-            seen_so_far[st] = seen_so_far.get(st, 0) + 1
-            unique_stems.append(f"{st}_{seen_so_far[st]}")
-        else:
-            unique_stems.append(st)
+    raw_specs = [json.loads(Path(sp).read_text(encoding="utf-8")) for sp in args.specs]
+    unique_stems = _allocate_unique_stems(raw_specs)
 
     reports: list[dict[str, Any]] = []
     specs: list[dict[str, Any]] = []
@@ -144,8 +194,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
         all_ok = all_ok and ok
 
     comp_dict, comp_md = build_comparison_report(doc, reports, specs)
-    _safe_out_path(out_dir, "comparison.json").write_text(json.dumps(comp_dict, indent=2), encoding="utf-8")
-    _safe_out_path(out_dir, "comparison.md").write_text(comp_md, encoding="utf-8")
+    _atomic_write_text(comp_json_path, json.dumps(comp_dict, indent=2))
+    _atomic_write_text(comp_md_path, comp_md)
     print(f"Comparison written to {out_dir / 'comparison.md'}")
     for row in comp_dict["claim_comparison"]:
         print(f"  - claim #{row['anchor_index']} (@{row['char_offset']}): {row['status']}")

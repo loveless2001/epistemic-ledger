@@ -297,6 +297,119 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["claimD_unique_recovery"].verdict, "rejected")
             self.assertEqual(by_id["claimD_unique_recovery"].findings[0]["op"], 'op_"quoted"_\\slash')
 
+    def test_codex_r2_p1_multi_claim_same_quote_not_dropped_and_signature_diff_flagged(self) -> None:
+        """Codex R2 P1-1:
+        (a) Auditor A has TWO claims (1 rejected, 1 admissible) on the same quote while Auditor B
+            has 1 admissible claim -> must NOT drop the rejected claim or report AGREE; must flag AMBIGUOUS.
+        (b) Same verdict on same quote with different `excluded_channel` or `tag` must flag signature diff.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            # (a) Multi-claim on same quote
+            s_a = json.loads(SPEC_A.read_text(encoding="utf-8"))
+            clean_c = copy.deepcopy(s_a["claims"][0])
+            rejected_same_quote = copy.deepcopy(s_a["claims"][0])
+            rejected_same_quote["id"] = "claimA_strict_also_checked"
+            rejected_same_quote["kind"] = "emergesWithout"
+            del rejected_same_quote["excluded_channel"]
+            s_a["claims"] = [rejected_same_quote, clean_c]
+
+            s_b = json.loads(SPEC_B.read_text(encoding="utf-8"))
+            s_b["claims"] = [copy.deepcopy(s_b["claims"][0])]
+
+            pa, pb = base / "a.json", base / "b.json"
+            pa.write_text(json.dumps(s_a), encoding="utf-8")
+            pb.write_text(json.dumps(s_b), encoding="utf-8")
+
+            out1 = base / "cmp_ambig"
+            rc1 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out1)])
+            self.assertEqual(rc1, 0)
+            comp1 = json.loads((out1 / "comparison.json").read_text(encoding="utf-8"))
+            row = comp1["claim_comparison"][0]
+            self.assertEqual(row["status"], "AMBIGUOUS")
+            self.assertFalse(row["verdicts_agree"])
+            self.assertEqual(len(row["by_auditor"]["AuditorA"]["claims"]), 2)
+            verdicts_a = {c["verdict"] for c in row["by_auditor"]["AuditorA"]["claims"]}
+            self.assertEqual(verdicts_a, {"rejected", "admissible"})
+
+            # (b) Same verdict (rejected) on same quote, different excluded_channel -> flag diff
+            s_c1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
+            s_c1["claims"] = [copy.deepcopy(s_c1["claims"][2])]  # claimC: excluded_channel = lossWithDepth
+            s_c2 = json.loads(SPEC_B.read_text(encoding="utf-8"))
+            c2 = copy.deepcopy(s_c2["claims"][2])
+            c2["excluded_channel"] = "modelRegimeC"  # different excluded_channel, still rejected
+            s_c2["claims"] = [c2]
+            pc1, pc2 = base / "c1.json", base / "c2.json"
+            pc1.write_text(json.dumps(s_c1), encoding="utf-8")
+            pc2.write_text(json.dumps(s_c2), encoding="utf-8")
+
+            out2 = base / "cmp_sig"
+            rc2 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pc1), "--spec", str(pc2), "--out", str(out2)])
+            self.assertEqual(rc2, 0)
+            comp2 = json.loads((out2 / "comparison.json").read_text(encoding="utf-8"))
+            row2 = comp2["claim_comparison"][0]
+            self.assertTrue(row2["verdicts_agree"])
+            self.assertFalse(row2["same_excluded_channel"])
+            self.assertIn("excluded_channel differs", (out2 / "comparison.md").read_text(encoding="utf-8"))
+
+    def test_codex_r2_p1_three_way_auditor_collision_AuditorA_AuditorA_AuditorA_1(self) -> None:
+        """Codex R2 P1-2: `AuditorA, AuditorA, AuditorA_1` must produce 3 distinct report & proof files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            s1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
+            s1["auditor"] = "AuditorA"
+            s1["claims"] = [s1["claims"][0]]
+            s2 = copy.deepcopy(s1)
+            s3 = copy.deepcopy(s1)
+            s3["auditor"] = "AuditorA_1"
+
+            p1, p2, p3 = base / "s1.json", base / "s2.json", base / "s3.json"
+            p1.write_text(json.dumps(s1), encoding="utf-8")
+            p2.write_text(json.dumps(s2), encoding="utf-8")
+            p3.write_text(json.dumps(s3), encoding="utf-8")
+
+            out = base / "cmp3way"
+            rc = cli_main(
+                ["compare", "--doc", str(SAMPLE_DOC), "--spec", str(p1), "--spec", str(p2), "--spec", str(p3), "--out", str(out)]
+            )
+            self.assertEqual(rc, 0)
+            comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(set(comp["auditors"])), 3)
+            for aud in comp["auditors"]:
+                self.assertTrue((out / f"{aud}_report.json").is_file())
+                self.assertTrue((out / f"{aud}_Verified.lean").is_file())
+
+    def test_codex_r2_p2_failed_lean_rerun_leaves_no_stale_proof_or_report(self) -> None:
+        """Codex R2 P2-3: rerunning into an existing out dir with an unavailable Lean repo must clear
+        stale `*_Verified.lean` and `*_report.json` (`axioms_ok: true`) rather than leaving them on disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            out = base / "out"
+            rc_ok = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(SPEC_A), "--out", str(out)])
+            self.assertEqual(rc_ok, 0)
+            self.assertTrue((out / "AuditorA_Verified.lean").is_file())
+            self.assertTrue((out / "AuditorA_report.json").is_file())
+
+            bad_repo = base / "broken_repo"
+            bad_repo.mkdir()
+            with self.assertRaises(RuntimeError):
+                cli_main(
+                    [
+                        "run",
+                        "--doc",
+                        str(SAMPLE_DOC),
+                        "--spec",
+                        str(SPEC_A),
+                        "--out",
+                        str(out),
+                        "--repo-root",
+                        str(bad_repo),
+                    ]
+                )
+            self.assertFalse((out / "AuditorA_Verified.lean").exists())
+            self.assertFalse((out / "AuditorA_report.json").exists())
+            self.assertFalse((out / "AuditorA_report.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -355,10 +356,24 @@ def run_lean_verification(
             )
         )
 
-    # Atomic publication only after Pass 2 + axiom check succeed
+    # Exclusive temp file + atomic rename only after Pass 2 + axiom check succeed
     out_lean_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_lean_path.with_suffix(".lean.tmp")
-    tmp_path.write_text(proof_source, encoding="utf-8")
-    os.replace(tmp_path, out_lean_path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(out_lean_path.parent),
+            prefix=f".{out_lean_path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tf:
+            tf.write(proof_source)
+            tmp_path = Path(tf.name)
+        os.replace(tmp_path, out_lean_path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
     return LeanVerificationResult(lean_file=out_lean_path, claims=claim_results, raw_axioms_ok=True)

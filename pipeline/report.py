@@ -52,6 +52,7 @@ def build_single_report_dict(
     lean_result: LeanVerificationResult | None,
     auditor_label: str | None = None,
 ) -> dict[str, Any]:
+    declared_auditor = spec.get("auditor") if isinstance(spec, dict) else "invalid"
     return {
         "schema_version": "epistemic-ledger-report/v2.1",
         "document": {
@@ -59,7 +60,8 @@ def build_single_report_dict(
             "resolved_path": str(doc.resolved_path),
             "sha256": doc.sha256,
         },
-        "auditor": auditor_label or (spec.get("auditor") if isinstance(spec, dict) else "invalid"),
+        "auditor": auditor_label or declared_auditor,
+        "declared_auditor": declared_auditor,
         "paper_title": spec.get("paper_title", "") if isinstance(spec, dict) else "",
         "grounding_and_schema_ok": len(errors) == 0,
         "validation_errors": [
@@ -168,18 +170,18 @@ def build_comparison_report(
 ) -> tuple[dict[str, Any], str]:
     """Compare 2+ auditor reports on the same document snapshot.
 
-    Claims are matched by their verbatim quote position `(char_offset, normalized_quote)`
-    in the shared document snapshot — NEVER by arbitrary `claim.id` strings.
-    Each row also records claim kind, target, and excluded channel per auditor so
-    target-level divergences (e.g. pre- vs post-decoder) are never hidden behind
-    matching verdicts.
+    Claims are aligned by verbatim quote location `(char_offset, normalized_quote)`.
+    Every claim emitted by an auditor for a given quote is preserved as a list (never
+    overwritten): if any auditor attaches multiple claims to the same quote, the row is
+    marked `AMBIGUOUS` (`verdicts_agree = False`) and all claims are shown.
+    Full claim signatures (`kind`, `target`, `tag`, `excluded_channel`) are also compared.
     """
     auditors = [r["auditor"] for r in reports]
     all_grounding_ok = all(r["grounding_and_schema_ok"] for r in reports)
 
-    # Index verified claims per auditor by quote anchor
+    # Index verified claims per (anchor, auditor) as a LIST so no claim is ever dropped
     anchor_order: list[tuple[int, str]] = []
-    anchor_to_auditor_claims: dict[tuple[int, str], dict[str, dict[str, Any]]] = {}
+    anchor_to_auditor_claims: dict[tuple[int, str], dict[str, list[dict[str, Any]]]] = {}
 
     for rep, spec in zip(reports, specs):
         aud = rep["auditor"]
@@ -195,13 +197,15 @@ def build_comparison_report(
             if anchor not in anchor_to_auditor_claims:
                 anchor_order.append(anchor)
                 anchor_to_auditor_claims[anchor] = {}
-            anchor_to_auditor_claims[anchor][aud] = {
-                "claim_id": c["id"],
-                "verdict": c["verdict"],
-                "signature": _claim_signature(meta),
-                "finding_types": [f["type"] for f in c["findings"]],
-                "findings": c["findings"],
-            }
+            anchor_to_auditor_claims[anchor].setdefault(aud, []).append(
+                {
+                    "claim_id": c["id"],
+                    "verdict": c["verdict"],
+                    "signature": _claim_signature(meta),
+                    "finding_types": [f["type"] for f in c["findings"]],
+                    "findings": c["findings"],
+                }
+            )
 
     rows: list[dict[str, Any]] = []
     for idx, anchor in enumerate(anchor_order, 1):
@@ -210,27 +214,41 @@ def build_comparison_report(
         verdicts: set[str] = set()
         kinds: set[str] = set()
         targets: set[str] = set()
+        tags: set[str] = set()
+        excluded_channels: set[str] = set()
         missing_or_unverified = False
+        ambiguous_multi_claim = False
 
         for rep in reports:
             aud = rep["auditor"]
             if not rep["grounding_and_schema_ok"] or rep.get("lean_verification") is None:
-                by_aud[aud] = {"status": "UNVERIFIED", "verdict": "UNVERIFIED", "findings": []}
+                by_aud[aud] = {"status": "UNVERIFIED", "claims": []}
                 missing_or_unverified = True
             elif aud not in anchor_to_auditor_claims[anchor]:
-                by_aud[aud] = {"status": "UNMATCHED", "verdict": "UNMATCHED", "findings": []}
+                by_aud[aud] = {"status": "UNMATCHED", "claims": []}
                 missing_or_unverified = True
             else:
-                info = anchor_to_auditor_claims[anchor][aud]
-                by_aud[aud] = {"status": "VERIFIED", **info}
-                verdicts.add(info["verdict"])
-                sig = info["signature"]
-                kinds.add(str(sig.get("kind")))
-                tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
-                targets.add(tgt)
+                clist = anchor_to_auditor_claims[anchor][aud]
+                if len(clist) > 1:
+                    ambiguous_multi_claim = True
+                    by_aud[aud] = {"status": "AMBIGUOUS_MULTI_CLAIM", "claims": clist}
+                else:
+                    info = clist[0]
+                    by_aud[aud] = {"status": "VERIFIED", "claims": clist, **info}
+                for info in clist:
+                    verdicts.add(info["verdict"])
+                    sig = info["signature"]
+                    kinds.add(str(sig.get("kind")))
+                    tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
+                    targets.add(tgt)
+                    tags.add(str(sig.get("tag", "")))
+                    excluded_channels.add(str(sig.get("excluded_channel", "")))
 
         if missing_or_unverified:
             status = "UNVERIFIED_OR_UNMATCHED"
+            verdicts_agree = False
+        elif ambiguous_multi_claim:
+            status = "AMBIGUOUS"
             verdicts_agree = False
         elif len(verdicts) == 1:
             status = "AGREE"
@@ -239,6 +257,7 @@ def build_comparison_report(
             status = "DISAGREE"
             verdicts_agree = False
 
+        complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim)
         rows.append(
             {
                 "anchor_index": idx,
@@ -246,8 +265,10 @@ def build_comparison_report(
                 "claim_quote": norm_quote,
                 "status": status,
                 "verdicts_agree": verdicts_agree,
-                "same_claim_kind": (not missing_or_unverified) and len(kinds) == 1,
-                "same_target_name": (not missing_or_unverified) and len(targets) == 1,
+                "same_claim_kind": complete_1to1 and len(kinds) == 1,
+                "same_target_name": complete_1to1 and len(targets) == 1,
+                "same_tag": complete_1to1 and len(tags) == 1,
+                "same_excluded_channel": complete_1to1 and len(excluded_channels) == 1,
                 "by_auditor": by_aud,
             }
         )
@@ -257,10 +278,13 @@ def build_comparison_report(
         aud = rep["auditor"]
         if rep["grounding_and_schema_ok"] and isinstance(spec, dict):
             source_summary[aud] = {
-                s["node"]: {"origin": s["origin"], "carries": s["carries"]} for s in spec.get("sources", [])
+                "declared_auditor": rep.get("declared_auditor"),
+                "sources": {
+                    s["node"]: {"origin": s["origin"], "carries": s["carries"]} for s in spec.get("sources", [])
+                },
             }
         else:
-            source_summary[aud] = {"error": "unverified"}
+            source_summary[aud] = {"declared_auditor": rep.get("declared_auditor"), "error": "unverified"}
 
     comp_dict = {
         "schema_version": "epistemic-ledger-comparison/v2.1",
@@ -277,7 +301,7 @@ def build_comparison_report(
         f"- **Document SHA-256:** `{doc.sha256[:16]}...`",
         f"- **Auditors:** {', '.join(f'`{a}`' for a in auditors)}",
         f"- **All Grounding & Schema Checks Passed:** `{all_grounding_ok}`",
-        "- **Matching Rule:** Claims are aligned strictly by verbatim quote location `(char_offset, normalized_quote)` in this snapshot, not by arbitrary `claim.id`.",
+        "- **Matching Rule:** Claims are aligned strictly by verbatim quote location `(char_offset, normalized_quote)` in this snapshot, preserving all claims per quote (multiple claims on one quote are flagged `AMBIGUOUS`).",
         "",
     ]
 
@@ -285,7 +309,9 @@ def build_comparison_report(
         md += ["## Unverified Auditors (Grounding / Schema Failed)", ""]
         for rep in reports:
             if not rep["grounding_and_schema_ok"]:
-                md.append(f"- **`{rep['auditor']}`:** UNVERIFIED ({len(rep['validation_errors'])} validation/grounding error(s))")
+                md.append(
+                    f"- **`{rep['auditor']}`:** UNVERIFIED ({len(rep['validation_errors'])} validation/grounding error(s))"
+                )
         md.append("")
 
     md += [
@@ -295,50 +321,80 @@ def build_comparison_report(
         "|---|---|---|" + "|".join("---" for _ in auditors) + "|",
     ]
 
+    def _fmt_claim_cell(info: dict[str, Any]) -> str:
+        sig = info["signature"]
+        tgt = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
+        extras = []
+        if "tag" in sig:
+            extras.append(f"tag={sig['tag']}")
+        if "excluded_channel" in sig:
+            extras.append(f"excl={sig['excluded_channel']}")
+        extra_str = (", " + ", ".join(extras)) if extras else ""
+        ftypes = ", ".join(info["finding_types"]) or "clean"
+        return f"**{info['verdict']}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
+
     for row in rows:
         q_short = row["claim_quote"]
         if len(q_short) > 64:
             q_short = q_short[:61] + "..."
         q_short = q_short.replace("|", "\\|")
         status_cell = f"**{row['status']}**"
-        if row["verdicts_agree"] and not row["same_claim_kind"]:
-            status_cell += " (kind differs)"
-        elif row["verdicts_agree"] and not row["same_target_name"]:
-            status_cell += " (target name differs)"
+        if row["verdicts_agree"]:
+            diffs = []
+            if not row["same_claim_kind"]:
+                diffs.append("kind")
+            if not row["same_target_name"]:
+                diffs.append("target")
+            if not row["same_tag"]:
+                diffs.append("tag")
+            if not row["same_excluded_channel"]:
+                diffs.append("excluded_channel")
+            if diffs:
+                status_cell += f" ({'/'.join(diffs)} differs)"
         cells = []
         for a in auditors:
-            info = row["by_auditor"][a]
-            if info["status"] != "VERIFIED":
-                cells.append(f"*{info['status']}*")
+            entry = row["by_auditor"][a]
+            if entry["status"] in ("UNVERIFIED", "UNMATCHED"):
+                cells.append(f"*{entry['status']}*")
             else:
-                sig = info["signature"]
-                tgt = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
-                excl = f", excl={sig['excluded_channel']}" if "excluded_channel" in sig else ""
-                ftypes = ", ".join(info["finding_types"]) or "clean"
-                cells.append(
-                    f"**{info['verdict']}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{excl}; {ftypes})"
-                )
-        md.append(f"| {row['anchor_index']} | @{row['char_offset']}: \"{q_short}\" | {status_cell} | " + " | ".join(cells) + " |")
+                cells.append("; ".join(_fmt_claim_cell(c) for c in entry["claims"]))
+        md.append(
+            f"| {row['anchor_index']} | @{row['char_offset']}: \"{q_short}\" | {status_cell} | "
+            + " | ".join(cells)
+            + " |"
+        )
 
     md += ["", "## Disagreements & Unverified Items Requiring Human Review", ""]
     if not rows:
         md.append("- **UNVERIFIED:** No grounded claims were available to compare.")
     else:
-        issues = [r for r in rows if not r["verdicts_agree"] or not r["same_claim_kind"] or not r["same_target_name"]]
+        issues = [
+            r
+            for r in rows
+            if not r["verdicts_agree"]
+            or not r["same_claim_kind"]
+            or not r["same_target_name"]
+            or not r["same_tag"]
+            or not r["same_excluded_channel"]
+        ]
         if not issues and all_grounding_ok:
-            md.append("- None: all auditors passed grounding and reached identical Lean-verified verdicts, claim kinds, and targets on every matched claim.")
+            md.append(
+                "- None: all auditors passed grounding and reached identical Lean-verified verdicts and full claim signatures (kind, target, tag, excluded_channel) on every matched claim."
+            )
         else:
             for row in issues:
-                md.append(f"- **Claim #{row['anchor_index']} (@{row['char_offset']} — {row['status']}):** \"{row['claim_quote']}\"")
+                md.append(
+                    f"- **Claim #{row['anchor_index']} (@{row['char_offset']} — {row['status']}):** \"{row['claim_quote']}\""
+                )
                 for a in auditors:
-                    info = row["by_auditor"][a]
-                    if info["status"] != "VERIFIED":
-                        md.append(f"  - `{a}` → *{info['status']}*")
+                    entry = row["by_auditor"][a]
+                    if entry["status"] in ("UNVERIFIED", "UNMATCHED"):
+                        md.append(f"  - `{a}` → *{entry['status']}*")
                     else:
-                        sig = info["signature"]
-                        md.append(f"  - `{a}` (`{info['claim_id']}`, `{sig}`) → **{info['verdict']}**")
-                        for f in info.get("findings", []):
-                            md.append(f"    - {format_finding_human(f)}")
+                        for info in entry["claims"]:
+                            md.append(f"  - `{a}` (`{info['claim_id']}`, `{info['signature']}`) → **{info['verdict']}**")
+                            for f in info.get("findings", []):
+                                md.append(f"    - {format_finding_human(f)}")
 
     return comp_dict, "\n".join(md) + "\n"
 
