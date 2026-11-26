@@ -64,7 +64,7 @@ def _lean_op_kind(op: dict[str, Any]) -> str:
 def _lean_usage_list(usages: list[dict[str, Any]]) -> str:
     if not usages:
         return "[]"
-    items = [f'⟨.{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}⟩' for u in usages]
+    items = [f'⟨.{u["source"]}, .{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}⟩' for u in usages]
     return "[" + ", ".join(items) + "]"
 
 
@@ -195,6 +195,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .unquantifiedBudget methodNode costTag =>',
         '      "{\\"type\\":\\"unquantifiedBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
+        '  | .unboundUsageSource armNode srcNode costTag =>',
+        '      "{\\"type\\":\\"unboundUsageSource\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
+        '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
         '  | .unmatchedControlBudget methodNode ctrl costTag =>',
         '      "{\\"type\\":\\"unmatchedControlBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
@@ -281,6 +284,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.unusedControlNode Node.{f['control']} Node.{f['evaluation']}"
     if ft == "unquantifiedBudget":
         return f"FlowFinding.unquantifiedBudget Node.{f['method']} Tag.{f['cost_tag']}"
+    if ft == "unboundUsageSource":
+        return f"FlowFinding.unboundUsageSource Node.{f['arm']} Node.{f['source']} Tag.{f['cost_tag']}"
     if ft == "unmatchedControlBudget":
         return f"FlowFinding.unmatchedControlBudget Node.{f['method']} Node.{f['control']} Tag.{f['cost_tag']}"
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")

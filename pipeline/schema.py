@@ -421,19 +421,48 @@ def validate_spec(
                     )
                 )
 
+            def _quote_contains_amount(qtext: str, amount: int) -> bool:
+                plain = str(amount)
+                grouped = f"{amount:,}"
+                return bool(
+                    re.search(rf"(?<!\d){re.escape(plain)}(?!\d)", qtext)
+                    or re.search(rf"(?<!\d){re.escape(grouped)}(?!\d)", qtext)
+                )
+
             def check_usage_list(val: Any, upath: str) -> None:
                 if not isinstance(val, list):
                     errors.append(ValidationErrorItem(upath, "type_error", "Expected list of usage entries"))
                     return
                 for j, entry in enumerate(val):
                     ep = f"{upath}[{j}]"
-                    if not _check_allowed_keys(entry, {"dimension", "unit", "amount"}, {"dimension", "unit", "amount"}, ep, errors):
+                    if not _check_allowed_keys(
+                        entry,
+                        {"source", "dimension", "unit", "amount", "quote"},
+                        {"source", "dimension", "unit", "amount", "quote"},
+                        ep,
+                        errors,
+                    ):
                         continue
+                    check_node_ref(entry["source"], f"{ep}.source")
                     if entry["dimension"] not in tag_set:
-                        errors.append(ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}"))
+                        errors.append(
+                            ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}")
+                        )
                     _check_nonempty_str(entry["unit"], f"{ep}.unit", errors)
-                    if not isinstance(entry["amount"], int) or isinstance(entry["amount"], bool) or entry["amount"] < 0:
-                        errors.append(ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer"))
+                    valid_amt = isinstance(entry["amount"], int) and not isinstance(entry["amount"], bool) and entry["amount"] >= 0
+                    if not valid_amt:
+                        errors.append(
+                            ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer")
+                        )
+                    check_quote(entry["quote"], f"{ep}.quote")
+                    if valid_amt and isinstance(entry["quote"], str) and not _quote_contains_amount(entry["quote"], entry["amount"]):
+                        errors.append(
+                            ValidationErrorItem(
+                                f"{ep}.amount",
+                                "ungrounded_usage_amount",
+                                f"Usage amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                            )
+                        )
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")

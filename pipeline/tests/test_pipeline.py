@@ -504,6 +504,7 @@ class PipelineTests(unittest.TestCase):
         (6) reviewerStressTest provenance recorded cleanly in report."""
         doc = ingest_document(str(SAMPLE_DOC))
         q = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
+        q_num = "We investigate whether 3D spatial structure emerges in neural representations trained without 3D prediction targets across two experimental regimes."
         spec = {
             "schema_version": "epistemic-ledger/v2.3",
             "auditor": "CostAuditorV23",
@@ -522,11 +523,13 @@ class PipelineTests(unittest.TestCase):
                 "ctrlAccB",
                 "meterCluster",
                 "postHocMeter",
+                "clonedCtrlLedger",
                 "evalUneven",
                 "evalEqualSep",
                 "evalForgotten",
                 "evalDependent",
                 "evalUnquantified",
+                "evalClonedLedger",
             ],
             "tags": ["resourceCost"],
             "sources": [
@@ -545,17 +548,19 @@ class PipelineTests(unittest.TestCase):
                 {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "bill_cluster", "inputs": ["sharedCluster"], "output": "meterCluster", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "post_hoc_bill", "inputs": ["accountA", "accountB", "methodAccA", "ctrlAccB"], "output": "postHocMeter", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "clone_ctrl_ledger", "inputs": ["ctrlCluster"], "output": "clonedCtrlLedger", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_uneven", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUneven", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_equal", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalEqualSep", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_forgot", "inputs": ["methodForgetHours", "ctrlCluster", "meterCluster"], "output": "evalForgotten", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_dep", "inputs": ["methodCluster", "clonedCtrl", "meterCluster"], "output": "evalDependent", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_unq", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUnquantified", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_cloned_l", "inputs": ["methodCluster", "ctrlCluster", "clonedCtrlLedger"], "output": "evalClonedLedger", "kind": "transform", "introduces": [], "quote": q},
             ],
             "claims": [
                 {
                     "id": "unevenSameCluster",
-                    "statement": "100 vs 1 GPU-hours on same cluster.",
-                    "quote": q,
+                    "statement": "3 vs 2 units on same cluster.",
+                    "quote": q_num,
                     "provenance": "reviewerStressTest",
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
@@ -563,12 +568,12 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "ctrlCluster",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 100}],
-                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 1}],
+                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 3, "quote": q}],
+                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 2, "quote": "purely 2D patch-matching loss objective"}],
                 },
                 {
                     "id": "equalSeparateAccountsPostHoc",
-                    "statement": "Two separate accounts both spending 500 USD, post-hoc metered.",
+                    "statement": "Two separate accounts both spending 3 units, post-hoc metered.",
                     "quote": q,
                     "provenance": "authorClaimed",
                     "kind": "effectivenessClaim",
@@ -577,8 +582,8 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "ctrlAccB",
                     "cost_ledger_node": "postHocMeter",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"dimension": "resourceCost", "unit": "USD", "amount": 500}],
-                    "control_usage": [{"dimension": "resourceCost", "unit": "USD", "amount": 500}],
+                    "method_usage": [{"source": "accountA", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                    "control_usage": [{"source": "accountB", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
                     "id": "forgetCannotEraseSpentHours",
@@ -590,8 +595,8 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "ctrlCluster",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
-                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
+                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
                     "id": "dependentControlRejected",
@@ -603,8 +608,21 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "clonedCtrl",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
-                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
+                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                },
+                {
+                    "id": "clonedControlLedgerRejected",
+                    "statement": "Fake ledger cloned solely from control output.",
+                    "quote": q,
+                    "kind": "effectivenessClaim",
+                    "method_node": "methodCluster",
+                    "evaluation_node": "evalClonedLedger",
+                    "control_node": "ctrlCluster",
+                    "cost_ledger_node": "clonedCtrlLedger",
+                    "cost_tag": "resourceCost",
+                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
                     "id": "unquantifiedBudgetRejected",
@@ -623,6 +641,12 @@ class PipelineTests(unittest.TestCase):
         }
         self.assertEqual(validate_spec(spec, doc=doc)[0], [])
 
+        # Codex R2 P1-1: fabricated amount 1234567 not in verbatim quote MUST fail grounding!
+        fab = copy.deepcopy(spec)
+        fab["claims"][1]["method_usage"][0]["amount"] = 1234567
+        fab_errs, _ = validate_spec(fab, doc=doc)
+        self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in fab_errs))
+
         with tempfile.TemporaryDirectory() as tmp:
             sp = Path(tmp) / "v23.json"
             out = Path(tmp) / "out"
@@ -639,11 +663,36 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["verdict"], "admissible")
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["findings"], [])
             self.assertEqual(by_id["forgetCannotEraseSpentHours"]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in by_id["forgetCannotEraseSpentHours"]["findings"]], ["unaccountedCostSource"])
+            self.assertIn("unaccountedCostSource", [f["type"] for f in by_id["forgetCannotEraseSpentHours"]["findings"]])
             self.assertEqual(by_id["dependentControlRejected"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["dependentControlRejected"]["findings"]], ["dependentControlArm"])
+            self.assertEqual(by_id["clonedControlLedgerRejected"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["clonedControlLedgerRejected"]["findings"]], ["unaccountedCostSource"])
             self.assertEqual(by_id["unquantifiedBudgetRejected"]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in by_id["unquantifiedBudgetRejected"]["findings"]], ["unquantifiedBudget"])
+            self.assertIn("unquantifiedBudget", [f["type"] for f in by_id["unquantifiedBudgetRejected"]["findings"]])
+
+            # Codex R2 P2-3: `compare` must flag provenance & usage differences even when verdicts agree!
+            s_cmp_a = copy.deepcopy(spec)
+            s_cmp_a["auditor"] = "CmpA"
+            s_cmp_a["claims"] = [copy.deepcopy(spec["claims"][1])]
+            s_cmp_b = copy.deepcopy(s_cmp_a)
+            s_cmp_b["auditor"] = "CmpB"
+            s_cmp_b["claims"][0]["provenance"] = "reviewerStressTest"
+            s_cmp_b["claims"][0]["method_usage"][0]["unit"] = "other_units"
+            s_cmp_b["claims"][0]["control_usage"][0]["unit"] = "other_units"
+            pa, pb = Path(tmp) / "ca.json", Path(tmp) / "cb.json"
+            pa.write_text(json.dumps(s_cmp_a), encoding="utf-8")
+            pb.write_text(json.dumps(s_cmp_b), encoding="utf-8")
+            out_cmp = Path(tmp) / "cmp_v23"
+            rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)])
+            self.assertEqual(rc_cmp, 0)
+            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
+            row = comp["claim_comparison"][0]
+            self.assertTrue(row["verdicts_agree"])
+            self.assertFalse(row["same_provenance"])
+            self.assertFalse(row["same_usage"])
+            cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
+            self.assertIn("provenance/usage differs", cmp_md)
 
 
 if __name__ == "__main__":

@@ -61,10 +61,11 @@ structure FlowGraph (ν σ : Type) where
   ops : List (Op ν σ)
   deriving DecidableEq, Repr
 
-/-- Quantitative resource expenditure for one arm of an effectiveness comparison (v2.3).
-Uses exact natural-number units (e.g. USD cents, GPU-minutes, human-minutes) so budget
-matching is checked numerically rather than by node-ID equality alone. -/
-structure ResourceUsage (σ : Type) where
+/-- Quantitative resource expenditure for one arm of an effectiveness comparison (v2.3.1).
+Binds each exact natural-number quantity (`unit`, `amount`) to the specific `source` node
+carrying `dimension` so numbers cannot float free of their measured cost source. -/
+structure ResourceUsage (ν σ : Type) where
+  source : ν
   dimension : σ
   unit : String
   amount : Nat
@@ -106,8 +107,8 @@ inductive FlowClaimKind (ν σ : Type) where
       (controlNode : Option ν)
       (costLedgerNode : Option ν)
       (costTag : σ)
-      (methodUsage : List (ResourceUsage σ))
-      (controlUsage : List (ResourceUsage σ))
+      (methodUsage : List (ResourceUsage ν σ))
+      (controlUsage : List (ResourceUsage ν σ))
   deriving DecidableEq, Repr
 
 /-- A claim audited against an operation graph. -/
@@ -162,6 +163,9 @@ inductive FlowFinding (ν σ : Type) where
   | unusedControlNode (controlNode : ν) (evaluationNode : ν)
   /-- Tier 2: quantitative resource budgets (`methodUsage` / `controlUsage`) for `costTag` are missing (unquantified). -/
   | unquantifiedBudget (methodNode : ν) (costTag : σ)
+  /-- Tier 2: a `ResourceUsage` entry cites `source` that does not belong to that arm's raw `costTag` origins,
+      or a raw `costTag` source of an arm has no positive `ResourceUsage` entry. -/
+  | unboundUsageSource (armNode : ν) (sourceNode : ν) (costTag : σ)
   /-- Tier 2: quantitative `costTag` budgets differ between `methodNode` and `controlNode` (e.g. 1 vs 100 GPU-hrs). -/
   | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
   deriving DecidableEq, Repr
@@ -275,6 +279,30 @@ def tagAncestorsAux (ops : List (Op ν σ)) (tag : σ) : Nat → List ν → Lis
 def tagAncestors (g : FlowGraph ν σ) (tag : σ) (target : ν) : List ν :=
   tagAncestorsAux g.ops tag (g.ops.length + 1) [target]
 
+/-- Backward reachability from `target` that NEVER expands through any node in `forbidden`.
+Used to ensure a cost ledger meters cost sources directly (allowing post-hoc edges from
+`method`/`control` for timing, while rejecting a fake ledger that merely clones an arm's output). -/
+def ancestorsExcludingAux (ops : List (Op ν σ)) (forbidden : List ν) : Nat → List ν → List ν
+  | 0, visited => visited
+  | fuel + 1, visited =>
+    let preds := ops.foldl
+      (fun acc op =>
+        if op.output ∈ visited && op.output ∉ forbidden then
+          acc ++ op.inputs.filter (fun inp => inp ∉ forbidden)
+        else acc) []
+    let next := preds.foldl (fun acc x => if x ∈ acc then acc else x :: acc) visited
+    if next.length = visited.length then visited
+    else ancestorsExcludingAux ops forbidden fuel next
+
+def ancestorsExcluding (g : FlowGraph ν σ) (forbidden : List ν) (target : ν) : List ν :=
+  if target ∈ forbidden then []
+  else ancestorsExcludingAux g.ops forbidden (g.ops.length + 1) [target]
+
+/-- Raw upstream `SourceNode`s carrying `tag` reachable without traversing `forbidden` nodes. -/
+def rawSourceOriginsExcluding (g : FlowGraph ν σ) (tag : σ) (forbidden : List ν) (target : ν) : List ν :=
+  let reach := ancestorsExcluding g forbidden target
+  (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
+
 /-- Every raw upstream `SourceNode` carrying `tag` reachable via `ancestors` (IGNORING `.forget`
 barriers). Used for physical cost accounting: a `.forget .shown` ablation cannot erase
 resources physically spent during a run. -/
@@ -283,16 +311,16 @@ def rawSourceOrigins (g : FlowGraph ν σ) (tag : σ) (target : ν) : List ν :=
   (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
 
 /-- Total positive quantity recorded for `(costTag, unit)` in a usage list. -/
-def usageAmountFor (us : List (ResourceUsage σ)) (costTag : σ) (unit : String) : Nat :=
+def usageAmountFor (us : List (ResourceUsage ν σ)) (costTag : σ) (unit : String) : Nat :=
   (us.filter (fun u => u.dimension = costTag && u.unit = unit)).foldl (fun acc u => acc + u.amount) 0
 
 /-- Distinct units recorded for `costTag` in a usage list. -/
-def usageUnitsFor (us : List (ResourceUsage σ)) (costTag : σ) : List String :=
+def usageUnitsFor (us : List (ResourceUsage ν σ)) (costTag : σ) : List String :=
   ((us.filter (fun u => u.dimension = costTag)).map (·.unit)).eraseDups
 
 /-- Do two resource-usage lists declare identical positive totals on every `(costTag, unit)`? -/
 def budgetsMatchNumerically
-    (methodUsage controlUsage : List (ResourceUsage σ)) (costTag : σ) : Bool :=
+    (methodUsage controlUsage : List (ResourceUsage ν σ)) (costTag : σ) : Bool :=
   let mUnits := usageUnitsFor methodUsage costTag
   let cUnits := usageUnitsFor controlUsage costTag
   let allUnits := (mUnits ++ cUnits).eraseDups
@@ -301,6 +329,19 @@ def budgetsMatchNumerically
       let ma := usageAmountFor methodUsage costTag u
       let ca := usageAmountFor controlUsage costTag u
       ma > 0 && ma = ca
+
+/-- Check that every `ResourceUsage` entry for `costTag` binds to a real raw cost source of `armNode`,
+and every raw cost source of `armNode` has at least one positive usage entry. -/
+def usageBindingFindings
+    (armNode : ν) (armRawCosts : List ν) (us : List (ResourceUsage ν σ)) (costTag : σ) :
+    List (FlowFinding ν σ) :=
+  let relevant := us.filter (fun u => u.dimension = costTag && u.amount > 0)
+  let stray := relevant.filterMap fun u =>
+    if u.source ∉ armRawCosts then some (.unboundUsageSource armNode u.source costTag) else none
+  let coveredSources := relevant.map (·.source)
+  let missing := armRawCosts.filterMap fun src =>
+    if src ∉ coveredSources then some (.unboundUsageSource armNode src costTag) else none
+  stray ++ missing
 
 /-- Every upstream `SourceNode` carrying `tag` that can flow unblocked into `target`
 (excludes tags fabricated solely by intermediate operations). -/
@@ -369,6 +410,11 @@ def lossyOpsUpstream (g : FlowGraph ν σ) (target : ν) : List (FlowFinding ν 
       | .lossy _ => some (.lossyChannelOnPath op.name op.output)
       | _ => none
     else none
+
+/-- Arms excluded from direct cost-metering traversal so a ledger cannot simply mirror an arm output. -/
+def ledgerExcludedArms (methodNode : ν) : Option ν → List ν
+  | some ctrl => [methodNode, ctrl]
+  | none      => [methodNode]
 
 /-- Audit a `FlowClaim` against its operation graph. -/
 def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
@@ -445,14 +491,16 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
           | none => []
         let unusedLedgerErr : List (FlowFinding ν σ) :=
           if ledger ∉ evalAnc then [.unusedCostLedger ledger evaluationNode] else []
-        let ledgerRawCosts := rawSourceOrigins c.graph costTag ledger
+        let armNodes : List ν := ledgerExcludedArms methodNode controlNode
+        -- Ledger must meter cost sources directly (without merely passing through `methodNode` or `ctrl`!)
+        let ledgerDirectCosts := rawSourceOriginsExcluding c.graph costTag armNodes ledger
         let allArmRawCosts :=
           match controlNode with
           | some ctrl => (methodRawCosts ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
           | none => methodRawCosts
         let unchargedErr : List (FlowFinding ν σ) :=
           allArmRawCosts.filterMap fun src =>
-            if src ∉ ledgerRawCosts then some (.unaccountedCostSource src ledger costTag) else none
+            if src ∉ ledgerDirectCosts then some (.unaccountedCostSource src ledger costTag) else none
         trivMethod ++ trivCtrl ++ unusedLedgerErr ++ unchargedErr ++ danglingInputsUpstream c.graph ledger
     let controlFindings : List (FlowFinding ν σ) :=
       match controlNode with
@@ -467,6 +515,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
           else []
         let unusedErr : List (FlowFinding ν σ) :=
           if ctrl ∉ evalAnc then [.unusedControlNode ctrl evaluationNode] else []
+        let ctrlRawCosts := rawSourceOrigins c.graph costTag ctrl
         let mUnits := usageUnitsFor methodUsage costTag
         let cUnits := usageUnitsFor controlUsage costTag
         let budgetErr : List (FlowFinding ν σ) :=
@@ -476,7 +525,10 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
             []
           else
             [.unmatchedControlBudget methodNode ctrl costTag]
-        selfErr ++ depErr ++ unusedErr ++ budgetErr ++ danglingInputsUpstream c.graph ctrl
+        let bindErr :=
+          usageBindingFindings methodNode methodRawCosts methodUsage costTag
+            ++ usageBindingFindings ctrl ctrlRawCosts controlUsage costTag
+        selfErr ++ depErr ++ unusedErr ++ budgetErr ++ bindErr ++ danglingInputsUpstream c.graph ctrl
     costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
@@ -707,7 +759,9 @@ If an `effectivenessClaim` is `admissible`, then:
   (1) `methodNode` has at least one raw upstream `costTag` source (ignoring `.forget`),
   (2) `methodNode ∈ ancestors c.graph evaluationNode`,
   (3) `costLedgerNode = some ledger` with `ledger ≠ methodNode`, `ledger ∈ ancestors evaluationNode`,
-      and EVERY raw `costTag` source of `methodNode` (ignoring `.forget`) is in `rawSourceOrigins ledger`,
+      and EVERY raw `costTag` source of `methodNode` (ignoring `.forget`) is metered directly by
+      `ledger` without passing through `methodNode` or `controlNode`
+      (`src ∈ rawSourceOriginsExcluding c.graph costTag (ledgerExcludedArms methodNode controlNode) ledger`),
   (4) `controlNode = some ctrl` with `ctrl ≠ methodNode`, `methodNode ∉ ancestors ctrl`,
       `ctrl ∉ ancestors methodNode`, `ctrl ∈ ancestors evaluationNode`, and
       `budgetsMatchNumerically methodUsage controlUsage costTag = true`.
@@ -715,7 +769,7 @@ If an `effectivenessClaim` is `admissible`, then:
 theorem admissible_effectiveness_has_control_and_charged_cost
     (c : FlowClaim ν σ) (methodNode evaluationNode : ν)
     (controlNode costLedgerNode : Option ν) (costTag : σ)
-    (methodUsage controlUsage : List (ResourceUsage σ))
+    (methodUsage controlUsage : List (ResourceUsage ν σ))
     (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage)
     (hadm : flowVerdict c = .admissible) :
     (rawSourceOrigins c.graph costTag methodNode ≠ []) ∧
@@ -724,7 +778,9 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       costLedgerNode = some ledger ∧
       ledger ≠ methodNode ∧
       ledger ∈ ancestors c.graph evaluationNode ∧
-      ∀ src ∈ rawSourceOrigins c.graph costTag methodNode, src ∈ rawSourceOrigins c.graph costTag ledger) ∧
+      ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
+        src ∈ rawSourceOriginsExcluding c.graph costTag
+          (ledgerExcludedArms methodNode controlNode) ledger) ∧
     (∃ ctrl,
       controlNode = some ctrl ∧
       ctrl ≠ methodNode ∧
@@ -758,7 +814,9 @@ theorem admissible_effectiveness_has_control_and_charged_cost
         costLedgerNode = some ledger ∧
         ledger ≠ methodNode ∧
         ledger ∈ ancestors c.graph evaluationNode ∧
-        ∀ src ∈ rawSourceOrigins c.graph costTag methodNode, src ∈ rawSourceOrigins c.graph costTag ledger := by
+        ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
+          src ∈ rawSourceOriginsExcluding c.graph costTag
+            (ledgerExcludedArms methodNode controlNode) ledger := by
       cases hl : costLedgerNode with
       | none =>
         rw [hl] at hledger
@@ -782,7 +840,8 @@ theorem admissible_effectiveness_has_control_and_charged_cost
           · rename_i hnot
             exact Decidable.byContradiction hnot
         have hallCharged : ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
-            src ∈ rawSourceOrigins c.graph costTag ledger := by
+            src ∈ rawSourceOriginsExcluding c.graph costTag
+              (ledgerExcludedArms methodNode controlNode) ledger := by
           intro src hsrc
           have hmemAll : src ∈ (match controlNode with
               | some ctrl => (rawSourceOrigins c.graph costTag methodNode ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
@@ -812,7 +871,8 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       | some ctrl =>
         rw [hc] at hctrl
         dsimp only at hctrl
-        have hc1 := (List.append_eq_nil_iff.mp hctrl).1
+        have hc0 := (List.append_eq_nil_iff.mp hctrl).1
+        have hc1 := (List.append_eq_nil_iff.mp hc0).1
         have hc2 := (List.append_eq_nil_iff.mp hc1).1
         have hc3 := (List.append_eq_nil_iff.mp hc2).1
         have hself := (List.append_eq_nil_iff.mp hc3).1

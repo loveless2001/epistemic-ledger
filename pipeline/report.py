@@ -52,14 +52,34 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unused Control]** control `{f['control']}` does not feed evaluation `{f['evaluation']}`"
     if ft == "unquantifiedBudget":
         return f"**[Unquantified Budget]** `{f['method']}` lacks numeric `{f['cost_tag']}` resource usage quantities for both arms"
+    if ft == "unboundUsageSource":
+        return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
     return json.dumps(f)
 
 
+def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            {
+                "source": u.get("source"),
+                "dimension": u.get("dimension"),
+                "unit": u.get("unit"),
+                "amount": u.get("amount"),
+            }
+            for u in usages
+        ],
+        key=lambda x: (str(x["source"]), str(x["dimension"]), str(x["unit"]), int(x["amount"] or 0)),
+    )
+
+
 def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
     kind = meta.get("kind")
-    sig: dict[str, Any] = {"kind": kind}
+    sig: dict[str, Any] = {
+        "kind": kind,
+        "provenance": meta.get("provenance", "authorClaimed"),
+    }
     for k in (
         "target",
         "excluded_channel",
@@ -75,6 +95,10 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
     ):
         if k in meta:
             sig[k] = meta[k]
+    if "method_usage" in meta:
+        sig["method_usage"] = _norm_usage_key(meta["method_usage"])
+    if "control_usage" in meta:
+        sig["control_usage"] = _norm_usage_key(meta["control_usage"])
     return sig
 
 
@@ -256,6 +280,8 @@ def build_comparison_report(
         excluded_channels: set[str] = set()
         declared_source_sets: set[tuple[str, ...]] = set()
         effectiveness_controls: set[tuple[str, str]] = set()
+        provenances: set[str] = set()
+        usage_signatures: set[str] = set()
         missing_or_unverified = False
         ambiguous_multi_claim = False
 
@@ -279,14 +305,22 @@ def build_comparison_report(
                     verdicts.add(info["verdict"])
                     sig = info["signature"]
                     kinds.add(str(sig.get("kind")))
+                    provenances.add(str(sig.get("provenance", "authorClaimed")))
                     if sig.get("kind") == "effectivenessClaim":
                         tgt = f"{sig.get('method_node')}->{sig.get('evaluation_node')}"
                         tags.add(str(sig.get("cost_tag", "")))
                         effectiveness_controls.add((str(sig.get("control_node")), str(sig.get("cost_ledger_node"))))
+                        usage_signatures.add(
+                            json.dumps(
+                                {"m": sig.get("method_usage", []), "c": sig.get("control_usage", [])},
+                                sort_keys=True,
+                            )
+                        )
                     else:
                         tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
                         tags.add(str(sig.get("tag", "")))
                         effectiveness_controls.add(("", ""))
+                        usage_signatures.add("")
                     targets.add(tgt)
                     excluded_channels.add(str(sig.get("excluded_channel", "")))
                     declared_source_sets.add(tuple(sorted(set(sig.get("declared_sources", [])))))
@@ -318,6 +352,8 @@ def build_comparison_report(
                 "same_excluded_channel": complete_1to1 and len(excluded_channels) == 1,
                 "same_declared_sources": complete_1to1 and len(declared_source_sets) == 1,
                 "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
+                "same_provenance": complete_1to1 and len(provenances) == 1,
+                "same_usage": complete_1to1 and len(usage_signatures) == 1,
                 "by_auditor": by_aud,
             }
         )
@@ -410,6 +446,10 @@ def build_comparison_report(
                 diffs.append("declared_sources")
             if not row["same_control_and_ledger"]:
                 diffs.append("control/ledger")
+            if not row["same_provenance"]:
+                diffs.append("provenance")
+            if not row["same_usage"]:
+                diffs.append("usage")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
         cells = []
@@ -439,6 +479,8 @@ def build_comparison_report(
             or not r["same_excluded_channel"]
             or not r["same_declared_sources"]
             or not r["same_control_and_ledger"]
+            or not r["same_provenance"]
+            or not r["same_usage"]
         ]
         if not issues and all_grounding_ok:
             md.append(
@@ -465,28 +507,23 @@ def build_comparison_report(
 def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA") -> str:
     """Build a strict extraction prompt for any LLM/agent to produce a quote-grounded AuditSpec JSON."""
     return f"""You are an independent epistemological auditor.
-Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.1`.
+Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.3`.
 
 CRITICAL RULES:
-1. Every `source`, `op`, and `claim` MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). Do NOT paraphrase quotes — a deterministic script will reject any quote not found verbatim in the source text.
+1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the exact numeric `amount` must appear inside its `quote`. Do NOT paraphrase or invent numbers.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
-3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
-4. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` with:
-   - `target`: the node where the claimed property emerges
-   - `excluded_channel`: the specific channel/node the claim asserts does NOT receive `tag` (e.g., loss target or direct input)
-   - `tag`: the structural property claimed to emerge
-5. For effectiveness / efficiency / productivity claims (Tier 2, v2.2), use `kind: "effectivenessClaim"` with:
-   - `method_node`: the evaluated method run
-   - `evaluation_node`: the reported outcome/comparison metric
-   - `control_node`: the budget-matched control arm node (or `null` if the paper has no matched control)
-   - `cost_ledger_node`: an independent cost-accounting node charging all `cost_tag` sources spent by `method_node` (or `null` if omitted)
-   - `cost_tag`: the resource/cost tag (e.g., `resourceCost`)
-6. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
-7. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
+3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
+4. Set `"provenance"` on every claim: `"authorClaimed"` if explicitly claimed by the authors, or `"reviewerStressTest"` if testing a reviewer-posed counterfactual question.
+5. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`).
+6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
+   - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
+   - `method_usage` and `control_usage`: lists of `{{"source": "<node>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing amount>"}}` (empty `[]` if unquantified in the paper).
+7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
+8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 
 JSON TEMPLATE:
 {{
-  "schema_version": "epistemic-ledger/v2.1",
+  "schema_version": "epistemic-ledger/v2.3",
   "auditor": "{auditor_name}",
   "paper_title": "...",
   "nodes": ["nodeA", "nodeB"],
@@ -502,6 +539,7 @@ JSON TEMPLATE:
       "id": "claim1",
       "statement": "concise statement of claim",
       "quote": "verbatim claim quote from text",
+      "provenance": "authorClaimed",
       "kind": "emergesWithExclusion",
       "target": "nodeB",
       "excluded_channel": "nodeB",

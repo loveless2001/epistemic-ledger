@@ -118,18 +118,13 @@
       "control_usage": []
     },
     {
-      "id": "citation_depth_with_null_control",
-      "statement": "Author check: citation chain depth (101 steps across 102 papers) evaluated against a volume-matched recency random null model (99.4 steps, P = 0.44).",
+      "id": "citation_depth_statistical_null",
+      "statement": "Author statistical null check (conditionalFlow, not a cost/budget claim): Stage-1 citation depth (101 steps) is statistically indistinguishable from a recency-matched random citation null (99.4 steps, P = 0.44).",
       "quote": "However, even a random citation model that simply cites recent preprints produces chains averaging 99.4 steps",
       "provenance": "authorClaimed",
-      "kind": "effectivenessClaim",
-      "method_node": "cohortCitationChains",
-      "evaluation_node": "citationNullComparison",
-      "control_node": "recencyRandomNullControl",
-      "cost_ledger_node": "citationStreamLedger",
-      "cost_tag": "citationVolumeBudget",
-      "method_usage": [{"dimension": "citationVolumeBudget", "unit": "papers", "amount": 102}],
-      "control_usage": [{"dimension": "citationVolumeBudget", "unit": "papers", "amount": 102}]
+      "kind": "conditionalFlow",
+      "target": "citationNullComparison",
+      "declared_sources": ["cohortPaperStream"]
     }
   ]
 }

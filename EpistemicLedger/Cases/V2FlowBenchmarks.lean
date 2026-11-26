@@ -526,12 +526,12 @@ def unevenQuantitiesSameCluster : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.resourceCost, "gpu_hours", 100⟩]
-    [⟨.resourceCost, "gpu_hours", 1⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 100⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 1⟩]
 
-/-- Case 2 (Codex P1-1 converse): Two separate billing accounts both spending 500 USD -> ADMISSIBLE! -/
+/-- Case 2 (Codex P1-1 converse + post-hoc meter): Two separate accounts both spending 500 USD -> ADMISSIBLE! -/
 def separateAccountsEqualDollars : FlowClaim Node Tag where
-  statement := "Two separate accounts both spending 500 USD, metered post-hoc."
+  statement := "Two separate accounts both spending 500 USD, metered post-hoc directly from both accounts."
   graph :=
     ⟨[⟨.accountA, .setByExperimenter, [.resourceCost]⟩,
       ⟨.accountB, .setByExperimenter, [.resourceCost]⟩],
@@ -543,8 +543,8 @@ def separateAccountsEqualDollars : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.resourceCost, "USD", 500⟩]
-    [⟨.resourceCost, "USD", 500⟩]
+    [⟨.accountA, .resourceCost, "USD", 500⟩]
+    [⟨.accountB, .resourceCost, "USD", 500⟩]
 
 /-- Case 3 (Codex P1-2): `forget .resourceCost .shown` CANNOT erase physically spent human hours! -/
 def forgetShownCannotEraseCost : FlowClaim Node Tag where
@@ -560,8 +560,8 @@ def forgetShownCannotEraseCost : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.resourceCost, "gpu_hours", 10⟩]
-    [⟨.resourceCost, "gpu_hours", 10⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
 
 /-- Case 4 (Codex P1-3): Control arm derived from method output -> REJECTED (`dependentControlArm`)! -/
 def controlDerivedFromMethod : FlowClaim Node Tag where
@@ -575,10 +575,25 @@ def controlDerivedFromMethod : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .clonedControlArm) (some .postHocBillingMeter) .resourceCost
-    [⟨.resourceCost, "gpu_hours", 10⟩]
-    [⟨.resourceCost, "gpu_hours", 10⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
 
-/-- Case 5 (Society of AI Scientists macro): no control, no ledger, unquantified budget -> REJECTED! -/
+/-- Case 5 (Codex R2 P1-2): Ledger cloned solely from control output (no direct metering path) -> REJECTED! -/
+def ledgerClonedFromControlOnly : FlowClaim Node Tag where
+  statement := "Fake ledger reads only control output rather than metering cost sources directly."
+  graph :=
+    ⟨[⟨.sharedGpuCluster, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_method", [.sharedGpuCluster], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_control", [.sharedGpuCluster], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"clone_ctrl_as_ledger", [.humanPlusAiControlRun], .partialCostLedger, .transform []⟩,
+      ⟨"eval", [.autonomousSocietyRun, .humanPlusAiControlRun, .partialCostLedger],
+        .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+
+/-- Case 6 (Society of AI Scientists macro): no control, no ledger, unquantified budget -> REJECTED! -/
 def societyNoControlNoCost : FlowClaim Node Tag where
   statement := "936 autonomous agents across 35 labs without control or cost ledger."
   graph :=
@@ -608,6 +623,12 @@ theorem dependent_control_arm_rejected :
     flowVerdict controlDerivedFromMethod = .rejected ∧
     FlowFinding.dependentControlArm Node.autonomousSocietyRun Node.clonedControlArm
       ∈ auditFlow controlDerivedFromMethod := by
+  decide
+
+theorem ledger_cloned_from_control_rejected :
+    flowVerdict ledgerClonedFromControlOnly = .rejected ∧
+    FlowFinding.unaccountedCostSource Node.sharedGpuCluster Node.partialCostLedger Tag.resourceCost
+      ∈ auditFlow ledgerClonedFromControlOnly := by
   decide
 
 theorem society_rejected_no_control_no_cost :
