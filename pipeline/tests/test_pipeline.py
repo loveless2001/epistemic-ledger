@@ -565,12 +565,7 @@ class PipelineTests(unittest.TestCase):
                     "provenance": "reviewerStressTest",
                     "nature": "quantitative",
                     "quantitative_kind": "derivedComparison",
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodCluster",
-                    "evaluation_node": "evalUneven",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "meterCluster",
-                    "cost_tag": "resourceCost",
+                    "kind": "outOfScope",
                 },
                 {
                     "id": "equalSeparateAccountsPostHoc",
@@ -592,6 +587,8 @@ class PipelineTests(unittest.TestCase):
                     "id": "forgetCannotEraseSpentHours",
                     "statement": "Forget .shown cannot erase humanHours spent during run.",
                     "quote": q,
+                    "nature": "quantitative",
+                    "quantitative_kind": "order",
                     "kind": "effectivenessClaim",
                     "method_node": "methodForgetHours",
                     "evaluation_node": "evalForgotten",
@@ -603,6 +600,8 @@ class PipelineTests(unittest.TestCase):
                     "id": "dependentControlRejected",
                     "statement": "Control cloned from method output.",
                     "quote": q,
+                    "nature": "quantitative",
+                    "quantitative_kind": "order",
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
                     "evaluation_node": "evalDependent",
@@ -614,6 +613,8 @@ class PipelineTests(unittest.TestCase):
                     "id": "clonedControlLedgerRejected",
                     "statement": "Fake ledger cloned solely from control output.",
                     "quote": q,
+                    "nature": "quantitative",
+                    "quantitative_kind": "order",
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
                     "evaluation_node": "evalClonedLedger",
@@ -625,6 +626,8 @@ class PipelineTests(unittest.TestCase):
                     "id": "noControlNoLedgerUnestablished",
                     "statement": "Method evaluated with no control arm and no cost ledger.",
                     "quote": q,
+                    "nature": "quantitative",
+                    "quantitative_kind": "order",
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
                     "evaluation_node": "evalNoControl",
@@ -752,13 +755,46 @@ class PipelineTests(unittest.TestCase):
             doc_path.write_text(doc_text, encoding="utf-8")
             doc = ingest_document(str(doc_path))
 
-            # 1. `nature: "quantitative"` without `quantitative_kind` fails schema; `qualitative` with `quantitative_kind` fails schema
+            # 1. v2.4 nature/kind invariants (Codex #27436 + Claude #27437):
+            #    - missing `nature` on v2.4 fails (`missing_nature`), while legacy v2.3 without `nature` still passes
+            #    - `quantitative` without `quantitative_kind` fails; `qualitative` with `quantitative_kind` fails
+            #    - v2.4 `quantitative/order` with `kind: conditionalFlow` fails (`invalid_quantitative_claim_kind`)
+            #    - v2.4 `quantitative/derivedComparison` with `kind: effectivenessClaim` fails (`invalid_quantitative_claim_kind`)
+            s_no_nat = make_spec("quantitative", None)
+            del s_no_nat["claims"][0]["nature"]
+            self.assertTrue(any(e.code == "missing_nature" for e in validate_spec(s_no_nat, doc=doc)[0]))
+            s_v23_legacy = copy.deepcopy(s_no_nat)
+            s_v23_legacy["schema_version"] = "epistemic-ledger/v2.3"
+            self.assertEqual(validate_spec(s_v23_legacy, doc=doc)[0], [])
+
             e_miss, _ = validate_spec(make_spec("quantitative", None), doc=doc)
             self.assertTrue(any(e.code == "missing_quantitative_kind" for e in e_miss))
             e_unexp, _ = validate_spec(make_spec("qualitative", "order"), doc=doc)
             self.assertTrue(any(e.code == "unexpected_quantitative_kind" for e in e_unexp))
 
+            s_bypass_cond = make_spec("quantitative", "order")
+            s_bypass_cond["claims"][0] = {
+                "id": "bypassOrderAsCond",
+                "statement": "Attempt to bypass control check using conditionalFlow.",
+                "quote": q_hdr,
+                "nature": "quantitative",
+                "quantitative_kind": "order",
+                "kind": "conditionalFlow",
+                "target": "evalNode",
+                "declared_sources": ["accountA", "accountB"],
+            }
+            self.assertTrue(
+                any(e.code == "invalid_quantitative_claim_kind" for e in validate_spec(s_bypass_cond, doc=doc)[0])
+            )
+            self.assertTrue(
+                any(
+                    e.code == "invalid_quantitative_claim_kind"
+                    for e in validate_spec(make_spec("quantitative", "derivedComparison"), doc=doc)[0]
+                )
+            )
+
             # 2. Structural `order` claim passes without reading numbers and renders `## Out of Scope`
+            #    and clarifies "structural comparison only; numbers & necessity unchecked"
             sp = Path(tmp) / "valid_order.json"
             sp.write_text(json.dumps(make_spec("quantitative", "order")), encoding="utf-8")
             out = Path(tmp) / "out"
@@ -768,13 +804,23 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rep["lean_verification"]["claims"][0]["verdict"], "admissible")
             self.assertEqual(rep["lean_verification"]["claims"][0]["nature"], "quantitative")
             self.assertEqual(rep["lean_verification"]["claims"][0]["quantitative_kind"], "order")
+            self.assertIn("structural comparison only; numbers & necessity unchecked", md)
             self.assertTrue(any("out of scope" in s.lower() and "without reading or comparing numbers" in s.lower() for s in rep["out_of_scope"]))
             self.assertIn("## Out of Scope", md)
 
-            # 3. `specificValue` and `derivedComparison` return `outOfScope`
+            # 3. `specificValue` and `derivedComparison` with `kind: outOfScope` return `outOfScope`
             for oos_qkind in ("specificValue", "derivedComparison"):
+                s_oos = make_spec("quantitative", oos_qkind)
+                s_oos["claims"][0] = {
+                    "id": "budgetCheck",
+                    "statement": f"Quantitative {oos_qkind} claim.",
+                    "quote": q_hdr,
+                    "nature": "quantitative",
+                    "quantitative_kind": oos_qkind,
+                    "kind": "outOfScope",
+                }
                 sp_oos = Path(tmp) / f"{oos_qkind}.json"
-                sp_oos.write_text(json.dumps(make_spec("quantitative", oos_qkind)), encoding="utf-8")
+                sp_oos.write_text(json.dumps(s_oos), encoding="utf-8")
                 out_oos = Path(tmp) / f"out_{oos_qkind}"
                 self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_oos), "--out", str(out_oos)]), 0)
                 rep_oos = json.loads((out_oos / "ScopeAuditor_report.json").read_text(encoding="utf-8"))
@@ -1710,17 +1756,28 @@ class PipelineTests(unittest.TestCase):
             bad_h3 = copy.deepcopy(spec_ep_a)
             bad_h3["claims"][2]["hedge_quote"] = "Hallucinated hedge phrase not in text"
             self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_h3, doc=ep_doc)[0]))
+            # Codex #27436 Part C: hedge_quote from clause 2 attached to clause 1 MUST fail (`hedge_quote_outside_claim`)!
+            bad_h4 = copy.deepcopy(spec_ep_a)
+            bad_h4["claims"][2]["quote"] = "Within this task, spacetime geometry is obtained from an agent's successful predictions and actions"
+            bad_h4["claims"][2]["hedge_quote"] = "providing a first step toward emergent spacetime"
+            self.assertTrue(any(e.code == "hedge_quote_outside_claim" for e in validate_spec(bad_h4, doc=ep_doc)[0]))
 
-            # Auditor B omits the extra unchecked bet on Q4 -> `admissible`, creating DISAGREE (A=unestablished, B=admissible)
+            # Auditor B:
+            # - omits extra unchecked bet on Q4 -> `admissible` (DISAGREE: A=unestablished, B=admissible -> Strictest=unestablished)
+            # - picks a DIFFERENT `hedge_quote` on Q7 -> `compare` flags `hedge_quote differs` and renders both quotes!
+            # - omits `jepaNeedNecessityHyp` (only Auditor A reports it -> UNVERIFIED_OR_UNMATCHED -> Strictest MUST be None / `*—*`)!
             spec_ep_a_cmp = copy.deepcopy(spec_ep_a)
             spec_ep_a_cmp["claims"] = [
                 c for c in spec_ep_a["claims"] if c["id"] not in ("cleanHedgedEmergence", "jepaRatio42OutOfScope")
             ]
             spec_ep_b = copy.deepcopy(spec_ep_a_cmp)
             spec_ep_b["auditor"] = "EpistemicB"
+            spec_ep_b["claims"] = [c for c in spec_ep_b["claims"] if c["id"] != "jepaNeedNecessityHyp"]
             for cl in spec_ep_b["claims"]:
                 if cl["id"] == "barontiniQ4Setting":
                     cl["hypotheses"][0]["status"] = "discharged"
+                if cl["id"] == "spacetimeQ7Hedged":
+                    cl["hedge_quote"] = "Within this task, spacetime geometry"
 
             sp_ep_full = base / "ep_full.json"
             sp_ep_full.write_text(json.dumps(spec_ep_a), encoding="utf-8")
@@ -1760,7 +1817,15 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rows_by_cid["barontiniQ4Setting"]["strictest_verdict"], "unestablished")
             self.assertEqual(rows_by_cid["spacetimeQ6Unhedged"]["strictest_verdict"], "rejected")
             self.assertEqual(rows_by_cid["spacetimeQ7Hedged"]["strictest_verdict"], "rejected")
+            self.assertFalse(rows_by_cid["spacetimeQ7Hedged"]["same_hedge_quote"])
+            self.assertIn("hedge_quote differs", comp_ep_md)
+            self.assertIn('hedged="providing a first step toward emergent spacetime"', comp_ep_md)
+            self.assertIn('hedged="Within this task, spacetime geometry"', comp_ep_md)
             self.assertEqual(rows_by_cid["genuineConditional"]["strictest_verdict"], "admissible")
+            # Codex #27436 Part D: unmatched single-auditor claim MUST leave `strictest_verdict` empty (`None` / `*—*`)!
+            self.assertEqual(rows_by_cid["jepaNeedNecessityHyp"]["status"], "UNVERIFIED_OR_UNMATCHED")
+            self.assertIsNone(rows_by_cid["jepaNeedNecessityHyp"]["strictest_verdict"])
+            self.assertIn("| *—* |", comp_ep_md)
 
             # Claude #27390: mechanical declaration_locations notes (`in_claim` vs `elsewhere_in_document`)
             # without altering verdicts!

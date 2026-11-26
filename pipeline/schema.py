@@ -472,7 +472,16 @@ def validate_spec(
                         f"provenance must be in {sorted(VALID_CLAIM_PROVENANCE)}",
                     )
                 )
-            if "nature" in cl and cl["nature"] not in VALID_CLAIM_NATURES:
+            is_v24 = spec.get("schema_version") == "epistemic-ledger/v2.4"
+            if is_v24 and "nature" not in cl:
+                errors.append(
+                    ValidationErrorItem(
+                        f"{p}.nature",
+                        "missing_nature",
+                        "v2.4 claims must declare nature ('qualitative' or 'quantitative')",
+                    )
+                )
+            elif "nature" in cl and cl["nature"] not in VALID_CLAIM_NATURES:
                 errors.append(
                     ValidationErrorItem(
                         f"{p}.nature",
@@ -497,6 +506,24 @@ def validate_spec(
                             f"quantitative_kind must be in {sorted(VALID_QUANTITATIVE_KINDS)}",
                         )
                     )
+                elif is_v24:
+                    qkind = cl["quantitative_kind"]
+                    if qkind in ("order", "threshold") and kind != "effectivenessClaim":
+                        errors.append(
+                            ValidationErrorItem(
+                                f"{p}.kind",
+                                "invalid_quantitative_claim_kind",
+                                f"v2.4 quantitative/{qkind} claims must use kind 'effectivenessClaim' so control and cost-accounting structure are checked",
+                            )
+                        )
+                    elif qkind in OUT_OF_SCOPE_QUANTITATIVE_KINDS and kind != "outOfScope":
+                        errors.append(
+                            ValidationErrorItem(
+                                f"{p}.kind",
+                                "invalid_quantitative_claim_kind",
+                                f"v2.4 quantitative/{qkind} claims must use kind 'outOfScope'",
+                            )
+                        )
             elif "quantitative_kind" in cl:
                 errors.append(
                     ValidationErrorItem(
@@ -520,6 +547,19 @@ def validate_spec(
                     )
                 else:
                     check_quote(cl["hedge_quote"], f"{p}.hedge_quote")
+                    if isinstance(cl["hedge_quote"], str) and isinstance(cl["quote"], str):
+                        norm_hq = normalize_whitespace(cl["hedge_quote"])
+                        norm_cq = normalize_whitespace(cl["quote"])
+                        dehy_hq = dehyphenate_and_normalize(cl["hedge_quote"])
+                        dehy_cq = dehyphenate_and_normalize(cl["quote"])
+                        if norm_hq and norm_cq and (norm_hq not in norm_cq and dehy_hq not in dehy_cq):
+                            errors.append(
+                                ValidationErrorItem(
+                                    f"{p}.hedge_quote",
+                                    "hedge_quote_outside_claim",
+                                    "hedge_quote must appear verbatim inside the claim's own quote (attach hedges only to the clause they modify)",
+                                )
+                            )
             elif "hedge_quote" in cl:
                 errors.append(
                     ValidationErrorItem(

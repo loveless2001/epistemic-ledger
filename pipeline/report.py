@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize
+from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize, normalize_whitespace
 from pipeline.lean_runner import LeanVerificationResult
 from pipeline.schema import (
     QuoteMatch,
@@ -103,8 +103,10 @@ def _count_declared_bets(claim_meta: dict[str, Any]) -> int:
     )
 
 
-def _format_verdict_table(verdict: str, declared_bet_count: int = 0) -> str:
+def _format_verdict_table(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
     if verdict == "admissible":
+        if kind == "effectivenessClaim":
+            return "admissible (structural comparison only; numbers & necessity unchecked)"
         if declared_bet_count > 0:
             noun = "bet" if declared_bet_count == 1 else "bets"
             return f"admissible (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
@@ -112,8 +114,10 @@ def _format_verdict_table(verdict: str, declared_bet_count: int = 0) -> str:
     return verdict
 
 
-def _format_verdict_heading(verdict: str, declared_bet_count: int = 0) -> str:
+def _format_verdict_heading(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
     if verdict == "admissible":
+        if kind == "effectivenessClaim":
+            return "ADMISSIBLE (structural comparison only; numbers & necessity unchecked)"
         if declared_bet_count > 0:
             noun = "bet" if declared_bet_count == 1 else "bets"
             return f"ADMISSIBLE (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
@@ -149,6 +153,8 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "nature": meta.get("nature", "qualitative"),
         "hedged": bool(meta.get("hedged", False)),
     }
+    if meta.get("hedged") and isinstance(meta.get("hedge_quote"), str):
+        sig["hedge_quote"] = normalize_whitespace(meta["hedge_quote"])
     if "quantitative_kind" in meta:
         sig["quantitative_kind"] = meta["quantitative_kind"]
     for k in (
@@ -409,7 +415,7 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count)}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
@@ -425,7 +431,7 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             nature_label = f"quantitative/{meta['quantitative_kind']}"
         hedged_suffix = ", hedged" if meta.get("hedged") else ""
         lines += [
-            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count)}** (`{prov}`, `{nature_label}`{hedged_suffix})",
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`{hedged_suffix})",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
@@ -618,6 +624,7 @@ def build_comparison_report(
         effectiveness_controls: set[tuple[str, str]] = set()
         provenances: set[str] = set()
         hedged_flags: set[bool] = set()
+        hedge_quotes: set[str] = set()
         nature_signatures: set[tuple[str, str]] = set()
         hypothesis_signatures: set[str] = set()
         declared_bet_sets: set[tuple[str, ...]] = set()
@@ -646,6 +653,7 @@ def build_comparison_report(
                     kinds.add(str(sig.get("kind")))
                     provenances.add(str(sig.get("provenance", "authorClaimed")))
                     hedged_flags.add(bool(sig.get("hedged", False)))
+                    hedge_quotes.add(str(sig.get("hedge_quote", "")))
                     nature_signatures.add((str(sig.get("nature", "qualitative")), str(sig.get("quantitative_kind", ""))))
                     if sig.get("kind") == "effectivenessClaim":
                         tgt = f"{sig.get('method_node')}->{sig.get('evaluation_node')}"
@@ -683,7 +691,7 @@ def build_comparison_report(
             verdicts_agree = False
 
         complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim) and is_clique
-        strictest = strictest_verdict_of(verdicts)
+        strictest = strictest_verdict_of(verdicts) if complete_1to1 else None
         rows.append(
             {
                 "anchor_index": idx,
@@ -703,6 +711,7 @@ def build_comparison_report(
                 "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
                 "same_provenance": complete_1to1 and len(provenances) == 1,
                 "same_hedged": complete_1to1 and len(hedged_flags) == 1,
+                "same_hedge_quote": complete_1to1 and len(hedge_quotes) == 1,
                 "same_nature": complete_1to1 and len(nature_signatures) == 1,
                 "same_hypotheses": complete_1to1 and len(hypothesis_signatures) == 1,
                 "same_declared_bets": complete_1to1 and len(declared_bet_sets) == 1,
@@ -795,10 +804,13 @@ def build_comparison_report(
                 extras.append(f"excl={sig['excluded_channel']}")
             if "declared_sources" in sig:
                 extras.append(f"declared={sorted(set(sig['declared_sources']))}")
+        if sig.get("hedged") and sig.get("hedge_quote"):
+            hq_short = sig["hedge_quote"].replace("|", "\\|")
+            extras.append(f'hedged="{hq_short}"')
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
         bet_count = _count_declared_bets(sig)
-        return f"**{_format_verdict_table(info['verdict'], bet_count)}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
+        return f"**{_format_verdict_table(info['verdict'], bet_count, sig.get('kind'))}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
 
     for row in rows:
         q_short = row["claim_quote"]
@@ -824,6 +836,8 @@ def build_comparison_report(
                 diffs.append("provenance")
             if not row.get("same_hedged", True):
                 diffs.append("hedged")
+            if not row.get("same_hedge_quote", True):
+                diffs.append("hedge_quote")
             if not row.get("same_nature", True):
                 diffs.append("nature")
             if not row.get("same_hypotheses", True):
@@ -867,6 +881,7 @@ def build_comparison_report(
             or not r["same_control_and_ledger"]
             or not r["same_provenance"]
             or not r.get("same_hedged", True)
+            or not r.get("same_hedge_quote", True)
             or not r.get("same_nature", True)
             or not r.get("same_hypotheses", True)
             or not r.get("same_declared_bets", True)
