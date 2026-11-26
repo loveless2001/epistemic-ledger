@@ -156,6 +156,10 @@ inductive FlowFinding (ν σ : Type) where
   | lossyChannelOnPath (opName : String) (output : ν)
   /-- An untargeted `.lossy` operation sits on a `tag`-carrying path without witnessing collision on `tag` specifically. -/
   | untargetedLossyChannel (opName : String) (output : ν) (tag : σ)
+  /-- A tag-specific `.lossyOn` op cuts all `tag`-carrying paths, but co-inputs or shared ancestors
+      (`sideNodes`) bypass `output` into `target` (e.g., `r` in `(s XOR r, r)`): joint recoverability
+      with side information cannot be refuted from graph topology alone. -/
+  | lossyWithSideInformation (opName : String) (output : ν) (sideNodes : List ν)
   /-- Every `tag`-carrying path to `target` crosses a `.lossy` op, but across parallel branches with no
       single `.lossy` bottleneck (e.g. `(n div 2, n mod 2)`): joint injectivity is undecidable from the graph alone. -/
   | parallelLossyBranches (target : ν) (tag : σ) (lossyOutputs : List ν)
@@ -599,10 +603,18 @@ def sourceOriginsExcludingNode (g : FlowGraph ν σ) (tag : σ) (blocked : ν) (
     let reach := tagAncestorsExcludingNodeAux g.ops tag blocked (g.ops.length + 1) [target]
     (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
 
-/-- Single **tag-specific** `.lossyOn` bottleneck operations whose output node cuts ALL `tag`-carrying
-    source paths to `target` (and is produced exclusively by ops witnessing collision on `tag`, not a
-    `tag` source itself). When such a bottleneck exists, two inputs differing on `tag` collide at the
-    cut-vertex and unique recovery of `tag` is provably impossible (`rejected`). -/
+/-- Upstream nodes in the input cone of `op` that also reach `target` WITHOUT traversing `op.output`
+    (side information that may disambiguate colliding inputs of `op`, e.g., `r` in `(s XOR r, r)`). -/
+def sideInfoBypassNodes (g : FlowGraph ν σ) (op : Op ν σ) (target : ν) : List ν :=
+  let outsideReach := ancestorsExcluding g [op.output] target
+  let opInputAnc := (op.inputs.flatMap (ancestors g)).eraseDups
+  opInputAnc.filter (fun n => n ∈ outsideReach)
+
+/-- Single **complete** tag-specific `.lossyOn` bottleneck operations whose output node cuts ALL
+    `tag`-carrying source paths to `target`, is produced exclusively by ops witnessing collision on `tag`,
+    is not a `tag` source itself, AND has NO side-information bypass (`sideInfoBypassNodes = []`).
+    When such a complete bottleneck exists, `target(u, v) = G(f(u), v)` with `u` and `v` independent,
+    so colliding `u1, u2` with distinct `tag` values provably yield identical full outputs (`rejected`). -/
 def singleLossyBottlenecks (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
   let reach := tagAncestors g tag target
   g.ops.filterMap fun op =>
@@ -611,8 +623,25 @@ def singleLossyBottlenecks (g : FlowGraph ν σ) (tag : σ) (target : ν) : List
        !sourceCarries g op.output tag &&
        opLosesTag op tag &&
        (g.ops.filter (fun o => o.output = op.output)).all (fun o => opLosesTag o tag) &&
-       (sourceOriginsExcludingNode g tag op.output target).isEmpty then
+       (sourceOriginsExcludingNode g tag op.output target).isEmpty &&
+       (sideInfoBypassNodes g op target).isEmpty then
       some (.lossyChannelOnPath op.name op.output)
+    else none
+
+/-- Tag-specific `.lossyOn` operations that cut all `tag`-carrying paths but have co-inputs/ancestors
+    bypassing `op.output` into `target` as side information (`unestablished`). -/
+def sideInfoLossyCutOps (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
+  let reach := tagAncestors g tag target
+  g.ops.filterMap fun op =>
+    let side := sideInfoBypassNodes g op target
+    if op.output ∈ reach &&
+       op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) &&
+       !sourceCarries g op.output tag &&
+       opLosesTag op tag &&
+       (g.ops.filter (fun o => o.output = op.output)).all (fun o => opLosesTag o tag) &&
+       (sourceOriginsExcludingNode g tag op.output target).isEmpty &&
+       !side.isEmpty then
+      some (.lossyWithSideInformation op.name op.output side)
     else none
 
 /-- Arms excluded from direct cost-metering traversal so a ledger cannot simply mirror an arm output. -/
@@ -673,23 +702,28 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         unverifiedForgetsOnSourcePath c.graph tag target
       else
         -- Every access path passes through at least one lossy op:
-        -- 1. Single tag-specific `.lossyOn` bottleneck cutting all paths -> `rejected` (`lossyChannelOnPath`).
-        -- 2. Untagged `.lossy` op (does not specify which tag collides) -> `unestablished` (`untargetedLossyChannel`).
-        -- 3. Parallel tag-specific `.lossyOn` branches like `(n div 2, n mod 2)` -> `unestablished` (`parallelLossyBranches`).
+        -- 1. Single complete tag-specific `.lossyOn` bottleneck (no side-info bypass) -> `rejected`.
+        -- 2. Tag-specific `.lossyOn` cut with side-information bypass (e.g. `(s XOR r, r)`) -> `unestablished`.
+        -- 3. Untagged `.lossy` op (does not specify which tag collides) -> `unestablished`.
+        -- 4. Parallel tag-specific `.lossyOn` branches like `(n div 2, n mod 2)` -> `unestablished`.
         let bottlenecks := singleLossyBottlenecks c.graph tag target
         if !bottlenecks.isEmpty then
           bottlenecks
         else
-          let untargeted := untargetedLossyOpsOnTagPath c.graph tag target
-          if !untargeted.isEmpty then
-            untargeted
+          let sideBypass := sideInfoLossyCutOps c.graph tag target
+          if !sideBypass.isEmpty then
+            sideBypass
           else
-            let lossyOuts :=
-              (lossyOpsOnTagPath c.graph tag target).filterMap fun
-                | .lossyChannelOnPath _ out => some out
-                | .untargetedLossyChannel _ out _ => some out
-                | _ => none
-            [.parallelLossyBranches target tag lossyOuts.eraseDups]
+            let untargeted := untargetedLossyOpsOnTagPath c.graph tag target
+            if !untargeted.isEmpty then
+              untargeted
+            else
+              let lossyOuts :=
+                (lossyOpsOnTagPath c.graph tag target).filterMap fun
+                  | .lossyChannelOnPath _ out => some out
+                  | .untargetedLossyChannel _ out _ => some out
+                  | _ => none
+              [.parallelLossyBranches target tag lossyOuts.eraseDups]
     recoveryFindings ++ danglingInputsUpstream c.graph target
   | .conditionalFlow target declaredSources =>
     let reach := ancestors c.graph target
@@ -791,6 +825,7 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .sharedExperimenterSource _           => true
   | .lossyChannelOnPath _ _               => true
   | .untargetedLossyChannel _ _ _         => false
+  | .lossyWithSideInformation _ _ _       => false
   | .parallelLossyBranches _ _ _          => false
   | .unaccessedTargetStructure _ _        => false
   | .undeclaredUpstreamSource _           => false

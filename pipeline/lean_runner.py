@@ -176,6 +176,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .untargetedLossyChannel opName output tag =>',
         '      "{\\"type\\":\\"untargetedLossyChannel\\",\\"op\\":" ++ jsonStr opName ++',
         '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
+        '  | .lossyWithSideInformation opName output sideNodes =>',
+        '      "{\\"type\\":\\"lossyWithSideInformation\\",\\"op\\":" ++ jsonStr opName ++',
+        '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ ",\\"side_nodes\\":" ++ jsonNodeList sideNodes ++ "}"',
         '  | .parallelLossyBranches target tag lossyOuts =>',
         '      "{\\"type\\":\\"parallelLossyBranches\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
         '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ ",\\"lossy_outputs\\":" ++ jsonNodeList lossyOuts ++ "}"',
@@ -291,6 +294,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f'FlowFinding.lossyChannelOnPath "{escape_lean_str(f["op"])}" Node.{f["output"]}'
     if ft == "untargetedLossyChannel":
         return f'FlowFinding.untargetedLossyChannel "{escape_lean_str(f["op"])}" Node.{f["output"]} Tag.{f["tag"]}'
+    if ft == "lossyWithSideInformation":
+        return f'FlowFinding.lossyWithSideInformation "{escape_lean_str(f["op"])}" Node.{f["output"]} {_lean_node_list(f["side_nodes"])}'
     if ft == "parallelLossyBranches":
         return f"FlowFinding.parallelLossyBranches Node.{f['target']} Tag.{f['tag']} {_lean_node_list(f['lossy_outputs'])}"
     if ft == "unaccessedTargetStructure":

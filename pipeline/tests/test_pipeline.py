@@ -1356,6 +1356,59 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["untaggedNoise"]["verdict"], "unestablished")
             self.assertEqual([f["type"] for f in by_id["untaggedNoise"]["findings"]], ["untargetedLossyChannel"])
 
+    def test_codex_27379_xor_side_information_bypass_and_prompt_loses_guidance(self) -> None:
+        """Regression test for Codex `#27379`:
+        Two independent bits `s` (`signal`) and `r` (`reference`) enter `p = s XOR r` (`loses: ["signal", "reference"]`):
+        - Observing `p` alone (no side-information bypass) -> `rejected` (`lossyChannelOnPath`).
+        - Observing `(p, r)` (`r` bypasses `measure_parity` into output) -> `unestablished` (`lossyWithSideInformation`).
+        - `audit_cli prompt` documents the optional `"loses"` field on `kind: "lossy"` ops.
+        """
+        doc_text = "Independent bits s and r enter p = s XOR r; observing (p, r) recovers s = p XOR r, whereas p alone loses s.\n"
+        q = doc_text.strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "xor.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            # Prompt documents `loses`
+            prompt_path = base / "prompt.txt"
+            self.assertEqual(cli_main(["prompt", "--doc", str(doc_path), "--out", str(prompt_path)]), 0)
+            self.assertIn('"loses"', prompt_path.read_text(encoding="utf-8"))
+
+            spec = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "XorSideInfo",
+                "paper_title": "Codex 27379 Side Information Test",
+                "nodes": ["sBit", "rBit", "parityP", "pairPR"],
+                "tags": ["signal", "reference"],
+                "sources": [
+                    {"node": "sBit", "origin": "measured", "carries": ["signal"], "quote": q},
+                    {"node": "rBit", "origin": "measured", "carries": ["reference"], "quote": q},
+                ],
+                "ops": [
+                    {"name": "measure_parity", "inputs": ["sBit", "rBit"], "output": "parityP", "kind": "lossy", "loses": ["signal", "reference"], "introduces": [], "quote": q},
+                    {"name": "combine_pr", "inputs": ["parityP", "rBit"], "output": "pairPR", "kind": "transform", "introduces": [], "quote": q},
+                ],
+                "claims": [
+                    {"id": "recoverFromPOnly", "statement": "Recover s from p alone.", "quote": q, "kind": "uniqueRecovery", "target": "parityP", "tag": "signal"},
+                    {"id": "recoverFromPairPR", "statement": "Recover s from (p, r).", "quote": q, "kind": "uniqueRecovery", "target": "pairPR", "tag": "signal"},
+                ],
+            }
+            self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+            sp = base / "xor.json"
+            sp.write_text(json.dumps(spec), encoding="utf-8")
+            out = base / "out"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)]), 0)
+            rep = json.loads((out / "XorSideInfo_report.json").read_text(encoding="utf-8"))
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+
+            self.assertEqual(by_id["recoverFromPOnly"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["recoverFromPOnly"]["findings"]], ["lossyChannelOnPath"])
+            self.assertEqual(by_id["recoverFromPairPR"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["recoverFromPairPR"]["findings"]], ["lossyWithSideInformation"])
+            self.assertEqual(by_id["recoverFromPairPR"]["findings"][0]["side_nodes"], ["rBit"])
+
 
 if __name__ == "__main__":
     unittest.main()

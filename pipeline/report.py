@@ -36,6 +36,13 @@ def format_finding_human(f: dict[str, Any]) -> str:
             f"**[Untargeted Lossy Channel]** op `{f['op']}` at `{f['output']}` is marked `lossy` without specifying "
             f"`loses` for `{f['tag']}`; cannot certify lossless recovery or prove collision on `{f['tag']}` specifically"
         )
+    if ft == "lossyWithSideInformation":
+        sides = ", ".join(f"`{s}`" for s in f.get("side_nodes", []))
+        return (
+            f"**[Lossy Channel with Side-Information Bypass — Undecidable from Graph Alone]** op `{f['op']}` at "
+            f"`{f['output']}` collides on the target tag, but co-input/ancestor node(s) ({sides}) bypass `{f['output']}` "
+            f"into the final observation (e.g. `r` in `(s XOR r, r)`); joint non-invertibility requires algebraic proof"
+        )
     if ft == "parallelLossyBranches":
         outs = ", ".join(f"`{o}`" for o in f.get("lossy_outputs", []))
         return (
@@ -755,6 +762,7 @@ CRITICAL RULES:
     - `target`: node receiving the theorem application
     - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
     - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
+11. For `kind: "lossy"` ops, add optional `"loses": ["<tag>", ...]` ONLY when the document explicitly witnesses that distinct values of those specific tag(s) collide to identical outputs; omit `"loses"` if the document only describes the step as lossy in general (untargeted `lossy` yields `unestablished` rather than falsely rejecting unaffected tags).
 
 JSON TEMPLATE:
 {{

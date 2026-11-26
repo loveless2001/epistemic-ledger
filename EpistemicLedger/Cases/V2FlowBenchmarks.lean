@@ -906,6 +906,33 @@ theorem untagged_projection_is_unestablished_for_both_tags :
       [FlowFinding.untargetedLossyChannel "project_first" ProjNode.observed ProjTag.signal] := by
   decide
 
+/-! #### Codex `#27379` Regression Tests: Side Information `p = s XOR r` vs `(p, r)` -/
+
+inductive XorNode where
+  | sBit | rBit | parityP | pairPR
+  deriving DecidableEq, Repr
+
+inductive XorTag where
+  | signal | reference
+  deriving DecidableEq, Repr
+
+def xorSideInfoGraph : FlowGraph XorNode XorTag :=
+  ⟨[⟨.sBit, .measured, [.signal]⟩,
+    ⟨.rBit, .measured, [.reference]⟩],
+   [⟨"measure_parity", [.sBit, .rBit], .parityP, .lossyOn [.signal, .reference] []⟩,
+    ⟨"combine_with_reference", [.parityP, .rBit], .pairPR, .transform []⟩]⟩
+
+/-- Observing `p = s XOR r` alone has no side-information bypass -> `rejected` (`lossyChannelOnPath`).
+    Observing `(p, r)` has `r` bypassing `measure_parity` -> `unestablished` (`lossyWithSideInformation`). -/
+theorem xor_parity_alone_rejected_and_pair_with_reference_unestablished :
+    epistemicVerdict ⟨"Recover s from p alone", xorSideInfoGraph, .uniqueRecovery .parityP .signal⟩ = .rejected ∧
+    auditFlow ⟨"Recover s from p alone", xorSideInfoGraph, .uniqueRecovery .parityP .signal⟩ =
+      [FlowFinding.lossyChannelOnPath "measure_parity" XorNode.parityP] ∧
+    epistemicVerdict ⟨"Recover s from (p, r)", xorSideInfoGraph, .uniqueRecovery .pairPR .signal⟩ = .unestablished ∧
+    auditFlow ⟨"Recover s from (p, r)", xorSideInfoGraph, .uniqueRecovery .pairPR .signal⟩ =
+      [FlowFinding.lossyWithSideInformation "measure_parity" XorNode.parityP [XorNode.rBit]] := by
+  decide
+
 end EpistemicVerdictTests
 
 end EpistemicLedger.Cases.V2FlowBenchmarks
