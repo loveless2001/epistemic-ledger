@@ -1,0 +1,135 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "GeminiAuditV23",
+  "paper_title": "A Society of AI Scientists (alphaXiv:2611.society-ai-scientists, PDF SHA-256 1c1d3d84347d7736...)",
+  "nodes": [
+    "onboardingWorkflowSpec",
+    "humanLabOperators",
+    "computeAndApiBudgets",
+    "agentCohortActivity",
+    "agentSocietyRun",
+    "reported936Studies",
+    "cohortPaperStream",
+    "cohortCitationChains",
+    "recencyRandomNullControl",
+    "citationStreamLedger",
+    "citationNullComparison"
+  ],
+  "tags": [
+    "scientificNorms",
+    "resourceCost",
+    "citationVolumeBudget"
+  ],
+  "sources": [
+    {
+      "node": "onboardingWorkflowSpec",
+      "origin": "setByExperimenter",
+      "carries": ["scientificNorms"],
+      "quote": "Laboratories initialized agents with a shared onboarding specification (detailed in Appendix B) that defined six qualification criteria and a five-step workflow"
+    },
+    {
+      "node": "humanLabOperators",
+      "origin": "setByExperimenter",
+      "carries": ["resourceCost"],
+      "quote": "Each participant chose an execution harness (such as Claude Code or OpenAI Codex), provisioned local or cloud compute, set API budgets and specified broad research themes"
+    },
+    {
+      "node": "computeAndApiBudgets",
+      "origin": "setByExperimenter",
+      "carries": ["resourceCost"],
+      "quote": "We thank the marimo team at CoreWeave for providing two nodes of Nvidia RTX Pro 6000 GPUs for the duration of this study."
+    },
+    {
+      "node": "agentCohortActivity",
+      "origin": "measured",
+      "carries": [],
+      "quote": "During this time, agents produced 936 studies along with their corresponding code and data artifacts."
+    },
+    {
+      "node": "cohortPaperStream",
+      "origin": "measured",
+      "carries": ["citationVolumeBudget"],
+      "quote": "Over twelve weeks, citations stemming from Stage 1 formed chains up to 101 papers long across 16 laboratories"
+    }
+  ],
+  "ops": [
+    {
+      "name": "run_936_agent_society",
+      "inputs": ["onboardingWorkflowSpec", "humanLabOperators", "computeAndApiBudgets", "agentCohortActivity"],
+      "output": "agentSocietyRun",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Thirty-five human research participants operated independent agent laboratories, numbered by arrival from"
+    },
+    {
+      "name": "report_raw_study_volume",
+      "inputs": ["agentSocietyRun"],
+      "output": "reported936Studies",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "During this time, agents produced 936 studies along with their corresponding code and data artifacts."
+    },
+    {
+      "name": "build_cohort_chains",
+      "inputs": ["cohortPaperStream"],
+      "output": "cohortCitationChains",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Over twelve weeks, citations stemming from Stage 1 formed chains up to 101 papers long across 16 laboratories"
+    },
+    {
+      "name": "build_recency_null",
+      "inputs": ["cohortPaperStream"],
+      "output": "recencyRandomNullControl",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "even a random citation model that simply cites recent preprints produces chains averaging 99.4 steps"
+    },
+    {
+      "name": "record_paper_volume_ledger",
+      "inputs": ["cohortPaperStream"],
+      "output": "citationStreamLedger",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "We evaluate network and citation patterns against degree- and lag-preserving permutation nulls"
+    },
+    {
+      "name": "compare_chains_against_null",
+      "inputs": ["cohortCitationChains", "recencyRandomNullControl", "citationStreamLedger"],
+      "output": "citationNullComparison",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "so this depth reflects rapid citing of new work rather than long-horizon planning"
+    }
+  ],
+  "claims": [
+    {
+      "id": "society_efficiency_stress_test",
+      "statement": "Reviewer stress-test: does this 12-week 936-agent archive establish cost/speed efficiency relative to a budget-matched human+AI team? (Not established: no cost ledger or matched control.)",
+      "quote": "We present an exploratory twelve-week study documenting the activity of 936 autonomous agents across 35 human-operated laboratories interacting in a shared preprint server and messaging workspace.",
+      "provenance": "reviewerStressTest",
+      "kind": "effectivenessClaim",
+      "method_node": "agentSocietyRun",
+      "evaluation_node": "reported936Studies",
+      "control_node": null,
+      "cost_ledger_node": null,
+      "cost_tag": "resourceCost",
+      "method_usage": [],
+      "control_usage": []
+    },
+    {
+      "id": "citation_depth_with_null_control",
+      "statement": "Author check: citation chain depth (101 steps across 102 papers) evaluated against a volume-matched recency random null model (99.4 steps, P = 0.44).",
+      "quote": "However, even a random citation model that simply cites recent preprints produces chains averaging 99.4 steps",
+      "provenance": "authorClaimed",
+      "kind": "effectivenessClaim",
+      "method_node": "cohortCitationChains",
+      "evaluation_node": "citationNullComparison",
+      "control_node": "recencyRandomNullControl",
+      "cost_ledger_node": "citationStreamLedger",
+      "cost_tag": "citationVolumeBudget",
+      "method_usage": [{"dimension": "citationVolumeBudget", "unit": "papers", "amount": 102}],
+      "control_usage": [{"dimension": "citationVolumeBudget", "unit": "papers", "amount": 102}]
+    }
+  ]
+}

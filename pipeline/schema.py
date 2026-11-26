@@ -81,7 +81,8 @@ VALID_CLAIM_KINDS = frozenset(
         "effectivenessClaim",
     }
 )
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2"})
+VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3"})
 
 
 @dataclass(frozen=True)
@@ -378,7 +379,7 @@ def validate_spec(
                 )
                 continue
             base_req = {"id", "statement", "quote", "kind"}
-            base_opt = {"notes"}
+            base_opt = {"notes", "provenance"}
             if kind == "emergesWithout":
                 extra = {"target", "tag"}
             elif kind == "emergesWithExclusion":
@@ -388,7 +389,15 @@ def validate_spec(
             elif kind == "uniqueRecovery":
                 extra = {"target", "tag"}
             elif kind == "effectivenessClaim":
-                extra = {"method_node", "evaluation_node", "control_node", "cost_ledger_node", "cost_tag"}
+                extra = {
+                    "method_node",
+                    "evaluation_node",
+                    "control_node",
+                    "cost_ledger_node",
+                    "cost_tag",
+                    "method_usage",
+                    "control_usage",
+                }
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -403,6 +412,28 @@ def validate_spec(
             check_quote(cl["quote"], f"{p}.quote")
             if "notes" in cl:
                 _check_nonempty_str(cl["notes"], f"{p}.notes", errors)
+            if "provenance" in cl and cl["provenance"] not in VALID_CLAIM_PROVENANCE:
+                errors.append(
+                    ValidationErrorItem(
+                        f"{p}.provenance",
+                        "invalid_enum",
+                        f"provenance must be in {sorted(VALID_CLAIM_PROVENANCE)}",
+                    )
+                )
+
+            def check_usage_list(val: Any, upath: str) -> None:
+                if not isinstance(val, list):
+                    errors.append(ValidationErrorItem(upath, "type_error", "Expected list of usage entries"))
+                    return
+                for j, entry in enumerate(val):
+                    ep = f"{upath}[{j}]"
+                    if not _check_allowed_keys(entry, {"dimension", "unit", "amount"}, {"dimension", "unit", "amount"}, ep, errors):
+                        continue
+                    if entry["dimension"] not in tag_set:
+                        errors.append(ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}"))
+                    _check_nonempty_str(entry["unit"], f"{ep}.unit", errors)
+                    if not isinstance(entry["amount"], int) or isinstance(entry["amount"], bool) or entry["amount"] < 0:
+                        errors.append(ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer"))
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
@@ -429,6 +460,8 @@ def validate_spec(
                     errors.append(
                         ValidationErrorItem(f"{p}.cost_tag", "unknown_tag", f"Unknown tag {cl['cost_tag']!r}")
                     )
+                check_usage_list(cl["method_usage"], f"{p}.method_usage")
+                check_usage_list(cl["control_usage"], f"{p}.control_usage")
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):

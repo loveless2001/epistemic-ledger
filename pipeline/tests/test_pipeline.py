@@ -494,142 +494,156 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("declared_sources differs", md)
             self.assertNotIn("identical Lean-verified verdicts and full claim signatures", md)
 
-    def test_v22_effectiveness_claim_cost_and_matched_control_roundtrip(self) -> None:
-        """Tier 2 (v2.2): end-to-end JSON -> Lean 4 kernel tests for effectivenessClaim:
-        missing control + missing cost ledger, hidden partial cost, circular ledger,
-        unmatched budget, undefined optional endpoint, and clean matched-budget control."""
+    def test_v23_effectiveness_claim_numeric_budgets_forget_proof_and_arm_independence(self) -> None:
+        """Tier 2 (v2.3): end-to-end JSON -> Lean 4 kernel tests fixing all Codex R1 v2.2 counterexamples:
+        (1) 100 vs 1 GPU-hr on same cluster -> unmatchedControlBudget,
+        (2) separate accounts both spending 500 USD with post-hoc metering -> admissible,
+        (3) `forget .shown` CANNOT erase physically spent human hours -> unaccountedCostSource,
+        (4) control derived from method -> dependentControlArm,
+        (5) empty usage lists -> unquantifiedBudget,
+        (6) reviewerStressTest provenance recorded cleanly in report."""
         doc = ingest_document(str(SAMPLE_DOC))
         q = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
         spec = {
-            "schema_version": "epistemic-ledger/v2.2",
-            "auditor": "CostAuditor",
-            "paper_title": "Tier-2 Cost & Control Test",
+            "schema_version": "epistemic-ledger/v2.3",
+            "auditor": "CostAuditorV23",
+            "paper_title": "Tier-2 v2.3 Cost & Control Test",
             "nodes": [
-                "sharedGpuBudget",
-                "humanHoursBudget",
-                "separateTinyBudget",
-                "methodRun",
-                "matchedControlRun",
-                "unmatchedControlRun",
-                "fullCostLedger",
-                "partialCostLedger",
-                "circularLedger",
-                "rawCountEval",
-                "matchedEval",
-                "partialEval",
-                "circularEval",
-                "unmatchedEval",
+                "sharedCluster",
+                "accountA",
+                "accountB",
+                "humanHours",
+                "forgottenHours",
+                "methodCluster",
+                "ctrlCluster",
+                "methodForgetHours",
+                "clonedCtrl",
+                "methodAccA",
+                "ctrlAccB",
+                "meterCluster",
+                "postHocMeter",
+                "evalUneven",
+                "evalEqualSep",
+                "evalForgotten",
+                "evalDependent",
+                "evalUnquantified",
             ],
             "tags": ["resourceCost"],
             "sources": [
-                {"node": "sharedGpuBudget", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-                {"node": "humanHoursBudget", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-                {"node": "separateTinyBudget", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
+                {"node": "sharedCluster", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
+                {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
+                {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
+                {"node": "humanHours", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
             ],
             "ops": [
-                {"name": "run_method", "inputs": ["sharedGpuBudget", "humanHoursBudget"], "output": "methodRun", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "run_matched_ctrl", "inputs": ["sharedGpuBudget", "humanHoursBudget"], "output": "matchedControlRun", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "run_unmatched_ctrl", "inputs": ["separateTinyBudget"], "output": "unmatchedControlRun", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "ledger_full", "inputs": ["sharedGpuBudget", "humanHoursBudget"], "output": "fullCostLedger", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "ledger_partial", "inputs": ["sharedGpuBudget"], "output": "partialCostLedger", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "ledger_circular", "inputs": ["methodRun"], "output": "circularLedger", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "eval_raw", "inputs": ["methodRun"], "output": "rawCountEval", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "eval_matched", "inputs": ["methodRun", "matchedControlRun", "fullCostLedger"], "output": "matchedEval", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "eval_partial", "inputs": ["methodRun", "matchedControlRun", "partialCostLedger"], "output": "partialEval", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "eval_circular", "inputs": ["methodRun", "matchedControlRun", "circularLedger"], "output": "circularEval", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "eval_unmatched", "inputs": ["methodRun", "unmatchedControlRun", "fullCostLedger"], "output": "unmatchedEval", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "run_m_cluster", "inputs": ["sharedCluster"], "output": "methodCluster", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "run_c_cluster", "inputs": ["sharedCluster"], "output": "ctrlCluster", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "forget_hours", "inputs": ["humanHours"], "output": "forgottenHours", "kind": "forget", "tag": "resourceCost", "evidence": "shown", "quote": q},
+                {"name": "run_m_forgot", "inputs": ["sharedCluster", "forgottenHours"], "output": "methodForgetHours", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "clone_ctrl", "inputs": ["methodCluster"], "output": "clonedCtrl", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "run_m_accA", "inputs": ["accountA"], "output": "methodAccA", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "bill_cluster", "inputs": ["sharedCluster"], "output": "meterCluster", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "post_hoc_bill", "inputs": ["accountA", "accountB", "methodAccA", "ctrlAccB"], "output": "postHocMeter", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_uneven", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUneven", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_equal", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalEqualSep", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_forgot", "inputs": ["methodForgetHours", "ctrlCluster", "meterCluster"], "output": "evalForgotten", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_dep", "inputs": ["methodCluster", "clonedCtrl", "meterCluster"], "output": "evalDependent", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_unq", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUnquantified", "kind": "transform", "introduces": [], "quote": q},
             ],
             "claims": [
                 {
-                    "id": "noControlNoCost",
-                    "statement": "Raw count without control or cost ledger.",
+                    "id": "unevenSameCluster",
+                    "statement": "100 vs 1 GPU-hours on same cluster.",
                     "quote": q,
+                    "provenance": "reviewerStressTest",
                     "kind": "effectivenessClaim",
-                    "method_node": "methodRun",
-                    "evaluation_node": "rawCountEval",
-                    "control_node": None,
-                    "cost_ledger_node": None,
+                    "method_node": "methodCluster",
+                    "evaluation_node": "evalUneven",
+                    "control_node": "ctrlCluster",
+                    "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
+                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 100}],
+                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 1}],
                 },
                 {
-                    "id": "partialHiddenCost",
-                    "statement": "Hides humanHoursBudget from cost ledger.",
+                    "id": "equalSeparateAccountsPostHoc",
+                    "statement": "Two separate accounts both spending 500 USD, post-hoc metered.",
                     "quote": q,
+                    "provenance": "authorClaimed",
                     "kind": "effectivenessClaim",
-                    "method_node": "methodRun",
-                    "evaluation_node": "partialEval",
-                    "control_node": "matchedControlRun",
-                    "cost_ledger_node": "partialCostLedger",
+                    "method_node": "methodAccA",
+                    "evaluation_node": "evalEqualSep",
+                    "control_node": "ctrlAccB",
+                    "cost_ledger_node": "postHocMeter",
                     "cost_tag": "resourceCost",
+                    "method_usage": [{"dimension": "resourceCost", "unit": "USD", "amount": 500}],
+                    "control_usage": [{"dimension": "resourceCost", "unit": "USD", "amount": 500}],
                 },
                 {
-                    "id": "circularLedgerClaim",
-                    "statement": "Circular ledger derived from methodRun.",
+                    "id": "forgetCannotEraseSpentHours",
+                    "statement": "Forget .shown cannot erase humanHours spent during run.",
                     "quote": q,
                     "kind": "effectivenessClaim",
-                    "method_node": "methodRun",
-                    "evaluation_node": "circularEval",
-                    "control_node": "matchedControlRun",
-                    "cost_ledger_node": "circularLedger",
+                    "method_node": "methodForgetHours",
+                    "evaluation_node": "evalForgotten",
+                    "control_node": "ctrlCluster",
+                    "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
+                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
+                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
                 },
                 {
-                    "id": "unmatchedBudgetClaim",
-                    "statement": "Unmatched control budget.",
+                    "id": "dependentControlRejected",
+                    "statement": "Control cloned from method output.",
                     "quote": q,
                     "kind": "effectivenessClaim",
-                    "method_node": "methodRun",
-                    "evaluation_node": "unmatchedEval",
-                    "control_node": "unmatchedControlRun",
-                    "cost_ledger_node": "fullCostLedger",
+                    "method_node": "methodCluster",
+                    "evaluation_node": "evalDependent",
+                    "control_node": "clonedCtrl",
+                    "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
+                    "method_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
+                    "control_usage": [{"dimension": "resourceCost", "unit": "gpu_hours", "amount": 10}],
                 },
                 {
-                    "id": "cleanMatchedControl",
-                    "statement": "Clean budget-matched comparison with full independent cost ledger.",
+                    "id": "unquantifiedBudgetRejected",
+                    "statement": "Missing usage numbers cannot certify matched budget.",
                     "quote": q,
                     "kind": "effectivenessClaim",
-                    "method_node": "methodRun",
-                    "evaluation_node": "matchedEval",
-                    "control_node": "matchedControlRun",
-                    "cost_ledger_node": "fullCostLedger",
+                    "method_node": "methodCluster",
+                    "evaluation_node": "evalUnquantified",
+                    "control_node": "ctrlCluster",
+                    "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
+                    "method_usage": [],
+                    "control_usage": [],
                 },
             ],
         }
         self.assertEqual(validate_spec(spec, doc=doc)[0], [])
 
         with tempfile.TemporaryDirectory() as tmp:
-            sp = Path(tmp) / "cost_spec.json"
+            sp = Path(tmp) / "v23.json"
             out = Path(tmp) / "out"
             sp.write_text(json.dumps(spec), encoding="utf-8")
             rc = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(sp), "--out", str(out)])
             self.assertEqual(rc, 0)
-            rep = json.loads((out / "CostAuditor_report.json").read_text(encoding="utf-8"))
+            rep = json.loads((out / "CostAuditorV23_report.json").read_text(encoding="utf-8"))
+            md = (out / "CostAuditorV23_report.md").read_text(encoding="utf-8")
+            self.assertIn("`reviewerStressTest`", md)
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
-            self.assertEqual(by_id["noControlNoCost"]["verdict"], "rejected")
-            self.assertEqual(
-                {f["type"] for f in by_id["noControlNoCost"]["findings"]},
-                {"missingCostAccounting", "missingMatchedControl"},
-            )
-            self.assertEqual(by_id["partialHiddenCost"]["verdict"], "rejected")
-            self.assertEqual(
-                [f["type"] for f in by_id["partialHiddenCost"]["findings"]],
-                ["unaccountedCostSource"],
-            )
-            self.assertEqual(by_id["circularLedgerClaim"]["verdict"], "rejected")
-            self.assertEqual(
-                [f["type"] for f in by_id["circularLedgerClaim"]["findings"]],
-                ["circularCostLedger"],
-            )
-            self.assertEqual(by_id["unmatchedBudgetClaim"]["verdict"], "rejected")
-            self.assertEqual(
-                [f["type"] for f in by_id["unmatchedBudgetClaim"]["findings"]],
-                ["unmatchedControlBudget"],
-            )
-            self.assertEqual(by_id["cleanMatchedControl"]["verdict"], "admissible")
-            self.assertEqual(by_id["cleanMatchedControl"]["findings"], [])
+            self.assertEqual(by_id["unevenSameCluster"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["unevenSameCluster"]["findings"]], ["unmatchedControlBudget"])
+            self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["verdict"], "admissible")
+            self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["findings"], [])
+            self.assertEqual(by_id["forgetCannotEraseSpentHours"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["forgetCannotEraseSpentHours"]["findings"]], ["unaccountedCostSource"])
+            self.assertEqual(by_id["dependentControlRejected"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["dependentControlRejected"]["findings"]], ["dependentControlArm"])
+            self.assertEqual(by_id["unquantifiedBudgetRejected"]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in by_id["unquantifiedBudgetRejected"]["findings"]], ["unquantifiedBudget"])
 
 
 if __name__ == "__main__":

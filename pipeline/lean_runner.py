@@ -61,6 +61,13 @@ def _lean_op_kind(op: dict[str, Any]) -> str:
     return f".{kind} {_lean_tag_list(op['introduces'])}"
 
 
+def _lean_usage_list(usages: list[dict[str, Any]]) -> str:
+    if not usages:
+        return "[]"
+    items = [f'⟨.{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}⟩' for u in usages]
+    return "[" + ", ".join(items) + "]"
+
+
 def _lean_claim_kind(cl: dict[str, Any]) -> str:
     kind = cl["kind"]
     if kind == "emergesWithout":
@@ -74,7 +81,9 @@ def _lean_claim_kind(cl: dict[str, Any]) -> str:
     if kind == "effectivenessClaim":
         ctrl = "none" if cl["control_node"] is None else f"(some .{cl['control_node']})"
         ledger = "none" if cl["cost_ledger_node"] is None else f"(some .{cl['cost_ledger_node']})"
-        return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']}"
+        mu = _lean_usage_list(cl["method_usage"])
+        cu = _lean_usage_list(cl["control_usage"])
+        return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu}"
     return f".conditionalFlow .{cl['target']} {_lean_node_list(cl['declared_sources'])}"
 
 
@@ -161,9 +170,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .missingCostAccounting methodNode costTag =>',
         '      "{\\"type\\":\\"missingCostAccounting\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
-        '  | .circularCostLedger ledger methodNode =>',
-        '      "{\\"type\\":\\"circularCostLedger\\",\\"ledger\\":" ++ jsonStr (nodeName ledger) ++',
-        '      ",\\"method\\":" ++ jsonStr (nodeName methodNode) ++ "}"',
+        '  | .trivialCostLedger ledger armNode =>',
+        '      "{\\"type\\":\\"trivialCostLedger\\",\\"ledger\\":" ++ jsonStr (nodeName ledger) ++',
+        '      ",\\"arm\\":" ++ jsonStr (nodeName armNode) ++ "}"',
         '  | .unusedCostLedger ledger evalNode =>',
         '      "{\\"type\\":\\"unusedCostLedger\\",\\"ledger\\":" ++ jsonStr (nodeName ledger) ++',
         '      ",\\"evaluation\\":" ++ jsonStr (nodeName evalNode) ++ "}"',
@@ -177,9 +186,15 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '      "{\\"type\\":\\"missingMatchedControl\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++ "}"',
         '  | .trivialSelfControl methodNode =>',
         '      "{\\"type\\":\\"trivialSelfControl\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++ "}"',
+        '  | .dependentControlArm methodNode ctrl =>',
+        '      "{\\"type\\":\\"dependentControlArm\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
+        '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ "}"',
         '  | .unusedControlNode ctrl evalNode =>',
         '      "{\\"type\\":\\"unusedControlNode\\",\\"control\\":" ++ jsonStr (nodeName ctrl) ++',
         '      ",\\"evaluation\\":" ++ jsonStr (nodeName evalNode) ++ "}"',
+        '  | .unquantifiedBudget methodNode costTag =>',
+        '      "{\\"type\\":\\"unquantifiedBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
+        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
         '  | .unmatchedControlBudget methodNode ctrl costTag =>',
         '      "{\\"type\\":\\"unmatchedControlBudget\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
         '      ",\\"control\\":" ++ jsonStr (nodeName ctrl) ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
@@ -248,8 +263,8 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f'FlowFinding.danglingInput "{escape_lean_str(f["op"])}" Node.{f["missing"]}'
     if ft == "missingCostAccounting":
         return f"FlowFinding.missingCostAccounting Node.{f['method']} Tag.{f['cost_tag']}"
-    if ft == "circularCostLedger":
-        return f"FlowFinding.circularCostLedger Node.{f['ledger']} Node.{f['method']}"
+    if ft == "trivialCostLedger":
+        return f"FlowFinding.trivialCostLedger Node.{f['ledger']} Node.{f['arm']}"
     if ft == "unusedCostLedger":
         return f"FlowFinding.unusedCostLedger Node.{f['ledger']} Node.{f['evaluation']}"
     if ft == "unaccountedCostSource":
@@ -260,8 +275,12 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.missingMatchedControl Node.{f['method']}"
     if ft == "trivialSelfControl":
         return f"FlowFinding.trivialSelfControl Node.{f['method']}"
+    if ft == "dependentControlArm":
+        return f"FlowFinding.dependentControlArm Node.{f['method']} Node.{f['control']}"
     if ft == "unusedControlNode":
         return f"FlowFinding.unusedControlNode Node.{f['control']} Node.{f['evaluation']}"
+    if ft == "unquantifiedBudget":
+        return f"FlowFinding.unquantifiedBudget Node.{f['method']} Tag.{f['cost_tag']}"
     if ft == "unmatchedControlBudget":
         return f"FlowFinding.unmatchedControlBudget Node.{f['method']} Node.{f['control']} Tag.{f['cost_tag']}"
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")

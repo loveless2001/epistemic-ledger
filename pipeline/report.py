@@ -33,23 +33,27 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "danglingInput":
         return f"**[Dangling Input]** op `{f['op']}` consumes undefined node `{f['missing']}`"
     if ft == "missingCostAccounting":
-        return f"**[Missing Cost Accounting]** method `{f['method']}` lacks true `{f['cost_tag']}` cost accounting / cost ledger"
-    if ft == "circularCostLedger":
-        return f"**[Circular Cost Ledger]** ledger `{f['ledger']}` is downstream of `{f['method']}` instead of an independent cost branch"
+        return f"**[Missing Cost Accounting]** method `{f['method']}` lacks raw `{f['cost_tag']}` cost accounting / cost ledger"
+    if ft == "trivialCostLedger":
+        return f"**[Trivial Cost Ledger]** ledger `{f['ledger']}` is identical to arm `{f['arm']}`"
     if ft == "unusedCostLedger":
         return f"**[Unused Cost Ledger]** ledger `{f['ledger']}` does not feed evaluation `{f['evaluation']}`"
     if ft == "unaccountedCostSource":
-        return f"**[Unaccounted Cost Source]** `{f['cost_source']}` (`{f['cost_tag']}`) feeds method but is omitted from cost ledger `{f['ledger']}`"
+        return f"**[Unaccounted Cost Source]** `{f['cost_source']}` (`{f['cost_tag']}`) feeds an arm (ignoring `.forget`) but is omitted from ledger `{f['ledger']}`"
     if ft == "unusedMethodNode":
         return f"**[Unused Method]** method `{f['method']}` does not feed evaluation `{f['evaluation']}`"
     if ft == "missingMatchedControl":
         return f"**[Missing Matched Control]** effectiveness claim on `{f['method']}` provides no control arm"
     if ft == "trivialSelfControl":
         return f"**[Trivial Self-Control]** `{f['method']}` is compared against itself"
+    if ft == "dependentControlArm":
+        return f"**[Dependent Control Arm]** `{f['method']}` and `{f['control']}` are causally dependent (not independent arms)"
     if ft == "unusedControlNode":
         return f"**[Unused Control]** control `{f['control']}` does not feed evaluation `{f['evaluation']}`"
+    if ft == "unquantifiedBudget":
+        return f"**[Unquantified Budget]** `{f['method']}` lacks numeric `{f['cost_tag']}` resource usage quantities for both arms"
     if ft == "unmatchedControlBudget":
-        return f"**[Unmatched Control Budget]** `{f['method']}` and control `{f['control']}` do not share identical `{f['cost_tag']}` budget sources"
+        return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
     return json.dumps(f)
 
 
@@ -169,8 +173,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
 
     for c in lv["claims"]:
         meta = claim_by_id[c["id"]]
+        prov = meta.get("provenance", "authorClaimed")
         lines += [
-            f"### `{c['id']}` — **{c['verdict'].upper()}**",
+            f"### `{c['id']}` — **{c['verdict'].upper()}** (`{prov}`)",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
