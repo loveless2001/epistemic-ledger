@@ -461,7 +461,9 @@ def validate_spec(
                     errors.append(ValidationErrorItem(f"{p}.id", "duplicate_claim_id", f"Duplicate claim id {cid!r}"))
                 seen_claim_ids.add(cid)
             _check_nonempty_str(cl["statement"], f"{p}.statement", errors)
+            before_cq = len(quotes)
             check_quote(cl["quote"], f"{p}.quote")
+            claim_qm = quotes[-1] if len(quotes) > before_cq else None
             if "notes" in cl:
                 _check_nonempty_str(cl["notes"], f"{p}.notes", errors)
             if "provenance" in cl and cl["provenance"] not in VALID_CLAIM_PROVENANCE:
@@ -546,7 +548,9 @@ def validate_spec(
                         )
                     )
                 else:
+                    before_hq = len(quotes)
                     check_quote(cl["hedge_quote"], f"{p}.hedge_quote")
+                    hedge_qm = quotes[-1] if len(quotes) > before_hq else None
                     if isinstance(cl["hedge_quote"], str) and isinstance(cl["quote"], str):
                         norm_hq = normalize_whitespace(cl["hedge_quote"])
                         norm_cq = normalize_whitespace(cl["quote"])
@@ -560,6 +564,38 @@ def validate_spec(
                                     "hedge_quote must appear verbatim inside the claim's own quote (attach hedges only to the clause they modify)",
                                 )
                             )
+                        elif (
+                            doc is not None
+                            and claim_qm is not None
+                            and claim_qm.matched
+                            and claim_qm.char_offset is not None
+                            and hedge_qm is not None
+                            and hedge_qm.matched
+                        ):
+                            anchored_offset: int | None = None
+                            anchored_mode = claim_qm.mode
+                            anchored_norm = hedge_qm.normalized_quote
+                            if claim_qm.mode == "exact_ws" and norm_hq in norm_cq:
+                                anchored_offset = claim_qm.char_offset + norm_cq.find(norm_hq)
+                                anchored_norm = norm_hq
+                            elif dehy_hq in dehy_cq:
+                                if claim_qm.mode == "dehyphenated":
+                                    anchored_offset = claim_qm.char_offset + dehy_cq.find(dehy_hq)
+                                else:
+                                    claim_dehy_off = doc.dehyphenated_text.find(dehy_cq)
+                                    if claim_dehy_off != -1:
+                                        anchored_offset = claim_dehy_off + dehy_cq.find(dehy_hq)
+                                anchored_mode = "dehyphenated"
+                                anchored_norm = dehy_hq
+                            if anchored_offset is not None:
+                                quotes[-1] = QuoteMatch(
+                                    path=hedge_qm.path,
+                                    quote=hedge_qm.quote,
+                                    matched=True,
+                                    char_offset=anchored_offset,
+                                    mode=anchored_mode,
+                                    normalized_quote=anchored_norm,
+                                )
             elif "hedge_quote" in cl:
                 errors.append(
                     ValidationErrorItem(

@@ -1762,6 +1762,47 @@ class PipelineTests(unittest.TestCase):
             bad_h4["claims"][2]["hedge_quote"] = "providing a first step toward emergent spacetime"
             self.assertTrue(any(e.code == "hedge_quote_outside_claim" for e in validate_spec(bad_h4, doc=ep_doc)[0]))
 
+            # Codex #27441 Part C: repeated hedge phrase earlier in document MUST anchor `hedge_quote`'s
+            # verified offset INSIDE the matched claim span, NOT to the unrelated earlier occurrence!
+            rep_doc_path = base / "repeated_hedge.txt"
+            rep_doc_text = (
+                "Background memory capacity is consistent with standard limits.\n"
+                "Thus, all plots are consistent with and support the narrative that the agent learned the structure.\n"
+            )
+            rep_doc_path.write_text(rep_doc_text, encoding="utf-8")
+            rep_doc = ingest_document(str(rep_doc_path))
+            q_rep_claim = "Thus, all plots are consistent with and support the narrative that the agent learned the structure."
+            spec_rep_h = {
+                "schema_version": "epistemic-ledger/v2.4",
+                "auditor": "RepeatedHedgeCheck",
+                "paper_title": "Repeated Hedge Offset Check",
+                "nodes": ["srcA", "outA"],
+                "tags": ["tA"],
+                "sources": [{"node": "srcA", "origin": "measured", "carries": [], "quote": q_rep_claim}],
+                "ops": [{"name": "step", "inputs": ["srcA"], "output": "outA", "kind": "transform", "introduces": [], "quote": q_rep_claim}],
+                "claims": [
+                    {
+                        "id": "cRepeated",
+                        "statement": "Plots are consistent with learned structure.",
+                        "quote": q_rep_claim,
+                        "nature": "qualitative",
+                        "hedged": True,
+                        "hedge_quote": "consistent with",
+                        "kind": "emergesWithout",
+                        "target": "outA",
+                        "tag": "tA",
+                    }
+                ],
+            }
+            rep_errs, rep_quotes = validate_spec(spec_rep_h, doc=rep_doc)
+            self.assertEqual(rep_errs, [])
+            q_by_path = {qm.path: qm for qm in rep_quotes}
+            claim_off = q_by_path["$.claims[0].quote"].char_offset
+            hedge_off = q_by_path["$.claims[0].hedge_quote"].char_offset
+            self.assertIsNotNone(claim_off)
+            self.assertEqual(hedge_off, claim_off + q_rep_claim.find("consistent with"))
+            self.assertGreater(hedge_off, rep_doc.normalized_text.find("consistent with"))
+
             # Auditor B:
             # - omits extra unchecked bet on Q4 -> `admissible` (DISAGREE: A=unestablished, B=admissible -> Strictest=unestablished)
             # - picks a DIFFERENT `hedge_quote` on Q7 -> `compare` flags `hedge_quote differs` and renders both quotes!
