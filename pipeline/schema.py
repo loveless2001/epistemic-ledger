@@ -201,6 +201,20 @@ _QUOTE_NUM_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
+_UNIT_WORD_MAG_RE = re.compile(r"\b(thousand|million|billion)\b", flags=re.IGNORECASE)
+_UNIT_ABBR_MAG_RE = re.compile(r"(?:^|[^A-Za-z0-9])([KMB])(?:$|[^A-Za-z0-9])")
+
+
+def _unit_magnitude_scale(unit: str) -> int:
+    """Return the exact magnitude multiplier explicitly named in `unit`
+    (e.g. 'million training samples' -> 1_000_000, 'K steps' -> 1_000), or 1 if none."""
+    m_word = _UNIT_WORD_MAG_RE.search(unit)
+    if m_word:
+        return _MAGNITUDE_SUFFIXES[m_word.group(1).lower()]
+    m_abbr = _UNIT_ABBR_MAG_RE.search(unit)
+    if m_abbr:
+        return _MAGNITUDE_SUFFIXES[m_abbr.group(1).lower()]
+    return 1
 
 
 def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
@@ -607,8 +621,10 @@ def validate_spec(
                             entry["quote"], doc=doc, qm=qm
                         )
                         parsed_ints = {v for v, _, _ in intact_ints}
-                        if entry["amount"] not in parsed_ints:
-                            if entry["amount"] in truncated_vals:
+                        unit_scale = _unit_magnitude_scale(entry["unit"]) if isinstance(entry.get("unit"), str) else 1
+                        effective_amt = entry["amount"] * unit_scale
+                        if entry["amount"] not in parsed_ints and not (unit_scale > 1 and effective_amt in parsed_ints):
+                            if entry["amount"] in truncated_vals or (unit_scale > 1 and effective_amt in truncated_vals):
                                 errors.append(
                                     ValidationErrorItem(
                                         f"{ep}.amount",

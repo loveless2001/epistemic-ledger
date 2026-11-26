@@ -1521,14 +1521,25 @@ class PipelineTests(unittest.TestCase):
             }
             self.assertEqual(validate_spec(spec, doc=doc)[0], [])
 
-            # Also verify 1.5 billion, 4.2K, and 100MB (plain 100, NOT scaled by M!)
+            # Also verify 1.5 billion, 4.2K, 100MB (plain 100, NOT scaled by M!),
+            # and unit-scaled `900` with unit `million training samples` matching `900M` (Claude #27398)
             spec_aux = copy.deepcopy(spec)
             spec_aux["claims"][0]["method_usage"] = [
                 {"source": "src_0", "dimension": "resourceCost", "unit": "tokens", "amount": 1500000000, "quote": q_aux},
                 {"source": "src_0", "dimension": "resourceCost", "unit": "steps", "amount": 4200, "quote": q_aux},
                 {"source": "src_0", "dimension": "resourceCost", "unit": "MB", "amount": 100, "quote": q_aux},
             ]
+            spec_aux["claims"][0]["control_usage"] = [
+                {"source": "src_1", "dimension": "resourceCost", "unit": "million training samples", "amount": 900, "quote": q_21m},
+            ]
             self.assertEqual(validate_spec(spec_aux, doc=doc)[0], [])
+
+            # Wrong unit magnitude (`900` with plain unit `samples` against `900M`) MUST still fail!
+            spec_wrong_scale = copy.deepcopy(spec)
+            spec_wrong_scale["claims"][0]["control_usage"][0]["amount"] = 900
+            spec_wrong_scale["claims"][0]["control_usage"][0]["unit"] = "samples"
+            errs_ws, _ = validate_spec(spec_wrong_scale, doc=doc)
+            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_ws))
 
             # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
             spec_sliced = copy.deepcopy(spec)
