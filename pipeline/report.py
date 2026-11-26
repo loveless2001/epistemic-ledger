@@ -7,7 +7,12 @@ from typing import Any
 
 from pipeline.ingest import IngestedDocument
 from pipeline.lean_runner import LeanVerificationResult
-from pipeline.schema import QuoteMatch, ValidationErrorItem, verify_quote_in_document
+from pipeline.schema import (
+    QuoteMatch,
+    ValidationErrorItem,
+    collect_out_of_scope_spec_fields,
+    verify_quote_in_document,
+)
 
 
 def format_finding_human(f: dict[str, Any]) -> str:
@@ -129,6 +134,12 @@ def build_single_report_dict(
     out_of_scope = [OUT_OF_SCOPE_CORE]
     if has_effectiveness:
         out_of_scope.append(OUT_OF_SCOPE_ACCOUNTING)
+    ignored_fields = collect_out_of_scope_spec_fields(spec)
+    if ignored_fields:
+        out_of_scope.append(
+            f"Ignored out-of-scope accounting/bookkeeping fields in spec ({', '.join(ignored_fields)}): "
+            "not evaluated by Lean; financial/bookkeeping checks require human review."
+        )
     return {
         "schema_version": "epistemic-ledger-report/v2.1",
         "document": {
@@ -187,13 +198,18 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         lines += ["", "## Validation / Grounding Errors", ""]
         for err in report["validation_errors"]:
             lines.append(f"- `{err['path']}` (`{err['code']}`): {err['message']}")
+        if report.get("out_of_scope"):
+            lines += ["", "## Out of Scope", ""]
+            for item in report["out_of_scope"]:
+                lines.append(f"- {item}")
         return "\n".join(lines) + "\n"
 
     lv = report["lean_verification"]
     lines.append(f"- **Lean 4 Kernel Proof:** `{lv['lean_file']}` (axioms whitelist OK: `{lv['axioms_ok']}`)")
-    lines.append(
-        "- **Scope note:** Verbatim quote checks prove textual existence in the snapshot; whether a quote semantically justifies a tag or edge requires auditor/human review."
-    )
+    if report.get("out_of_scope"):
+        lines += ["", "## Out of Scope", ""]
+        for item in report["out_of_scope"]:
+            lines.append(f"- {item}")
     lines += ["", "## Claim Verdicts", "", "| Claim ID | Kind | Target / Channel | Verdict | Findings | Axioms |", "|---|---|---|---|---|---|"]
 
     claim_by_id = {c["id"]: c for c in spec["claims"]}

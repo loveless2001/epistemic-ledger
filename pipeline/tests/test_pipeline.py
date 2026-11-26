@@ -769,7 +769,52 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rep["lean_verification"]["claims"][0]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in rep["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
             self.assertTrue(any("out of scope" in s.lower() and "invoice" in s.lower() for s in rep["out_of_scope"]))
+            self.assertIn("## Out of Scope", md)
             self.assertIn("Out of scope (accounting/bookkeeping)", md)
+
+            # 4. Codex #27331-1: Markdown MUST render `## Out of Scope` even when usage lists are empty AND on failed grounding reports!
+            s_empty_usage = make_spec(1500, q_m1500)
+            s_empty_usage["claims"][0]["method_usage"] = []
+            s_empty_usage["claims"][0]["control_usage"] = []
+            sp_empty = Path(tmp) / "empty_usage.json"
+            sp_empty.write_text(json.dumps(s_empty_usage), encoding="utf-8")
+            out_empty = Path(tmp) / "out_empty"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_empty), "--out", str(out_empty)]), 0)
+            md_empty = (out_empty / "ScopeAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Out of Scope", md_empty)
+            self.assertIn("invoice reconciliation", md_empty)
+
+            sp_fail = Path(tmp) / "fail_sliced.json"
+            sp_fail.write_text(json.dumps(make_spec(500, q_m500_sliced)), encoding="utf-8")
+            out_fail = Path(tmp) / "out_fail"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_fail), "--out", str(out_fail)]), 2)
+            md_fail = (out_fail / "ScopeAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Out of Scope", md_fail)
+            self.assertIn("invoice reconciliation", md_fail)
+
+            # 5. Codex #27331-2: Known out-of-scope accounting keys (`reconciliations`, `arm`, `receipt`, `charge_event`, `quantity_kind`)
+            # MUST NOT abort structural Lean verification, and MUST be reported as ignored/out of scope; unknown keys still fail!
+            s_legacy = make_spec(1500, q_m1500)
+            s_legacy["claims"][0]["method_usage"][0].update(
+                {"arm": "methodRun", "receipt": "TXN-M1", "charge_event": "TXN-M1", "quantity_kind": "actualSpend"}
+            )
+            s_legacy["claims"][0]["control_usage"][0].update({"arm": "controlRun", "receipt": "JOB-C1"})
+            s_legacy["claims"][0]["reconciliations"] = [{"arm": "methodRun", "reconciled_total": 1500}]
+            sp_legacy = Path(tmp) / "legacy.json"
+            sp_legacy.write_text(json.dumps(s_legacy), encoding="utf-8")
+            out_legacy = Path(tmp) / "out_legacy"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_legacy), "--out", str(out_legacy)]), 0)
+            rep_legacy = json.loads((out_legacy / "ScopeAuditor_report.json").read_text(encoding="utf-8"))
+            md_legacy = (out_legacy / "ScopeAuditor_report.md").read_text(encoding="utf-8")
+            self.assertEqual(rep_legacy["lean_verification"]["claims"][0]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in rep_legacy["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
+            self.assertTrue(any("Ignored out-of-scope accounting/bookkeeping fields" in s and "reconciliations" in s for s in rep_legacy["out_of_scope"]))
+            self.assertIn("Ignored out-of-scope accounting/bookkeeping fields", md_legacy)
+
+            s_bogus = copy.deepcopy(s_legacy)
+            s_bogus["claims"][0]["bogus_extra"] = 123
+            e_bogus, _ = validate_spec(s_bogus, doc=doc)
+            self.assertTrue(any(e.code == "unknown_key" for e in e_bogus))
 
 
 if __name__ == "__main__":

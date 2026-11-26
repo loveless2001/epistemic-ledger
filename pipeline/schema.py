@@ -83,6 +83,35 @@ VALID_CLAIM_KINDS = frozenset(
 )
 VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
 SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3"})
+# Known legacy/accounting fields that are intentionally out of scope for EpistemicLedger
+# (ignored during structural Lean verification and reported explicitly as out of scope).
+OUT_OF_SCOPE_EFFECTIVENESS_KEYS = frozenset({"reconciliations"})
+OUT_OF_SCOPE_USAGE_KEYS = frozenset({"arm", "receipt", "charge_event", "quantity_kind"})
+
+
+def collect_out_of_scope_spec_fields(spec: Any) -> list[str]:
+    """Return sorted names of known out-of-scope accounting/bookkeeping fields present in `spec`."""
+    found: set[str] = set()
+    if not isinstance(spec, dict):
+        return []
+    claims = spec.get("claims")
+    if not isinstance(claims, list):
+        return []
+    for cl in claims:
+        if not isinstance(cl, dict) or cl.get("kind") != "effectivenessClaim":
+            continue
+        for k in OUT_OF_SCOPE_EFFECTIVENESS_KEYS:
+            if k in cl:
+                found.add(k)
+        for ukey in ("method_usage", "control_usage"):
+            ulist = cl.get(ukey)
+            if isinstance(ulist, list):
+                for entry in ulist:
+                    if isinstance(entry, dict):
+                        for k in OUT_OF_SCOPE_USAGE_KEYS:
+                            if k in entry:
+                                found.add(k)
+    return sorted(found)
 
 
 @dataclass(frozen=True)
@@ -458,6 +487,7 @@ def validate_spec(
                     "method_usage",
                     "control_usage",
                 }
+                base_opt = base_opt | OUT_OF_SCOPE_EFFECTIVENESS_KEYS
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -489,7 +519,7 @@ def validate_spec(
                     ep = f"{upath}[{j}]"
                     if not _check_allowed_keys(
                         entry,
-                        {"source", "dimension", "unit", "amount", "quote"},
+                        {"source", "dimension", "unit", "amount", "quote"} | OUT_OF_SCOPE_USAGE_KEYS,
                         {"source", "dimension", "unit", "amount", "quote"},
                         ep,
                         errors,
