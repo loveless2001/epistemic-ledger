@@ -47,7 +47,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline test suite (25 tests)
+### 2. Run the pipeline & frozen blind-record regression test suite (26 tests, 46 frozen public claims)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v

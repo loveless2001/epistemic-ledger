@@ -1,0 +1,244 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "BlindFreeB",
+  "paper_title": "Utah v. Strieff (syllabus, opinion of the Court, Sotomayor and Kagan dissents)",
+  "nodes": [
+    "unlawfulStop",
+    "preexistingWarrant",
+    "brownFactors",
+    "attenuationPrecedents",
+    "surveillanceRecord",
+    "officerTestimony",
+    "temporalProximity",
+    "routineCheckTestimony",
+    "topanotesPractice",
+    "warrantPrevalenceData",
+    "proximateCauseDoctrine",
+    "doctrineScope",
+    "warrantDiscovered",
+    "compelledArrest",
+    "searchIncidentToArrest",
+    "flagrancyAssessment",
+    "recurrenceAssessment",
+    "evidenceAdmissible",
+    "foreseeabilityFinding"
+  ],
+  "tags": [
+    "stopTaint",
+    "investigativePurpose",
+    "routinePractice"
+  ],
+  "sources": [
+    {
+      "node": "unlawfulStop",
+      "origin": "setByExperimenter",
+      "carries": ["stopTaint"],
+      "quote": "we assume without deciding (because the State conceded the point) that Officer Fackrell lacked reasonable suspicion to initially stop Strieff",
+      "rationale": "Illegality of the stop enters by party concession and court assumption, not by a finding; it is the origin of the taint tag."
+    },
+    {
+      "node": "preexistingWarrant",
+      "origin": "measured",
+      "carries": [],
+      "quote": "who reported that Strieff had an outstanding arrest warrant for a traffic violation",
+      "rationale": "Record fact; all opinions agree the warrant itself predates and is unconnected with the stop, so it carries no taint."
+    },
+    {
+      "node": "brownFactors",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "The three factors articulated in Brown v. Illinois, 422 U. S. 590 (1975), guide our analysis.",
+      "rationale": "Court-chosen legal test, mapped as an engineered objective."
+    },
+    {
+      "node": "attenuationPrecedents",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "Third, and at issue here, is the attenuation doctrine: Evidence is admissible when the connection between unconstitutional police conduct and the evidence is remote or has been interrupted by some intervening circumstance",
+      "rationale": "Doctrine and precedent supplied by the Court."
+    },
+    {
+      "node": "surveillanceRecord",
+      "origin": "measured",
+      "carries": [],
+      "quote": "Over the course of about a week, Officer Fackrell conducted intermittent surveillance of the home.",
+      "rationale": "Record observations behind the bona fide drug-house investigation."
+    },
+    {
+      "node": "officerTestimony",
+      "origin": "measured",
+      "carries": ["investigativePurpose"],
+      "quote": "His sole reason for stopping Strieff, he acknowledged, was investigative",
+      "rationale": "Suppression-hearing testimony on the purpose of the stop; the majority also records the stated purpose to find out what was going on in the house."
+    },
+    {
+      "node": "temporalProximity",
+      "origin": "measured",
+      "carries": [],
+      "quote": "Here, however, Officer Fackrell discovered drug contraband on Strieff’s person only minutes after the illegal stop.",
+      "rationale": "Record timing fact; all opinions agree it favors suppression."
+    },
+    {
+      "node": "routineCheckTestimony",
+      "origin": "measured",
+      "carries": ["routinePractice"],
+      "quote": "checking for outstanding warrants during a stop is the “normal” practice of South Salt Lake City police",
+      "rationale": "Officer testimony in this case's record (App. 18), cited by Kagan."
+    },
+    {
+      "node": "topanotesPractice",
+      "origin": "measured",
+      "carries": ["routinePractice"],
+      "quote": "the decision of Salt Lake City police officers to run warrant checks on pedestrians they detained without reasonable suspicion",
+      "rationale": "Prior Utah Supreme Court description of local police practice, cited by Sotomayor."
+    },
+    {
+      "node": "warrantPrevalenceData",
+      "origin": "measured",
+      "carries": [],
+      "quote": "The States and Federal Government maintain databases with over 7.8 million outstanding warrants, the vast majority of which appear to be for minor offenses.",
+      "rationale": "Empirical survey data cited by the dissents."
+    },
+    {
+      "node": "proximateCauseDoctrine",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "a circumstance counts as intervening only when it is unforeseeable",
+      "rationale": "Legal standard Kagan imports from tort proximate-cause doctrine."
+    }
+  ],
+  "ops": [
+    {
+      "name": "scope_ruling",
+      "inputs": ["attenuationPrecedents"],
+      "output": "doctrineScope",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In this Court, Strieff has not defended this argument, and we disagree with it, as well."
+    },
+    {
+      "name": "stop_and_warrant_check",
+      "inputs": ["unlawfulStop", "preexistingWarrant"],
+      "output": "warrantDiscovered",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "learns during that stop that the suspect is subject to a valid arrest warrant",
+      "rationale": "Undisputed in every opinion: the warrant was discovered through the identification check made during the unlawful stop."
+    },
+    {
+      "name": "compelled_arrest_attenuation",
+      "inputs": ["warrantDiscovered", "doctrineScope", "brownFactors"],
+      "output": "compelledArrest",
+      "kind": "forget",
+      "tag": "stopTaint",
+      "evidence": "notShown",
+      "quote": "The discovery of that warrant broke the causal chain between the unconstitutional stop and the discovery of evidence by compelling Officer Fackrell to arrest Strieff.",
+      "rationale": "Taint removal rests on legal weighing of the Brown factors; no independent-source or counterfactual showing; the majority leaves open whether the warrant alone would validate the stop."
+    },
+    {
+      "name": "search_incident_to_arrest",
+      "inputs": ["compelledArrest"],
+      "output": "searchIncidentToArrest",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "it was undisputedly lawful to search Strieff as an incident of his arrest"
+    },
+    {
+      "name": "flagrancy_assessment",
+      "inputs": ["officerTestimony", "surveillanceRecord", "brownFactors"],
+      "output": "flagrancyAssessment",
+      "kind": "forget",
+      "tag": "investigativePurpose",
+      "evidence": "notShown",
+      "quote": "But these errors in judgment hardly rise to a purposeful or flagrant violation",
+      "rationale": "Majority recharacterizes an acknowledged investigative-purpose stop as good-faith negligence; argued by distinction, not demonstrated; Kagan quotes Brown treating the same purpose as purposeful."
+    },
+    {
+      "name": "recurrence_assessment",
+      "inputs": ["surveillanceRecord", "routineCheckTestimony", "topanotesPractice"],
+      "output": "recurrenceAssessment",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "all the evidence suggests that the stop was an isolated instance of negligence that occurred in connection with a bona fide investigation of a suspected drug house",
+      "rationale": "The question of systemic or recurrent misconduct, with every source the document puts on it."
+    },
+    {
+      "name": "admissibility_ruling",
+      "inputs": ["searchIncidentToArrest", "temporalProximity", "flagrancyAssessment", "recurrenceAssessment", "brownFactors"],
+      "output": "evidenceAdmissible",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "that consideration is outweighed by two factors supporting the State"
+    },
+    {
+      "name": "foreseeability_analysis",
+      "inputs": ["warrantDiscovered", "routineCheckTestimony", "warrantPrevalenceData", "proximateCauseDoctrine"],
+      "output": "foreseeabilityFinding",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "So outstanding warrants do not appear as bolts from the blue."
+    }
+  ],
+  "claims": [
+    {
+      "id": "C1",
+      "statement": "Evidence seized in the search incident to arrest is admissible because discovery of the arrest warrant attenuated its connection to the unlawful stop.",
+      "quote": "We hold that the evidence Officer Fackrell seized as part of his search incident to arrest is admissible because his discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence seized from Strieff incident to arrest.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "evidenceAdmissible",
+      "excluded_channel": "searchIncidentToArrest",
+      "tag": "stopTaint",
+      "notes": "Admissibility is claimed to arise with the stop's taint kept out of the arrest-and-search channel."
+    },
+    {
+      "id": "C2",
+      "statement": "The attenuation doctrine is not limited to the defendant's own independent acts.",
+      "quote": "And the logic of our prior attenuation cases is not limited to independent acts by the defendant.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "doctrineScope",
+      "declared_sources": ["attenuationPrecedents"],
+      "notes": "Threshold ground for reversing the Utah Supreme Court; not contested by either dissent."
+    },
+    {
+      "id": "C3",
+      "statement": "The outstanding warrant is an intervening circumstance wholly independent of the illegal stop.",
+      "quote": "The outstanding arrest warrant for Strieff’s arrest is a critical intervening circumstance that is wholly independent of the illegal stop.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithout",
+      "target": "warrantDiscovered",
+      "tag": "stopTaint",
+      "notes": "Target is the warrant's discovery, which the majority itself names as the intervening circumstance; the warrant's existence (preexistingWarrant) carries no taint."
+    },
+    {
+      "id": "C4",
+      "statement": "The officer's conduct was at most negligent, not purposeful or flagrant.",
+      "quote": "Officer Fackrell was at most negligent.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithout",
+      "target": "flagrancyAssessment",
+      "tag": "investigativePurpose"
+    },
+    {
+      "id": "C5",
+      "statement": "Nothing indicates the unlawful stop was part of systemic or recurrent police misconduct.",
+      "quote": "Moreover, there is no indication that this unlawful stop was part of any systemic or recurrent police misconduct.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "recurrenceAssessment",
+      "declared_sources": ["surveillanceRecord"],
+      "notes": "The majority's stated basis is the bona fide investigation record; routine-check testimony and Topanotes practice are in the document but not addressed by it."
+    },
+    {
+      "id": "C6",
+      "statement": "Kagan dissent: discovering the warrant was a foreseeable consequence of the stop, so it is not an intervening circumstance.",
+      "quote": "And Fackrell’s discovery of an arrest warrant—the only event the majority thinks intervened—was an eminently foreseeable consequence of stopping Strieff.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "foreseeabilityFinding",
+      "declared_sources": ["unlawfulStop", "preexistingWarrant", "routineCheckTestimony", "warrantPrevalenceData", "proximateCauseDoctrine"],
+      "notes": "Holds given the declared premises, including the imported tort foreseeability standard, which the majority does not adopt."
+    }
+  ]
+}

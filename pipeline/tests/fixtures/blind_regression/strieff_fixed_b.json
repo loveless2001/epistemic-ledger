@@ -1,0 +1,187 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "BlindFixedB",
+  "paper_title": "UTAH v. STRIEFF",
+  "nodes": [
+    "houseSurveillance",
+    "deptDetentionRoutine",
+    "outstandingWarrant",
+    "brownFactors",
+    "unlawfulStop",
+    "warrantDiscovery",
+    "attenuatedLink",
+    "warrantArrest",
+    "seizedEvidence",
+    "seguraUnlawfulEntry",
+    "seguraWarrantInfo",
+    "seguraSearchWarrant",
+    "seguraWarrantEvidence",
+    "seguraEntryObservations"
+  ],
+  "tags": [
+    "taint",
+    "systemic"
+  ],
+  "sources": [
+    {
+      "node": "houseSurveillance",
+      "origin": "measured",
+      "carries": [],
+      "quote": "Over the course of about a week, Officer Fackrell conducted intermittent surveillance of the home.",
+      "rationale": "Tip plus the officer's own observations of the house; observational record, carries neither taint nor systemic practice."
+    },
+    {
+      "node": "deptDetentionRoutine",
+      "origin": "setByExperimenter",
+      "carries": ["systemic"],
+      "quote": "the department’s standard detention procedures—stop, ask for identification, run a check—are partly designed to find outstanding warrants",
+      "rationale": "Kagan dissent, from Fackrell's testimony that warrant checks during stops are the normal practice of South Salt Lake City police; an institutional procedure set by the acting police department, so setByExperimenter."
+    },
+    {
+      "node": "outstandingWarrant",
+      "origin": "measured",
+      "carries": [],
+      "quote": "In this case, the warrant was valid, it predated Officer Fackrell’s investigation, and it was entirely unconnected with the stop.",
+      "rationale": "Pre-existing judicial record found in a database; its existence is untainted (undisputed by the dissents)."
+    },
+    {
+      "node": "brownFactors",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "The three factors articulated in Brown v. Illinois, 422 U. S. 590 (1975), guide our analysis.",
+      "rationale": "Court-made legal test used to make the attenuation cut; engineered by the decision maker, carries no tag itself."
+    },
+    {
+      "node": "seguraUnlawfulEntry",
+      "origin": "setByExperimenter",
+      "carries": ["taint"],
+      "quote": "In the meantime, they entered the apartment, arrested an occupant, and discovered evidence of drug activity during a limited search for security reasons.",
+      "rationale": "Segura: unlawful police entry, an act of the state actor, carries taint."
+    },
+    {
+      "node": "seguraWarrantInfo",
+      "origin": "measured",
+      "carries": [],
+      "quote": "known to the agents well before the initial entry",
+      "rationale": "Segura: information supporting the warrant, wholly unconnected with the entry."
+    }
+  ],
+  "ops": [
+    {
+      "name": "detain_strieff_without_reasonable_suspicion",
+      "inputs": ["houseSurveillance", "deptDetentionRoutine"],
+      "output": "unlawfulStop",
+      "kind": "transform",
+      "introduces": ["taint"],
+      "quote": "the prosecutor conceded that Officer Fackrell lacked reasonable suspicion for the stop",
+      "rationale": "The stop is the Fourth Amendment violation (conceded), so it injects taint; it was carried out through the department's standard stop/ID/check procedure."
+    },
+    {
+      "name": "warrant_check_during_stop",
+      "inputs": ["unlawfulStop", "outstandingWarrant"],
+      "output": "warrantDiscovery",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Officer Fackrell relayed Strieff’s information to a police dispatcher, who reported that Strieff had an outstanding arrest warrant for a traffic violation.",
+      "rationale": "Discovery of the warrant used the identification obtained in the stop; all opinions state this sequence."
+    },
+    {
+      "name": "attenuation_by_warrant_discovery",
+      "inputs": ["warrantDiscovery", "brownFactors"],
+      "output": "attenuatedLink",
+      "kind": "forget",
+      "tag": "taint",
+      "evidence": "contradicted",
+      "quote": "The discovery of that warrant broke the causal chain between the unconstitutional stop and the discovery of evidence by compelling Officer Fackrell to arrest Strieff.",
+      "rationale": "Majority's claimed cut of taint. No invariance shown: the majority weighs factors and does not show the warrant or evidence would be found without the stop; the shared facts and the dissents show the stop was essential to the warrant's discovery."
+    },
+    {
+      "name": "arrest_on_warrant",
+      "inputs": ["attenuatedLink"],
+      "output": "warrantArrest",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Officer Fackrell then arrested Strieff pursuant to that warrant.",
+      "rationale": "Arrest compelled by the warrant once discovered."
+    },
+    {
+      "name": "search_incident_to_arrest",
+      "inputs": ["warrantArrest"],
+      "output": "seizedEvidence",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "When Officer Fackrell searched Strieff incident to the arrest, he discovered a baggie of methamphetamine and drug paraphernalia.",
+      "rationale": "The evidence whose admissibility is at issue."
+    },
+    {
+      "name": "segura_magistrate_issues_warrant",
+      "inputs": ["seguraWarrantInfo"],
+      "output": "seguraSearchWarrant",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The next evening, the Magistrate Judge issued the search warrant.",
+      "rationale": "Segura warrant rests only on the independent information."
+    },
+    {
+      "name": "segura_search_under_warrant",
+      "inputs": ["seguraSearchWarrant"],
+      "output": "seguraWarrantEvidence",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "After receiving the warrant, the agents then searched the apartment for drugs.",
+      "rationale": "No edge from the unlawful entry: majority and both dissents agree the entry did not contribute."
+    },
+    {
+      "name": "segura_security_sweep",
+      "inputs": ["seguraUnlawfulEntry"],
+      "output": "seguraEntryObservations",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "discovered evidence of drug activity during a limited search for security reasons",
+      "rationale": "What the unlawful entry itself produced; a separate branch from the warrant evidence."
+    }
+  ],
+  "claims": [
+    {
+      "id": "S1",
+      "statement": "The evidence seized incident to Strieff's arrest is admissible (free of the stop's taint) under the Brown attenuation factors.",
+      "quote": "Held: The evidence Officer Fackrell seized incident to Strieff’s arrest is admissible based on an application of the attenuation factors from Brown v. Illinois, 422 U. S. 590.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithout",
+      "target": "seizedEvidence",
+      "tag": "taint",
+      "notes": "Syllabus (Reporter of Decisions) restating the holding. Admissibility encoded as: taint does not reach seizedEvidence."
+    },
+    {
+      "id": "S2",
+      "statement": "The evidence is admissible because discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence.",
+      "quote": "We hold that the evidence Officer Fackrell seized as part of his search incident to arrest is admissible because his discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence seized from Strieff incident to arrest.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "seizedEvidence",
+      "excluded_channel": "attenuatedLink",
+      "tag": "taint",
+      "notes": "Names the mechanism: the warrant-discovery channel is claimed to exclude taint."
+    },
+    {
+      "id": "S3",
+      "statement": "In Segura the evidence seized under the warrant derived only from the independent source; the unlawful entry did not contribute.",
+      "quote": "Segura, of course, applied the independent source doctrine because the unlawful entry “did not contribute in any way to discovery of the evidence seized under the warrant.”",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "seguraWarrantEvidence",
+      "declared_sources": ["seguraWarrantInfo"],
+      "notes": "Independent source doctrine = every upstream source of the evidence is the declared independent information."
+    },
+    {
+      "id": "S4",
+      "statement": "There is no indication the unlawful stop was part of systemic or recurrent police misconduct.",
+      "quote": "Moreover, there is no indication that this unlawful stop was part of any systemic or recurrent police misconduct.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithout",
+      "target": "unlawfulStop",
+      "tag": "systemic",
+      "notes": "Encoded as: no systemic-practice structure upstream of the stop. Dissents point to departmental routine feeding the stop/ID/check sequence."
+    }
+  ]
+}

@@ -1,0 +1,227 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "BlindMathB",
+  "paper_title": "VP ≠ VNP over every field",
+  "nodes": [
+    "fieldK",
+    "caseHypotheses",
+    "hypotheticalCircuit",
+    "targetPolynomials",
+    "writtenProofText",
+    "leanDevelopment",
+    "statementFile",
+    "leanCheckReport",
+    "closureField",
+    "caseSplitField",
+    "flatBound",
+    "contractingBound",
+    "mainBound",
+    "separationVPVNP",
+    "leanCheckedStatement"
+  ],
+  "tags": [
+    "caseSplit",
+    "machineCheck",
+    "twoCasesHold",
+    "charNotTwoPerm",
+    "mLarge",
+    "contractingProgramsExact",
+    "inVNP",
+    "statementFaithful",
+    "kernelAcceptance"
+  ],
+  "sources": [
+    {
+      "node": "fieldK",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "for every 𝑝, zero or prime, there is 𝑚0 with the following property",
+      "rationale": "The field is universally quantified by the theorem statement; chosen by the statement, not observed."
+    },
+    {
+      "node": "caseHypotheses",
+      "origin": "setByExperimenter",
+      "carries": ["caseSplit"],
+      "quote": "The proof consists of two cases, the contracting case and the flat case, according to which of two technical hypotheses",
+      "rationale": "Definition 2.1 / D.1: the flat and contracting hypotheses are constructed by the authors."
+    },
+    {
+      "node": "hypotheticalCircuit",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "Only now suppose that PERM𝑚 has a circuit with 𝑣 𝑎 gates",
+      "rationale": "The small circuit is an assumption made for contradiction."
+    },
+    {
+      "node": "targetPolynomials",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "The canonical VNP-complete problems are the permanent and the Hamiltonian cycle",
+      "rationale": "PERM_m and HC_m are fixed definitions."
+    },
+    {
+      "node": "writtenProofText",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "Those of Sections A to G and of Appendix O, and the deduction of Theorem L.1 in Section L, are meant to be complete, if terse.",
+      "rationale": "Printed human-readable proofs in the appendices."
+    },
+    {
+      "node": "leanDevelopment",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "The file Solution.lean proves them.",
+      "rationale": "External Lean proof artifact written by the authors; not printed in the paper."
+    },
+    {
+      "node": "statementFile",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "We now print the file Statement.lean of the Lean development, which imports Mathlib and nothing else",
+      "rationale": "Formal statement file, printed in Section 3."
+    },
+    {
+      "node": "leanCheckReport",
+      "origin": "measured",
+      "carries": ["machineCheck"],
+      "quote": "contains no sorry outside Challenge.lean, which states the theorems for checking",
+      "rationale": "Outcome of running the Lean kernel / Comparator / nanoda on the artifact, as reported by the authors; read off the checker rather than chosen."
+    }
+  ],
+  "ops": [
+    {
+      "name": "reduce_to_algebraic_closure",
+      "inputs": ["fieldK"],
+      "output": "closureField",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "By Lemma M.1 it suffices to consider circuits over K"
+    },
+    {
+      "name": "case_split_flat_or_contracting",
+      "inputs": ["closureField", "caseHypotheses"],
+      "output": "caseSplitField",
+      "kind": "partition",
+      "introduces": [],
+      "quote": "where Theorem D.2 gives the flat or the contracting case, depending on 𝑝",
+      "rationale": "Disjunction proved by Theorem D.2 (non-effective); closest mapping is a case partition."
+    },
+    {
+      "name": "flat_case_lower_bound",
+      "inputs": ["caseSplitField", "hypotheticalCircuit", "targetPolynomials", "writtenProofText"],
+      "output": "flatBound",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In the flat case Theorem E.11 gives the bound"
+    },
+    {
+      "name": "contracting_case_lower_bound",
+      "inputs": ["caseSplitField", "hypotheticalCircuit", "targetPolynomials", "writtenProofText", "leanDevelopment"],
+      "output": "contractingBound",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In the contracting case Theorem K.7 gives the bound",
+      "rationale": "Program/automaton correctness for Prop. I.1, Thm. H.2(d),(e), Thm. J.3 (and Prop. N.4 for approximation) is supplied only by the Lean development."
+    },
+    {
+      "name": "combine_cases",
+      "inputs": ["flatBound", "contractingBound"],
+      "output": "mainBound",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The constant of Theorem E.11 in the flat case is absolute"
+    },
+    {
+      "name": "deduce_separation",
+      "inputs": ["mainBound", "targetPolynomials"],
+      "output": "separationVPVNP",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "By Theorem M.3 it is not in VP."
+    },
+    {
+      "name": "lean_kernel_check",
+      "inputs": ["statementFile", "leanDevelopment", "leanCheckReport"],
+      "output": "leanCheckedStatement",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Comparator accepted them against Challenge.lean"
+    }
+  ],
+  "claims": [
+    {
+      "id": "F1",
+      "statement": "Every arithmetic circuit computing PERM_m over the reals (and over every field of characteristic not 2; HC_m over every field) has more than m^(c (log m)^(1/3)) gates for some c > 0 and all sufficiently large m; hence VP != VNP over every field.",
+      "quote": "We prove that every arithmetic circuit that computes the permanent of an 1/3 𝑚 × 𝑚 matrix over the reals has more than 𝑚𝑐(log 𝑚) gates, for some constant 𝑐 > 0 and all sufficiently large 𝑚. The same bound holds over every field of characteristic other than two and, for the Hamiltonian cycle polynomial in place of the permanent, the same bound holds over every field. Hence VP ̸= VNP over every field.",
+      "provenance": "authorClaimed",
+      "kind": "theoremApplication",
+      "target": "separationVPVNP",
+      "hypotheses": [
+        {
+          "tag": "twoCasesHold",
+          "status": "discharged",
+          "quote": "at least one of the two hypotheses of Definition 2.1 holds",
+          "rationale": "Theorem D.2; its printed proof (Sections C, D) is stated to be complete."
+        },
+        {
+          "tag": "charNotTwoPerm",
+          "status": "discharged",
+          "quote": "In characteristic two the permanent coincides with the determinant",
+          "rationale": "The claim itself restricts the permanent bound to characteristic other than two; HC_m reduction needs no division (Prop. M.2)."
+        },
+        {
+          "tag": "mLarge",
+          "status": "discharged",
+          "quote": "The constant 𝑚0 in our theorems is not effective",
+          "rationale": "Existence of m0 is proved; the claim is scoped to sufficiently large m; m0 is non-effective but this does not affect an existential statement."
+        },
+        {
+          "tag": "contractingProgramsExact",
+          "status": "bet",
+          "quote": "That these do exactly what is claimed can be verified only in the Lean development",
+          "rationale": "Printed proofs of Prop. I.1, Thm. H.2(d),(e), Thm. J.3, Prop. N.4 only describe programs and count resources; exactness is discharged only in an external Lean artifact not reproduced in the document and not checked in this audit. Openly declared by the paper."
+        },
+        {
+          "tag": "inVNP",
+          "status": "discharged",
+          "quote": "as one sees by summing over one-hot codes of the places that the vertices take on the cycle",
+          "rationale": "Membership of HC_m (Cor. M.4) and PERM_m via Ryser (Cor. L.3) in VNP is argued in the text."
+        }
+      ],
+      "declared_bets": ["contractingProgramsExact"]
+    },
+    {
+      "id": "F2",
+      "statement": "The result was found by an internal Claude model and has been formalized (and machine-checked) in Lean.",
+      "quote": "The result was discovered by an internal research Claude model and has been formalized in Lean.",
+      "provenance": "authorClaimed",
+      "kind": "theoremApplication",
+      "target": "leanCheckedStatement",
+      "hypotheses": [
+        {
+          "tag": "statementFaithful",
+          "status": "discharged",
+          "quote": "states the main results so that a reader can check that it correctly formalizes the statements in this paper",
+          "rationale": "Statement.lean is printed in Section 3; its MainTheorem and Separation can be compared inside the document with Theorem 1.1 and Corollary 1.2 and they match. The paper reports that this fidelity was judged only by AI readers."
+        },
+        {
+          "tag": "kernelAcceptance",
+          "status": "bet",
+          "quote": "Comparator accepted them against Challenge.lean, rechecking the proofs with Lean’s kernel and with the independently written checker nanoda",
+          "rationale": "Only the authors' report of the check is in the document; Solution.lean is not printed and Lean was not run in this audit. The paper openly states the result rests on this Lean development."
+        }
+      ],
+      "declared_bets": ["kernelAcceptance"],
+      "notes": "The discovery-attribution half of the sentence (found by an internal Claude model) is a provenance statement that the record cannot express; see notes.txt."
+    },
+    {
+      "id": "C1",
+      "statement": "The contracting case, and therefore every main result, depends on the Lean development at the four points where the printed proofs only describe programs.",
+      "quote": "Consequently the contracting case, and with it every main result, rests on Lean at these points.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "mainBound",
+      "declared_sources": ["fieldK", "caseHypotheses", "hypotheticalCircuit", "targetPolynomials", "writtenProofText", "leanDevelopment"]
+    }
+  ]
+}

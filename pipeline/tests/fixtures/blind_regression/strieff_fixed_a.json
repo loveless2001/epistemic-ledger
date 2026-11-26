@@ -1,0 +1,218 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "BlindFixedA",
+  "paper_title": "Utah v. Strieff, No. 14-1373 (U.S. Supreme Court, decided June 20, 2016): syllabus, opinion of the Court, two dissents",
+  "nodes": [
+    "tipAndSurveillance",
+    "departmentDetentionPractice",
+    "preexistingArrestWarrant",
+    "unlawfulStop",
+    "warrantDiscovery",
+    "arrestOnWarrant",
+    "evidenceSeized",
+    "brownAttenuationFactors",
+    "seguraPriorProbableCause",
+    "seguraUnlawfulEntry",
+    "seguraSearchWarrant",
+    "seguraWarrantEvidence",
+    "seguraWarrantPrinciple",
+    "temporalProximityFactor",
+    "interveningCircumstanceFactor",
+    "purposeFlagrancyFactor",
+    "admissibilityHolding"
+  ],
+  "tags": [
+    "stopIllegality",
+    "seguraEntryIllegality",
+    "recurrentPolicePractice"
+  ],
+  "sources": [
+    {
+      "node": "tipAndSurveillance",
+      "origin": "measured",
+      "carries": [],
+      "quote": "And his suspicion about the house was based on an anonymous tip and his personal observations.",
+      "rationale": "What the officer was told and saw before the stop. Observations, not something he designed, so measured."
+    },
+    {
+      "node": "departmentDetentionPractice",
+      "origin": "setByExperimenter",
+      "carries": ["recurrentPolicePractice"],
+      "quote": "As Fackrell testified, checking for outstanding warrants during a stop is the “normal” practice of South Salt Lake City police.",
+      "rationale": "A standing police procedure, described in the Kagan dissent from the officer's testimony (App. 18) as 'standard detention procedures' that are 'partly designed to find outstanding warrants'. The Sotomayor dissent adds the Utah Supreme Court's description of such checks as 'routine procedure' in Salt Lake City. A procedure designed by the police, so setByExperimenter. The majority does not mention this testimony."
+    },
+    {
+      "node": "preexistingArrestWarrant",
+      "origin": "measured",
+      "carries": [],
+      "quote": "In this case, the warrant was valid, it predated Officer Fackrell’s investigation, and it was entirely unconnected with the stop.",
+      "rationale": "The warrant existed before the investigation and the officer only found it. No opinion disputes that the warrant itself is independent of the stop, so it carries no stop illegality."
+    },
+    {
+      "node": "brownAttenuationFactors",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "The three factors articulated in Brown v. Illinois, 422 U. S. 590 (1975), guide our analysis.",
+      "rationale": "The legal test the Court applies. A criterion chosen by the document's authors, so setByExperimenter. Both dissents accept the same three factors."
+    },
+    {
+      "node": "seguraPriorProbableCause",
+      "origin": "measured",
+      "carries": [],
+      "quote": "There, agents had probable cause to believe that apartment occupants were dealing cocaine.",
+      "rationale": "Information the Segura agents held before their entry. Entry node of the Segura facts as this document reports them."
+    }
+  ],
+  "ops": [
+    {
+      "name": "detain_and_demand_identification",
+      "inputs": ["tipAndSurveillance", "departmentDetentionPractice"],
+      "output": "unlawfulStop",
+      "kind": "transform",
+      "introduces": ["stopIllegality"],
+      "quote": "In evaluating these factors, we assume without deciding (because the State conceded the point) that Officer Fackrell lacked reasonable suspicion to initially stop Strieff.",
+      "rationale": "The node is the stop encounter as the majority's facts describe it: detention plus the identification request and relay to the dispatcher ('As part of the stop, Officer Fackrell requested Strieff's identification'). The illegality (no reasonable suspicion) enters at this step by the officer's own decision; it is conceded by the State and assumed by the Court. The department procedure is an input because the Kagan dissent describes the sequence 'stop, ask for identification, run a check' as the department's standard procedure. The majority later treats the warrant check as lawful conduct after the stop decision."
+    },
+    {
+      "name": "dispatcher_reports_outstanding_warrant",
+      "inputs": ["unlawfulStop", "preexistingArrestWarrant"],
+      "output": "warrantDiscovery",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Officer Fackrell relayed Strieff’s information to a police dispatcher, who reported that Strieff had an outstanding arrest warrant for a traffic violation.",
+      "rationale": "The officer learns of the warrant during the stop, using identification obtained in the stop. All three opinions state the facts this way."
+    },
+    {
+      "name": "warrant_discovery_said_to_break_chain",
+      "inputs": ["warrantDiscovery", "preexistingArrestWarrant"],
+      "output": "arrestOnWarrant",
+      "kind": "forget",
+      "tag": "stopIllegality",
+      "evidence": "contradicted",
+      "quote": "The discovery of that warrant broke the causal chain between the unconstitutional stop and the discovery of evidence by compelling Officer Fackrell to arrest Strieff.",
+      "rationale": "This is the step where the majority says the stop's illegality stops carrying forward. The document contains no showing that the warrant would have been found, or the arrest and search made, without the stop. Its statements of fact go the other way: the majority says the detention 'leads to the discovery' of the warrant and that the officer 'learns during that stop' of it; the Sotomayor dissent says the stop 'was essential to his discovery of an arrest warrant'; the Kagan dissent says the unconstitutional act 'in fact leads to a warrant which then leads to evidence'. The value records only that factual point. Whether the link is attenuated in law is what the majority and the dissents disagree on, and this field does not decide it."
+    },
+    {
+      "name": "search_incident_to_arrest",
+      "inputs": ["arrestOnWarrant"],
+      "output": "evidenceSeized",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "When Officer Fackrell searched Strieff incident to the arrest, he discovered a baggie of methamphetamine and drug paraphernalia."
+    },
+    {
+      "name": "segura_entry_before_warrant",
+      "inputs": ["seguraPriorProbableCause"],
+      "output": "seguraUnlawfulEntry",
+      "kind": "transform",
+      "introduces": ["seguraEntryIllegality"],
+      "quote": "In the meantime, they entered the apartment, arrested an occupant, and discovered evidence of drug activity during a limited search for security reasons.",
+      "rationale": "The agents' own act; the illegality of the entry is introduced here."
+    },
+    {
+      "name": "segura_warrant_issued_on_prior_information",
+      "inputs": ["seguraPriorProbableCause"],
+      "output": "seguraSearchWarrant",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "This Court deemed the evidence admissible notwithstanding the illegal search because the information supporting the warrant was “wholly unconnected with the [arguably illegal] entry and was known to the agents well before the initial entry.”",
+      "rationale": "No input from the unlawful entry. The Sotomayor dissent says the same: the illegal entry 'had nothing to do with their procurement of a search warrant'."
+    },
+    {
+      "name": "segura_search_under_warrant",
+      "inputs": ["seguraSearchWarrant"],
+      "output": "seguraWarrantEvidence",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "After receiving the warrant, the agents then searched the apartment for drugs.",
+      "rationale": "No input from the unlawful entry: the majority and both dissents each quote Segura's statement that the entry 'did not contribute in any way' to this evidence."
+    },
+    {
+      "name": "segura_suggestion_on_valid_warrant",
+      "inputs": ["seguraWarrantEvidence"],
+      "output": "seguraWarrantPrinciple",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "But the Segura Court suggested that the existence of a valid warrant favors finding that the connection between unlawful conduct and the discovery of evidence is “sufficiently attenuated to dissipate the taint.”",
+      "rationale": "The majority's reading of Segura, which it then applies ('That principle applies here'). Both dissents say Segura does not bear on a case where the illegality did lead to the warrant."
+    },
+    {
+      "name": "apply_temporal_proximity_factor",
+      "inputs": ["brownAttenuationFactors", "unlawfulStop", "evidenceSeized"],
+      "output": "temporalProximityFactor",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Here, however, Officer Fackrell discovered drug contraband on Strieff’s person only minutes after the illegal stop."
+    },
+    {
+      "name": "apply_intervening_circumstances_factor",
+      "inputs": ["brownAttenuationFactors", "seguraWarrantPrinciple", "preexistingArrestWarrant", "warrantDiscovery", "arrestOnWarrant"],
+      "output": "interveningCircumstanceFactor",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In contrast, the second factor, the presence of intervening circumstances, strongly favors the State.",
+      "rationale": "The majority's second-factor step uses the principle it takes from Segura together with the facts about the warrant."
+    },
+    {
+      "name": "apply_purpose_and_flagrancy_factor",
+      "inputs": ["brownAttenuationFactors", "unlawfulStop", "tipAndSurveillance"],
+      "output": "purposeFlagrancyFactor",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "To the contrary, all the evidence suggests that the stop was an isolated instance of negligence that occurred in connection with a bona fide investigation of a suspected drug house."
+    },
+    {
+      "name": "weigh_factors_and_hold_admissible",
+      "inputs": ["temporalProximityFactor", "interveningCircumstanceFactor", "purposeFlagrancyFactor"],
+      "output": "admissibilityHolding",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Applying these factors, we hold that the evidence discovered on Strieff’s person was admissible because the unlawful stop was sufficiently attenuated by the pre-existing arrest warrant."
+    }
+  ],
+  "claims": [
+    {
+      "id": "S1",
+      "statement": "The seized evidence is admissible, and the stated basis is an application of the Brown v. Illinois attenuation factors.",
+      "quote": "Held: The evidence Officer Fackrell seized incident to Strieff’s arrest is admissible based on an application of the attenuation factors from Brown v. Illinois, 422 U. S. 590.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "admissibilityHolding",
+      "declared_sources": ["brownAttenuationFactors", "tipAndSurveillance", "preexistingArrestWarrant"],
+      "notes": "A result stated together with its basis. Declared: the Brown factors, which the sentence names, and the case facts the syllabus recites before it (tip and surveillance, the warrant). Not declared by the sentence: the Segura material the majority uses for the second factor, and the department procedure that only the dissents cite. The sentence is from the syllabus, written by the Reporter of Decisions."
+    },
+    {
+      "id": "S2",
+      "statement": "The evidence is admissible because discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence, so the stop's illegality does not carry into the evidence seized in the search incident to arrest.",
+      "quote": "We hold that the evidence Officer Fackrell seized as part of his search incident to arrest is admissible because his discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence seized from Strieff incident to arrest.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "evidenceSeized",
+      "excluded_channel": "arrestOnWarrant",
+      "tag": "stopIllegality",
+      "notes": "A statement that the stop's illegality does not flow through to the evidence. Target is the evidence; the excluded channel is the arrest on the warrant, the route the majority says is clear of the stop. Whether the illegality gets that far depends on the forget step at the warrant discovery."
+    },
+    {
+      "id": "S3",
+      "statement": "In Segura the unlawful entry did not contribute to discovery of the evidence seized under the warrant, which is why the independent source doctrine applied there.",
+      "quote": "Segura, of course, applied the independent source doctrine because the unlawful entry “did not contribute in any way to discovery of the evidence seized under the warrant.”",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "seguraWarrantEvidence",
+      "excluded_channel": "seguraSearchWarrant",
+      "tag": "seguraEntryIllegality",
+      "notes": "A statement that one act did not feed another: the Segura entry's illegality must not reach the warrant or the evidence seized under it. The majority and both dissents describe Segura this way, so the graph has no edge from the entry to the warrant branch."
+    },
+    {
+      "id": "S4",
+      "statement": "Nothing indicates that this unlawful stop was part of systemic or recurrent police misconduct.",
+      "quote": "Moreover, there is no indication that this unlawful stop was part of any systemic or recurrent police misconduct.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "purposeFlagrancyFactor",
+      "excluded_channel": "unlawfulStop",
+      "tag": "recurrentPolicePractice",
+      "notes": "An absence statement: no recurrent-practice structure in the stop. Excluded channel is the stop; target is the third-factor assessment where the majority uses the sentence. The dissents answer it directly with the officer's testimony that warrant checks during stops are normal practice and with the Utah Supreme Court's description of such checks as routine, so that source is recorded as feeding the stop encounter. The majority treats the warrant check as lawful conduct separate from the stop decision; on that narrower reading of 'stop' the source would attach one step later."
+    }
+  ]
+}

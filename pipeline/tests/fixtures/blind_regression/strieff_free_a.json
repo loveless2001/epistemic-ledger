@@ -1,0 +1,184 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "BlindFreeA",
+  "paper_title": "Utah v. Strieff, No. 14-1373 (U.S. Supreme Court, decided June 20, 2016): syllabus, opinion of the Court (Thomas, J.), dissents (Sotomayor, J.; Kagan, J.)",
+  "nodes": [
+    "unlawfulStop",
+    "outstandingWarrant",
+    "tipAndSurveillance",
+    "flagrancyStandard",
+    "routineWarrantCheckPractice",
+    "warrantPrevalenceData",
+    "tortForeseeabilityStandard",
+    "idCheckDuringStop",
+    "warrantDiscovery",
+    "arrestOnWarrant",
+    "evidenceSeized",
+    "flagrancyFinding",
+    "foreseeabilityFinding"
+  ],
+  "tags": [
+    "stopTaint",
+    "warrantAuthority"
+  ],
+  "sources": [
+    {
+      "node": "unlawfulStop",
+      "origin": "measured",
+      "carries": ["stopTaint"],
+      "quote": "In evaluating these factors, we assume without deciding (because the State conceded the point) that Officer Fackrell lacked reasonable suspicion to initially stop Strieff.",
+      "rationale": "Entry point of the illegality. The stop is a record event and its unlawfulness reaches the Court as the State's concession, accepted by all three opinions, so it is recorded as taken from the record and not as a premise the Court supplied."
+    },
+    {
+      "node": "outstandingWarrant",
+      "origin": "measured",
+      "carries": ["warrantAuthority"],
+      "quote": "In this case, the warrant was valid, it predated Officer Fackrell’s investigation, and it was entirely unconnected with the stop.",
+      "rationale": "Pre-existing record fact. The warrant itself has no upstream link to the stop and carries the lawful authority to arrest and search; no opinion disputes this."
+    },
+    {
+      "node": "tipAndSurveillance",
+      "origin": "measured",
+      "carries": [],
+      "quote": "And his suspicion about the house was based on an anonymous tip and his personal observations.",
+      "rationale": "Record facts the majority uses to call the investigation bona fide."
+    },
+    {
+      "node": "flagrancyStandard",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "For the violation to be flagrant, more severe police misconduct is required than the mere absence of proper cause for the seizure.",
+      "rationale": "Legal threshold chosen and stated by the majority; the Kagan dissent reads Brown as setting a different threshold on the same facts."
+    },
+    {
+      "node": "routineWarrantCheckPractice",
+      "origin": "measured",
+      "carries": [],
+      "quote": "As Fackrell testified, checking for outstanding warrants during a stop is the “normal” practice of South Salt Lake City police.",
+      "rationale": "Record testimony cited by the Kagan dissent."
+    },
+    {
+      "node": "warrantPrevalenceData",
+      "origin": "measured",
+      "carries": [],
+      "quote": "And find them they will, given the staggering number of such warrants on the books.",
+      "rationale": "Outside counts of outstanding warrants cited by the dissents; observations, not premises the author set."
+    },
+    {
+      "node": "tortForeseeabilityStandard",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "And as in the tort context, a circumstance counts as intervening only when it is unforeseeable—not when it can be seen coming from miles away.",
+      "rationale": "Legal criterion imported by the Kagan dissent from tort law; the majority does not adopt it."
+    }
+  ],
+  "ops": [
+    {
+      "name": "request_identification_during_stop",
+      "inputs": ["unlawfulStop"],
+      "output": "idCheckDuringStop",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "As part of the stop, Officer Fackrell requested Strieff’s identification, and Strieff produced his Utah identification card."
+    },
+    {
+      "name": "dispatcher_reports_warrant",
+      "inputs": ["idCheckDuringStop", "outstandingWarrant"],
+      "output": "warrantDiscovery",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Officer Fackrell relayed Strieff’s information to a police dispatcher, who reported that Strieff had an outstanding arrest warrant for a traffic violation.",
+      "rationale": "The discovery has two parents: the pre-existing warrant and the identification check run as part of the stop."
+    },
+    {
+      "name": "warrant_discovery_compels_arrest",
+      "inputs": ["warrantDiscovery"],
+      "output": "arrestOnWarrant",
+      "kind": "forget",
+      "tag": "stopTaint",
+      "evidence": "notShown",
+      "quote": "The discovery of that warrant broke the causal chain between the unconstitutional stop and the discovery of evidence by compelling Officer Fackrell to arrest Strieff.",
+      "rationale": "The majority states that this step removes the stop's taint, by legal argument (valid pre-existing warrant, ministerial duty to arrest, Segura). No opinion shows that the evidence would have been obtained without the stop, and both dissents dispute the break. Not marked contradicted because whether the factual link defeats attenuation is the legal point on which the opinions divide."
+    },
+    {
+      "name": "search_incident_to_arrest",
+      "inputs": ["arrestOnWarrant"],
+      "output": "evidenceSeized",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "When Officer Fackrell searched Strieff incident to the arrest, he discovered a baggie of methamphetamine and drug paraphernalia."
+    },
+    {
+      "name": "assess_purpose_and_flagrancy",
+      "inputs": ["unlawfulStop", "idCheckDuringStop", "tipAndSurveillance", "flagrancyStandard"],
+      "output": "flagrancyFinding",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "But these errors in judgment hardly rise to a purposeful or flagrant violation of Strieff’s Fourth Amendment rights.",
+      "rationale": "Majority's third Brown factor: the stop facts and stated purpose, the conduct after the stop, the tip and surveillance, read under the majority's flagrancy threshold."
+    },
+    {
+      "name": "assess_foreseeability_of_discovery",
+      "inputs": ["warrantDiscovery", "routineWarrantCheckPractice", "warrantPrevalenceData", "tortForeseeabilityStandard"],
+      "output": "foreseeabilityFinding",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "They are the run-of-the-mill results of police stops—what officers look for when they run a routine check of a person’s identification and what they know will turn up with fair regularity.",
+      "rationale": "Kagan dissent's finding on the intervening-circumstance factor: the discovery, the routine check practice and the warrant counts, read under the tort foreseeability criterion."
+    }
+  ],
+  "claims": [
+    {
+      "id": "C1",
+      "statement": "Majority holding: the evidence seized in the search incident to arrest is admissible because the discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence.",
+      "quote": "We hold that the evidence Officer Fackrell seized as part of his search incident to arrest is admissible because his discovery of the arrest warrant attenuated the connection between the unlawful stop and the evidence seized from Strieff incident to arrest.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "evidenceSeized",
+      "excluded_channel": "arrestOnWarrant",
+      "tag": "stopTaint",
+      "notes": "Read as: the evidence arises through the arrest-on-warrant channel with the stop's taint excluded from that channel. The tag is the thing claimed absent, not the thing claimed to arise."
+    },
+    {
+      "id": "C2",
+      "statement": "Majority: the outstanding arrest warrant is an intervening circumstance that is wholly independent of the illegal stop.",
+      "quote": "The outstanding arrest warrant for Strieff’s arrest is a critical intervening circumstance that is wholly independent of the illegal stop.",
+      "provenance": "authorClaimed",
+      "kind": "independentConvergence",
+      "branch_a": "warrantDiscovery",
+      "branch_b": "unlawfulStop",
+      "tag": "stopTaint",
+      "notes": "Branch A is the discovery of the warrant, because the majority itself defines the intervening circumstance as the discovery of a valid, pre-existing, and untainted arrest warrant. The warrant's own independence is kept on the source node outstandingWarrant."
+    },
+    {
+      "id": "C3",
+      "statement": "Majority: there is no evidence that the illegal stop reflected flagrantly unlawful police misconduct (third Brown factor).",
+      "quote": "And, it is especially significant that there is no evidence that Officer Fackrell’s illegal stop reflected flagrantly unlawful police misconduct.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "flagrancyFinding",
+      "declared_sources": ["unlawfulStop", "tipAndSurveillance", "flagrancyStandard"],
+      "notes": "Holds given the record of the stop and the majority's own flagrancy threshold; the dissents reach the opposite finding from the same record under a different reading of Brown."
+    },
+    {
+      "id": "C4",
+      "statement": "Sotomayor dissent: the drugs were found only after the officer learned of the warrant, and he learned of it only because of the unlawful stop.",
+      "quote": "The officer found the drugs only after learning of Strieff’s traffic violation; and he learned of Strieff’s traffic violation only because he unlawfully stopped Strieff to check his driver’s license.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "evidenceSeized",
+      "declared_sources": ["unlawfulStop", "outstandingWarrant"],
+      "notes": "Claimed by a dissenting author of the document, not by the Court. An only-because claim: every source upstream of the evidence is one the sentence names."
+    },
+    {
+      "id": "C5",
+      "statement": "Kagan dissent: the discovery of the arrest warrant was an eminently foreseeable consequence of stopping Strieff.",
+      "quote": "And Fackrell’s discovery of an arrest warrant—the only event the majority thinks intervened—was an eminently foreseeable consequence of stopping Strieff.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "foreseeabilityFinding",
+      "declared_sources": ["unlawfulStop", "outstandingWarrant", "routineWarrantCheckPractice", "warrantPrevalenceData", "tortForeseeabilityStandard"],
+      "notes": "Claimed by a dissenting author of the document, not by the Court. Holds given the stop, the warrant, the routine check practice, the warrant counts and the dissent's own tort foreseeability criterion."
+    }
+  ]
+}

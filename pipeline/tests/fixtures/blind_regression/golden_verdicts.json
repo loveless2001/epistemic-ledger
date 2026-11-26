@@ -1,0 +1,322 @@
+{
+  "schema_version": "epistemic-ledger-golden/v1",
+  "note": "Frozen Lean-4 kernel verdicts and finding types across 11 public real-document records (8 blind cross-check records + 3 committed paper examples). Any engine change that shifts a verdict or finding type will fail test_blind_regression.py explicitly.",
+  "records": {
+    "pipeline/tests/fixtures/blind_regression/strieff_fixed_a.json": {
+      "auditor": "BlindFixedA",
+      "claims": {
+        "S1": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "undeclaredUpstreamSource",
+            "undeclaredUpstreamSource"
+          ]
+        },
+        "S2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "excludedChannelLeak",
+            "authorSuppliedStructure",
+            "failedForgetOnPath",
+            "failedForgetOnPath"
+          ]
+        },
+        "S3": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "S4": {
+          "verdict": "rejected",
+          "finding_types": [
+            "excludedChannelLeak",
+            "authorSuppliedStructure"
+          ]
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/strieff_fixed_b.json": {
+      "auditor": "BlindFixedB",
+      "claims": {
+        "S1": {
+          "verdict": "rejected",
+          "finding_types": [
+            "smuggledStructure",
+            "failedForgetOnPath"
+          ]
+        },
+        "S2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "excludedChannelLeak",
+            "authorSuppliedStructure",
+            "failedForgetOnPath",
+            "failedForgetOnPath"
+          ]
+        },
+        "S3": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "S4": {
+          "verdict": "rejected",
+          "finding_types": [
+            "smuggledStructure"
+          ]
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/strieff_free_a.json": {
+      "auditor": "BlindFreeA",
+      "claims": {
+        "C1": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "failedForgetOnPath"
+          ]
+        },
+        "C2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "sharedUpstreamStructure"
+          ]
+        },
+        "C3": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C4": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C5": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/strieff_free_b.json": {
+      "auditor": "BlindFreeB",
+      "claims": {
+        "C1": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "failedForgetOnPath",
+            "failedForgetOnPath"
+          ]
+        },
+        "C2": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C3": {
+          "verdict": "rejected",
+          "finding_types": [
+            "smuggledStructure"
+          ]
+        },
+        "C4": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "failedForgetOnPath"
+          ]
+        },
+        "C5": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "undeclaredUpstreamSource",
+            "undeclaredUpstreamSource"
+          ]
+        },
+        "C6": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/jepa_a.json": {
+      "auditor": "BlindJepaA",
+      "claims": {
+        "F1": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "unquantifiedBudget",
+            "unboundUsageSource"
+          ]
+        },
+        "F2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "hypothesisKnownFalse",
+            "hypothesisKnownFalse",
+            "hypothesisKnownFalse"
+          ]
+        },
+        "F3": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C1": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "authorSuppliedStructure"
+          ]
+        },
+        "C3": {
+          "verdict": "rejected",
+          "finding_types": [
+            "smuggledStructure",
+            "failedForgetOnPath"
+          ]
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/jepa_b.json": {
+      "auditor": "BlindJepaB",
+      "claims": {
+        "F1": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "unquantifiedBudget",
+            "unboundUsageSource"
+          ]
+        },
+        "F2": {
+          "verdict": "rejected",
+          "finding_types": [
+            "hypothesisKnownFalse",
+            "hypothesisKnownFalse"
+          ]
+        },
+        "F3": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/math_vp_vnp_a.json": {
+      "auditor": "BlindMathA",
+      "claims": {
+        "F1": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "F2": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C1": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/tests/fixtures/blind_regression/math_vp_vnp_b.json": {
+      "auditor": "BlindMathB",
+      "claims": {
+        "F1": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "F2": {
+          "verdict": "admissible",
+          "finding_types": []
+        },
+        "C1": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/examples/papadopetraki_2025_v23.json": {
+      "auditor": "GeminiPapadopetrakiAudit",
+      "claims": {
+        "claim1_additive_to_chemotherapy_unconfounded": {
+          "verdict": "rejected",
+          "finding_types": [
+            "smuggledStructure",
+            "failedForgetOnPath"
+          ]
+        },
+        "claim2_mechanical_loading_isolated_from_baseline_secretome": {
+          "verdict": "rejected",
+          "finding_types": [
+            "excludedChannelLeak",
+            "authorSuppliedStructure",
+            "failedForgetOnPath"
+          ]
+        },
+        "claim3_in_vitro_assays_recover_clinical_prognosis": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "unaccessedTargetStructure"
+          ]
+        },
+        "claim4_exercise_training_effectiveness_vs_chemo_control": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "missingCostAccounting",
+            "missingMatchedControl"
+          ]
+        },
+        "claim5_narrow_within_subject_acute_in_vitro_effect": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/examples/society_ai_scientists_v23.json": {
+      "auditor": "GeminiAuditV23",
+      "claims": {
+        "society_efficiency_stress_test": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "missingCostAccounting",
+            "missingMatchedControl"
+          ]
+        },
+        "citation_depth_statistical_null": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    },
+    "pipeline/examples/society_ai_scientists_v21_5claims.json": {
+      "auditor": "GeminiAudit",
+      "claims": {
+        "claim1_emergent_norms": {
+          "verdict": "rejected",
+          "finding_types": [
+            "authorSuppliedStructure",
+            "failedForgetOnPath"
+          ]
+        },
+        "claim2_emergent_topical_hubs": {
+          "verdict": "rejected",
+          "finding_types": [
+            "authorSuppliedStructure"
+          ]
+        },
+        "claim3_blinded_quality_recovery": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "unaccessedTargetStructure"
+          ]
+        },
+        "claim4_repro_audit_upstream_validity": {
+          "verdict": "unestablished",
+          "finding_types": [
+            "unaccessedTargetStructure"
+          ]
+        },
+        "claim5_narrow_observational_record": {
+          "verdict": "admissible",
+          "finding_types": []
+        }
+      }
+    }
+  }
+}
