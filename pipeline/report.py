@@ -32,13 +32,43 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Undeclared Source]** upstream source `{f['source']}` omitted from conditional claim"
     if ft == "danglingInput":
         return f"**[Dangling Input]** op `{f['op']}` consumes undefined node `{f['missing']}`"
+    if ft == "missingCostAccounting":
+        return f"**[Missing Cost Accounting]** method `{f['method']}` lacks true `{f['cost_tag']}` cost accounting / cost ledger"
+    if ft == "circularCostLedger":
+        return f"**[Circular Cost Ledger]** ledger `{f['ledger']}` is downstream of `{f['method']}` instead of an independent cost branch"
+    if ft == "unusedCostLedger":
+        return f"**[Unused Cost Ledger]** ledger `{f['ledger']}` does not feed evaluation `{f['evaluation']}`"
+    if ft == "unaccountedCostSource":
+        return f"**[Unaccounted Cost Source]** `{f['cost_source']}` (`{f['cost_tag']}`) feeds method but is omitted from cost ledger `{f['ledger']}`"
+    if ft == "unusedMethodNode":
+        return f"**[Unused Method]** method `{f['method']}` does not feed evaluation `{f['evaluation']}`"
+    if ft == "missingMatchedControl":
+        return f"**[Missing Matched Control]** effectiveness claim on `{f['method']}` provides no control arm"
+    if ft == "trivialSelfControl":
+        return f"**[Trivial Self-Control]** `{f['method']}` is compared against itself"
+    if ft == "unusedControlNode":
+        return f"**[Unused Control]** control `{f['control']}` does not feed evaluation `{f['evaluation']}`"
+    if ft == "unmatchedControlBudget":
+        return f"**[Unmatched Control Budget]** `{f['method']}` and control `{f['control']}` do not share identical `{f['cost_tag']}` budget sources"
     return json.dumps(f)
 
 
 def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
     kind = meta.get("kind")
     sig: dict[str, Any] = {"kind": kind}
-    for k in ("target", "excluded_channel", "branch_a", "branch_b", "tag", "declared_sources"):
+    for k in (
+        "target",
+        "excluded_channel",
+        "branch_a",
+        "branch_b",
+        "tag",
+        "declared_sources",
+        "method_node",
+        "evaluation_node",
+        "control_node",
+        "cost_ledger_node",
+        "cost_tag",
+    ):
         if k in meta:
             sig[k] = meta[k]
     return sig
@@ -123,9 +153,12 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
     for c in lv["claims"]:
         meta = claim_by_id[c["id"]]
         sig = _claim_signature(meta)
-        endpoint = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
-        if "excluded_channel" in sig:
-            endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
+        if sig.get("kind") == "effectivenessClaim":
+            endpoint = f"{sig.get('method_node')} → {sig.get('evaluation_node')} (ctrl={sig.get('control_node')}, ledger={sig.get('cost_ledger_node')})"
+        else:
+            endpoint = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
+            if "excluded_channel" in sig:
+                endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         lines.append(
             f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{c['verdict']}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
@@ -217,6 +250,7 @@ def build_comparison_report(
         tags: set[str] = set()
         excluded_channels: set[str] = set()
         declared_source_sets: set[tuple[str, ...]] = set()
+        effectiveness_controls: set[tuple[str, str]] = set()
         missing_or_unverified = False
         ambiguous_multi_claim = False
 
@@ -240,9 +274,15 @@ def build_comparison_report(
                     verdicts.add(info["verdict"])
                     sig = info["signature"]
                     kinds.add(str(sig.get("kind")))
-                    tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
+                    if sig.get("kind") == "effectivenessClaim":
+                        tgt = f"{sig.get('method_node')}->{sig.get('evaluation_node')}"
+                        tags.add(str(sig.get("cost_tag", "")))
+                        effectiveness_controls.add((str(sig.get("control_node")), str(sig.get("cost_ledger_node"))))
+                    else:
+                        tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
+                        tags.add(str(sig.get("tag", "")))
+                        effectiveness_controls.add(("", ""))
                     targets.add(tgt)
-                    tags.add(str(sig.get("tag", "")))
                     excluded_channels.add(str(sig.get("excluded_channel", "")))
                     declared_source_sets.add(tuple(sorted(set(sig.get("declared_sources", [])))))
 
@@ -272,6 +312,7 @@ def build_comparison_report(
                 "same_tag": complete_1to1 and len(tags) == 1,
                 "same_excluded_channel": complete_1to1 and len(excluded_channels) == 1,
                 "same_declared_sources": complete_1to1 and len(declared_source_sets) == 1,
+                "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
                 "by_auditor": by_aud,
             }
         )
@@ -326,14 +367,20 @@ def build_comparison_report(
 
     def _fmt_claim_cell(info: dict[str, Any]) -> str:
         sig = info["signature"]
-        tgt = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
         extras = []
-        if "tag" in sig:
-            extras.append(f"tag={sig['tag']}")
-        if "excluded_channel" in sig:
-            extras.append(f"excl={sig['excluded_channel']}")
-        if "declared_sources" in sig:
-            extras.append(f"declared={sorted(set(sig['declared_sources']))}")
+        if sig.get("kind") == "effectivenessClaim":
+            tgt = f"{sig.get('method_node')}→{sig.get('evaluation_node')}"
+            extras.append(f"ctrl={sig.get('control_node')}")
+            extras.append(f"ledger={sig.get('cost_ledger_node')}")
+            extras.append(f"cost_tag={sig.get('cost_tag')}")
+        else:
+            tgt = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
+            if "tag" in sig:
+                extras.append(f"tag={sig['tag']}")
+            if "excluded_channel" in sig:
+                extras.append(f"excl={sig['excluded_channel']}")
+            if "declared_sources" in sig:
+                extras.append(f"declared={sorted(set(sig['declared_sources']))}")
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
         return f"**{info['verdict']}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
@@ -356,6 +403,8 @@ def build_comparison_report(
                 diffs.append("excluded_channel")
             if not row["same_declared_sources"]:
                 diffs.append("declared_sources")
+            if not row["same_control_and_ledger"]:
+                diffs.append("control/ledger")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
         cells = []
@@ -384,10 +433,11 @@ def build_comparison_report(
             or not r["same_tag"]
             or not r["same_excluded_channel"]
             or not r["same_declared_sources"]
+            or not r["same_control_and_ledger"]
         ]
         if not issues and all_grounding_ok:
             md.append(
-                "- None: all auditors passed grounding and reached identical Lean-verified verdicts and full claim signatures (kind, target, tag, excluded_channel, declared_sources) on every matched claim."
+                "- None: all auditors passed grounding and reached identical Lean-verified verdicts and full claim signatures on every matched claim."
             )
         else:
             for row in issues:
@@ -420,8 +470,14 @@ CRITICAL RULES:
    - `target`: the node where the claimed property emerges
    - `excluded_channel`: the specific channel/node the claim asserts does NOT receive `tag` (e.g., loss target or direct input)
    - `tag`: the structural property claimed to emerge
-5. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
-6. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
+5. For effectiveness / efficiency / productivity claims (Tier 2, v2.2), use `kind: "effectivenessClaim"` with:
+   - `method_node`: the evaluated method run
+   - `evaluation_node`: the reported outcome/comparison metric
+   - `control_node`: the budget-matched control arm node (or `null` if the paper has no matched control)
+   - `cost_ledger_node`: an independent cost-accounting node charging all `cost_tag` sources spent by `method_node` (or `null` if omitted)
+   - `cost_tag`: the resource/cost tag (e.g., `resourceCost`)
+6. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
+7. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 
 JSON TEMPLATE:
 {{

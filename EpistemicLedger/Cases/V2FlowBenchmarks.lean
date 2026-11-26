@@ -492,4 +492,136 @@ theorem simulator_depth_in_loss_triggers_both_alarms :
 
 end Policy3Tests
 
+/-! ### Tier 2 (v2.2) Tests: Cost Accounting & Budget-Matched Control (`effectivenessClaim`) -/
+namespace EffectivenessTests
+
+inductive Node where
+  | sharedComputeAndApiBudget
+  | humanOperatorHours
+  | separateSmallBudget
+  | autonomousSocietyRun
+  | humanPlusAiControlRun
+  | fullCostLedger
+  | partialCostLedger
+  | fakeCircularLedger
+  | rawStudyCountReport
+  | costNormalizedComparison
+  deriving DecidableEq, Repr
+
+inductive Tag where
+  | resourceCost
+  deriving DecidableEq, Repr
+
+/-- Case 1 ("Society of AI Scientists" macro claim): no matched control AND no cost ledger. -/
+def societyNoControlNoCost : FlowClaim Node Tag where
+  statement := "936 autonomous agents across 35 labs efficiently produce scientific discoveries."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩,
+      ⟨.humanOperatorHours, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_936_agents", [.sharedComputeAndApiBudget, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
+      ⟨"count_papers_only", [.autonomousSocietyRun], .rawStudyCountReport, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost
+
+/-- Case 2 (Self-control cheese): comparing method against itself must be rejected. -/
+def selfControlCheese : FlowClaim Node Tag where
+  statement := "Compare society run against itself."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_society", [.sharedComputeAndApiBudget], .autonomousSocietyRun, .transform []⟩,
+      ⟨"sum_cost", [.sharedComputeAndApiBudget], .fullCostLedger, .transform []⟩,
+      ⟨"eval", [.autonomousSocietyRun, .fullCostLedger], .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .autonomousSocietyRun) (some .fullCostLedger) .resourceCost
+
+/-- Case 3 (Unmatched control budget): control runs on a different, unmatched budget source. -/
+def unmatchedControlBudget : FlowClaim Node Tag where
+  statement := "Compare 35-lab GPU+API run against unbudgeted separate baseline."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩,
+      ⟨.separateSmallBudget, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_society", [.sharedComputeAndApiBudget], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_control", [.separateSmallBudget], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"sum_cost", [.sharedComputeAndApiBudget], .fullCostLedger, .transform []⟩,
+      ⟨"compare_arms", [.autonomousSocietyRun, .humanPlusAiControlRun, .fullCostLedger],
+        .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .fullCostLedger) .resourceCost
+
+/-- Case 4 (Hidden partial cost): compute budget is in ledger, but `humanOperatorHours` is omitted from ledger! -/
+def hiddenHumanHours : FlowClaim Node Tag where
+  statement := "Compare autonomous society vs human+AI control, omitting human operator hours from cost ledger."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩,
+      ⟨.humanOperatorHours, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_society", [.sharedComputeAndApiBudget, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_control", [.sharedComputeAndApiBudget, .humanOperatorHours], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"partial_cost_only", [.sharedComputeAndApiBudget], .partialCostLedger, .transform []⟩,
+      ⟨"compare_arms", [.autonomousSocietyRun, .humanPlusAiControlRun, .partialCostLedger],
+        .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
+
+/-- Case 5 (Circular cost ledger cheese): trying to derive ledger from `methodNode` itself! -/
+def circularLedgerCheese : FlowClaim Node Tag where
+  statement := "Use output of method run as its own cost ledger."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_society", [.sharedComputeAndApiBudget], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_control", [.sharedComputeAndApiBudget], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"wrap_method_as_ledger", [.autonomousSocietyRun], .fakeCircularLedger, .transform []⟩,
+      ⟨"compare_arms", [.autonomousSocietyRun, .humanPlusAiControlRun, .fakeCircularLedger],
+        .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .fakeCircularLedger) .resourceCost
+
+/-- Case 6 (Clean budget-matched Human+AI control with independent full cost ledger): ADMISSIBLE! -/
+def cleanMatchedBudgetControl : FlowClaim Node Tag where
+  statement := "Under identical compute/API and human-hour budget caps, compare autonomous agents vs human+AI teams per dollar-hour."
+  graph :=
+    ⟨[⟨.sharedComputeAndApiBudget, .setByExperimenter, [.resourceCost]⟩,
+      ⟨.humanOperatorHours, .setByExperimenter, [.resourceCost]⟩],
+     [⟨"run_society", [.sharedComputeAndApiBudget, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_human_ai_control", [.sharedComputeAndApiBudget, .humanOperatorHours], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"independent_cost_ledger", [.sharedComputeAndApiBudget, .humanOperatorHours], .fullCostLedger, .transform []⟩,
+      ⟨"cost_normalized_eval",
+        [.autonomousSocietyRun, .humanPlusAiControlRun, .fullCostLedger],
+        .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .fullCostLedger) .resourceCost
+
+theorem society_rejected_no_control_no_cost :
+    flowVerdict societyNoControlNoCost = .rejected ∧
+    FlowFinding.missingMatchedControl Node.autonomousSocietyRun ∈ auditFlow societyNoControlNoCost ∧
+    FlowFinding.missingCostAccounting Node.autonomousSocietyRun Tag.resourceCost ∈ auditFlow societyNoControlNoCost := by
+  decide
+
+theorem self_control_rejected :
+    flowVerdict selfControlCheese = .rejected ∧
+    FlowFinding.trivialSelfControl Node.autonomousSocietyRun ∈ auditFlow selfControlCheese := by
+  decide
+
+theorem unmatched_budget_rejected :
+    flowVerdict unmatchedControlBudget = .rejected ∧
+    FlowFinding.unmatchedControlBudget Node.autonomousSocietyRun Node.humanPlusAiControlRun Tag.resourceCost
+      ∈ auditFlow unmatchedControlBudget := by
+  decide
+
+theorem hidden_human_hours_rejected :
+    flowVerdict hiddenHumanHours = .rejected ∧
+    FlowFinding.unaccountedCostSource Node.humanOperatorHours Node.partialCostLedger Tag.resourceCost
+      ∈ auditFlow hiddenHumanHours := by
+  decide
+
+theorem circular_ledger_rejected :
+    flowVerdict circularLedgerCheese = .rejected ∧
+    FlowFinding.circularCostLedger Node.fakeCircularLedger Node.autonomousSocietyRun
+      ∈ auditFlow circularLedgerCheese := by
+  decide
+
+theorem clean_matched_control_admissible :
+    flowVerdict cleanMatchedBudgetControl = .admissible := by
+  decide
+
+end EffectivenessTests
+
 end EpistemicLedger.Cases.V2FlowBenchmarks

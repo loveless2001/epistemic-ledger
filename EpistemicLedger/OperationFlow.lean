@@ -80,6 +80,20 @@ inductive FlowClaimKind (ν σ : Type) where
   /-- "Given `declaredSources`, `target` holds (all upstream sources reaching `target`
       are declared)." -/
   | conditionalFlow (target : ν) (declaredSources : List ν)
+  /-- Tier 2 (v2.2): "Method `methodNode` demonstrates effectiveness/efficiency at
+      `evaluationNode` under cost dimension `costTag`, compared against budget-matched
+      control `controlNode` and charged via independent cost ledger `costLedgerNode`."
+      Mechanically checks: (1) cost is modeled on `methodNode`, (2) an independent
+      `costLedgerNode` (not downstream of `methodNode`) charges every `costTag` source
+      spent by `methodNode` and feeds `evaluationNode`, (3) a distinct `controlNode`
+      feeds `evaluationNode` and shares the exact same `costTag` budget sources as
+      `methodNode`, and (4) `methodNode` itself feeds `evaluationNode`. -/
+  | effectivenessClaim
+      (methodNode : ν)
+      (evaluationNode : ν)
+      (controlNode : Option ν)
+      (costLedgerNode : Option ν)
+      (costTag : σ)
   deriving DecidableEq, Repr
 
 /-- A claim audited against an operation graph. -/
@@ -114,6 +128,24 @@ inductive FlowFinding (ν σ : Type) where
   /-- Graph completeness error: an upstream operation consumes a node that has neither a
       `SourceNode` nor a producing `Op` in the graph. -/
   | danglingInput (opName : String) (missing : ν)
+  /-- Tier 2: `methodNode` has no upstream `SourceNode` carrying `costTag`, or no cost ledger was provided. -/
+  | missingCostAccounting (methodNode : ν) (costTag : σ)
+  /-- Tier 2: `costLedgerNode` is downstream of `methodNode` (not an independent cost accounting branch). -/
+  | circularCostLedger (costLedgerNode : ν) (methodNode : ν)
+  /-- Tier 2: `costLedgerNode` does not feed `evaluationNode`. -/
+  | unusedCostLedger (costLedgerNode : ν) (evaluationNode : ν)
+  /-- Tier 2: cost source `costSource` feeds `methodNode` but is NOT charged in `costLedgerNode`. -/
+  | unaccountedCostSource (costSource : ν) (costLedgerNode : ν) (costTag : σ)
+  /-- Tier 2: `methodNode` itself does not feed `evaluationNode`. -/
+  | unusedMethodNode (methodNode : ν) (evaluationNode : ν)
+  /-- Tier 2: effectiveness claim provides no control arm (`controlNode = none`). -/
+  | missingMatchedControl (methodNode : ν)
+  /-- Tier 2: claim compares `methodNode` against itself (`controlNode = some methodNode`). -/
+  | trivialSelfControl (methodNode : ν)
+  /-- Tier 2: `controlNode` is declared in the graph but does not feed `evaluationNode`. -/
+  | unusedControlNode (controlNode : ν) (evaluationNode : ν)
+  /-- Tier 2: `methodNode` and `controlNode` do not share identical upstream `costTag` budget sources. -/
+  | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
   deriving DecidableEq, Repr
 
 /-- Verdict for a flow claim. -/
@@ -349,6 +381,45 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         some (.undeclaredUpstreamSource s.node)
       else none
     undeclared ++ danglingInputsUpstream c.graph target
+  | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag =>
+    let methodCosts := sourceOrigins c.graph costTag methodNode
+    let evalAnc := ancestors c.graph evaluationNode
+    let costMissing : List (FlowFinding ν σ) :=
+      if methodCosts.isEmpty then [.missingCostAccounting methodNode costTag] else []
+    let ledgerFindings : List (FlowFinding ν σ) :=
+      match costLedgerNode with
+      | none => [.missingCostAccounting methodNode costTag]
+      | some ledger =>
+        let circErr : List (FlowFinding ν σ) :=
+          if methodNode ∈ ancestors c.graph ledger then [.circularCostLedger ledger methodNode] else []
+        let unusedLedgerErr : List (FlowFinding ν σ) :=
+          if ledger ∉ evalAnc then [.unusedCostLedger ledger evaluationNode] else []
+        let ledgerCosts := sourceOrigins c.graph costTag ledger
+        let unchargedErr : List (FlowFinding ν σ) :=
+          methodCosts.filterMap fun src =>
+            if src ∉ ledgerCosts then some (.unaccountedCostSource src ledger costTag) else none
+        circErr ++ unusedLedgerErr ++ unchargedErr ++ danglingInputsUpstream c.graph ledger
+    let methodUnused : List (FlowFinding ν σ) :=
+      if methodNode ∉ evalAnc then [.unusedMethodNode methodNode evaluationNode] else []
+    let controlFindings : List (FlowFinding ν σ) :=
+      match controlNode with
+      | none => [.missingMatchedControl methodNode]
+      | some ctrl =>
+        let selfErr : List (FlowFinding ν σ) :=
+          if ctrl = methodNode then [.trivialSelfControl methodNode] else []
+        let unusedErr : List (FlowFinding ν σ) :=
+          if ctrl ∉ evalAnc then [.unusedControlNode ctrl evaluationNode] else []
+        let ctrlCosts := sourceOrigins c.graph costTag ctrl
+        let matched : Bool :=
+          !methodCosts.isEmpty &&
+          methodCosts.all (fun src => src ∈ ctrlCosts) &&
+          ctrlCosts.all (fun src => src ∈ methodCosts)
+        let unmatchedErr : List (FlowFinding ν σ) :=
+          if matched then [] else [.unmatchedControlBudget methodNode ctrl costTag]
+        selfErr ++ unusedErr ++ unmatchedErr ++ danglingInputsUpstream c.graph ctrl
+    costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
+      ++ danglingInputsUpstream c.graph methodNode
+      ++ danglingInputsUpstream c.graph evaluationNode
 
 def flowVerdict (c : FlowClaim ν σ) : FlowVerdict :=
   if (auditFlow c).isEmpty then .admissible else .rejected
@@ -568,6 +639,132 @@ theorem admissible_policy3_clean_both_alarms
         cases p with
         | nil => exact False.elim (findAuthorSuppliedPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
         | cons _ _ => simp at ha2
+  · cases hadm
+
+/--
+Theorem 6 (Soundness of Tier 2 — `effectivenessClaim`):
+If an `effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag`
+is `admissible`, then:
+  (1) `methodNode` has at least one upstream `costTag` source,
+  (2) `costLedgerNode = some ledger` with `methodNode ∉ ancestors c.graph ledger`,
+      `ledger ∈ ancestors c.graph evaluationNode`, and every `costTag` source of
+      `methodNode` is charged in `ledger`,
+  (3) `methodNode ∈ ancestors c.graph evaluationNode`, and
+  (4) `controlNode = some ctrl` with `ctrl ≠ methodNode`,
+      `ctrl ∈ ancestors c.graph evaluationNode`, and `methodNode` and `ctrl` have
+      identical sets of upstream `costTag` budget sources.
+-/
+theorem admissible_effectiveness_has_control_and_charged_cost
+    (c : FlowClaim ν σ) (methodNode evaluationNode : ν)
+    (controlNode costLedgerNode : Option ν) (costTag : σ)
+    (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag)
+    (hadm : flowVerdict c = .admissible) :
+    (sourceOrigins c.graph costTag methodNode ≠ []) ∧
+    (methodNode ∈ ancestors c.graph evaluationNode) ∧
+    (∃ ledger,
+      costLedgerNode = some ledger ∧
+      methodNode ∉ ancestors c.graph ledger ∧
+      ledger ∈ ancestors c.graph evaluationNode ∧
+      ∀ src ∈ sourceOrigins c.graph costTag methodNode, src ∈ sourceOrigins c.graph costTag ledger) ∧
+    (∃ ctrl,
+      controlNode = some ctrl ∧
+      ctrl ≠ methodNode ∧
+      ctrl ∈ ancestors c.graph evaluationNode ∧
+      (∀ src ∈ sourceOrigins c.graph costTag methodNode, src ∈ sourceOrigins c.graph costTag ctrl) ∧
+      (∀ src ∈ sourceOrigins c.graph costTag ctrl, src ∈ sourceOrigins c.graph costTag methodNode)) := by
+  unfold flowVerdict at hadm
+  split at hadm
+  · rename_i hempty
+    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
+    rw [auditFlow, hkind] at hnil
+    dsimp only at hnil
+    have h1 := (List.append_eq_nil_iff.mp hnil).1
+    have h2 := (List.append_eq_nil_iff.mp h1).1
+    have hctrl := (List.append_eq_nil_iff.mp h2).2
+    have h3 := (List.append_eq_nil_iff.mp h2).1
+    have hmethUnused := (List.append_eq_nil_iff.mp h3).2
+    have h4 := (List.append_eq_nil_iff.mp h3).1
+    have hcostMiss := (List.append_eq_nil_iff.mp h4).1
+    have hledger := (List.append_eq_nil_iff.mp h4).2
+    have hnonempty : sourceOrigins c.graph costTag methodNode ≠ [] := by
+      intro hzero
+      simp [hzero] at hcostMiss
+    have hmethInEval : methodNode ∈ ancestors c.graph evaluationNode := by
+      split at hmethUnused
+      · simp at hmethUnused
+      · rename_i hnot
+        exact Decidable.byContradiction hnot
+    have hledgerExists : ∃ ledger,
+        costLedgerNode = some ledger ∧
+        methodNode ∉ ancestors c.graph ledger ∧
+        ledger ∈ ancestors c.graph evaluationNode ∧
+        ∀ src ∈ sourceOrigins c.graph costTag methodNode, src ∈ sourceOrigins c.graph costTag ledger := by
+      cases hl : costLedgerNode with
+      | none =>
+        rw [hl] at hledger
+        simp at hledger
+      | some ledger =>
+        rw [hl] at hledger
+        dsimp only at hledger
+        have hl1 := (List.append_eq_nil_iff.mp hledger).1
+        have hl2 := (List.append_eq_nil_iff.mp hl1).1
+        have hcirc := (List.append_eq_nil_iff.mp hl2).1
+        have hunusedL := (List.append_eq_nil_iff.mp hl2).2
+        have huncharged := (List.append_eq_nil_iff.mp hl1).2
+        have hnotCirc : methodNode ∉ ancestors c.graph ledger := by
+          split at hcirc
+          · simp at hcirc
+          · assumption
+        have hlInEval : ledger ∈ ancestors c.graph evaluationNode := by
+          split at hunusedL
+          · simp at hunusedL
+          · rename_i hnot
+            exact Decidable.byContradiction hnot
+        have hallCharged : ∀ src ∈ sourceOrigins c.graph costTag methodNode,
+            src ∈ sourceOrigins c.graph costTag ledger := by
+          intro src hsrc
+          have hfm := List.filterMap_eq_nil_iff.mp huncharged src hsrc
+          split at hfm
+          · simp at hfm
+          · rename_i hnot
+            exact Decidable.byContradiction hnot
+        exact ⟨ledger, rfl, hnotCirc, hlInEval, hallCharged⟩
+    have hctrlExists : ∃ ctrl,
+        controlNode = some ctrl ∧
+        ctrl ≠ methodNode ∧
+        ctrl ∈ ancestors c.graph evaluationNode ∧
+        (∀ src ∈ sourceOrigins c.graph costTag methodNode, src ∈ sourceOrigins c.graph costTag ctrl) ∧
+        (∀ src ∈ sourceOrigins c.graph costTag ctrl, src ∈ sourceOrigins c.graph costTag methodNode) := by
+      cases hc : controlNode with
+      | none =>
+        rw [hc] at hctrl
+        simp at hctrl
+      | some ctrl =>
+        rw [hc] at hctrl
+        dsimp only at hctrl
+        have hc1 := (List.append_eq_nil_iff.mp hctrl).1
+        have hc2 := (List.append_eq_nil_iff.mp hc1).1
+        have hself := (List.append_eq_nil_iff.mp hc2).1
+        have hunused := (List.append_eq_nil_iff.mp hc2).2
+        have hunmatched := (List.append_eq_nil_iff.mp hc1).2
+        have hne : ctrl ≠ methodNode := by
+          split at hself
+          · simp at hself
+          · assumption
+        have hctrlInEval : ctrl ∈ ancestors c.graph evaluationNode := by
+          split at hunused
+          · simp at hunused
+          · rename_i hnot
+            exact Decidable.byContradiction hnot
+        have hboth : (∀ src ∈ sourceOrigins c.graph costTag methodNode, src ∈ sourceOrigins c.graph costTag ctrl) ∧
+            (∀ src ∈ sourceOrigins c.graph costTag ctrl, src ∈ sourceOrigins c.graph costTag methodNode) := by
+          split at hunmatched
+          · rename_i hm
+            simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at hm
+            exact ⟨hm.1.2, hm.2⟩
+          · simp at hunmatched
+        exact ⟨ctrl, rfl, hne, hctrlInEval, hboth.1, hboth.2⟩
+    exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
   · cases hadm
 
 end EpistemicLedger.OperationFlow

@@ -78,8 +78,10 @@ VALID_CLAIM_KINDS = frozenset(
         "independentConvergence",
         "uniqueRecovery",
         "conditionalFlow",
+        "effectivenessClaim",
     }
 )
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2"})
 
 
 @dataclass(frozen=True)
@@ -191,12 +193,12 @@ def validate_spec(
     if not _check_allowed_keys(spec, top_allowed, top_required, "$", errors):
         return errors, quotes
 
-    if spec["schema_version"] != "epistemic-ledger/v2.1":
+    if spec["schema_version"] not in SUPPORTED_SCHEMA_VERSIONS:
         errors.append(
             ValidationErrorItem(
                 "$.schema_version",
                 "unsupported_schema",
-                f"Expected 'epistemic-ledger/v2.1', got {spec['schema_version']!r}",
+                f"Expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}, got {spec['schema_version']!r}",
             )
         )
 
@@ -385,6 +387,8 @@ def validate_spec(
                 extra = {"branch_a", "branch_b", "tag"}
             elif kind == "uniqueRecovery":
                 extra = {"target", "tag"}
+            elif kind == "effectivenessClaim":
+                extra = {"method_node", "evaluation_node", "control_node", "cost_ledger_node", "cost_tag"}
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -414,6 +418,17 @@ def validate_spec(
                 check_defined_endpoint(cl["branch_b"], f"{p}.branch_b")
                 if cl["tag"] not in tag_set:
                     errors.append(ValidationErrorItem(f"{p}.tag", "unknown_tag", f"Unknown tag {cl['tag']!r}"))
+            elif kind == "effectivenessClaim":
+                check_defined_endpoint(cl["method_node"], f"{p}.method_node")
+                check_defined_endpoint(cl["evaluation_node"], f"{p}.evaluation_node")
+                if cl["control_node"] is not None:
+                    check_defined_endpoint(cl["control_node"], f"{p}.control_node")
+                if cl["cost_ledger_node"] is not None:
+                    check_defined_endpoint(cl["cost_ledger_node"], f"{p}.cost_ledger_node")
+                if cl["cost_tag"] not in tag_set:
+                    errors.append(
+                        ValidationErrorItem(f"{p}.cost_tag", "unknown_tag", f"Unknown tag {cl['cost_tag']!r}")
+                    )
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):
