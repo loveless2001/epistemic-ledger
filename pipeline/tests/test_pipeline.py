@@ -1565,24 +1565,67 @@ class PipelineTests(unittest.TestCase):
                 )
 
             # Also verify other alphanumeric suffix clippings (`100ms` -> `100m`, `100kWh` -> `100k`),
-            # leading decimals (`.109`), and scientific notation (`1e6`) are never falsely grounded as plain ints.
+            # leading decimals (`.109`), and scientific notation (`1e6`, `1e+6`, `1e-6`, `1.5E-6`, `1.e+6`)
+            # — both in full quotes and in quotes sliced starting at the exponent (Codex #27419).
             edge_doc_path = base / "edge_nums.txt"
             edge_doc_path.write_text(
-                "Latency stayed at 100ms using 100kWh, score .109 over 1e6 evaluations.\n",
+                "Latency stayed at 100ms using 100kWh, score .109 over 1e6 evaluations.\n"
+                "The method stored 1e+6 megabytes and 1e-6 megabytes (plus 1.5E+6 and 1.e-6 in phase-6).\n"
+                "The control stored 6 megabytes.\n",
                 encoding="utf-8",
             )
             edge_doc = ingest_document(str(edge_doc_path))
-            for q_edge, expected_intact in [
-                ("Latency stayed at 100m", set()),
-                ("Latency stayed at 100ms using 100k", {100}),
-                ("score .109 over 1e6 evaluations.", set()),
-            ]:
-                from pipeline.schema import extract_doc_bounded_quote_integers, verify_quote_in_document
+            from pipeline.schema import extract_doc_bounded_quote_integers, verify_quote_in_document
 
+            for q_edge, expected_intact, expected_trunc in [
+                ("Latency stayed at 100m", set(), {100_000_000}),
+                ("Latency stayed at 100ms using 100k", {100}, {100_000}),
+                ("score .109 over 1e6 evaluations.", set(), set()),
+                ("The method stored 1e+6 megabytes and 1e-6 megabytes", set(), set()),
+                ("+6 megabytes and 1e-6 megabytes", set(), {6}),
+                ("6 megabytes and 1e-6 megabytes", set(), {6}),
+                ("6 megabytes (plus 1.5E+6 and 1.e-6", set(), {6}),
+                ("+6 and 1.e-6 in phase-6).", {6}, {6}),
+            ]:
                 qm_edge = verify_quote_in_document(edge_doc, q_edge, "test")
                 self.assertTrue(qm_edge.matched, q_edge)
-                intact_e, _ = extract_doc_bounded_quote_integers(q_edge, doc=edge_doc, qm=qm_edge)
+                intact_e, trunc_e = extract_doc_bounded_quote_integers(q_edge, doc=edge_doc, qm=qm_edge)
                 self.assertEqual({v for v, _, _ in intact_e}, expected_intact, q_edge)
+                self.assertEqual(trunc_e, expected_trunc, q_edge)
+
+            # End-to-end validate_spec check matching Codex #27419:
+            # method `"The method stored 1e+6 megabytes"` or `"1e-6"` with `amount=6` MUST fail!
+            for q_sci, expected_code in [
+                ("The method stored 1e+6 megabytes", "ungrounded_usage_amount"),
+                ("+6 megabytes and 1e-6 megabytes", "truncated_numeric_quote"),
+                ("6 megabytes and 1e-6 megabytes", "truncated_numeric_quote"),
+                ("and 1e-6 megabytes (plus 1.5E+6", "ungrounded_usage_amount"),
+                ("6 megabytes (plus 1.5E+6 and 1.e-6", "truncated_numeric_quote"),
+            ]:
+                spec_sci = copy.deepcopy(spec_aux)
+                spec_sci["sources"] = [
+                    {**s, "quote": "The control stored 6 megabytes."} for s in spec_sci["sources"]
+                ]
+                spec_sci["ops"] = [
+                    {**o, "quote": "The control stored 6 megabytes."} for o in spec_sci["ops"]
+                ]
+                spec_sci["claims"] = [
+                    {
+                        **spec_sci["claims"][0],
+                        "quote": "The control stored 6 megabytes.",
+                        "method_usage": [
+                            {"source": "src_0", "dimension": "resourceCost", "unit": "megabytes", "amount": 6, "quote": q_sci},
+                        ],
+                        "control_usage": [
+                            {"source": "src_1", "dimension": "resourceCost", "unit": "megabytes", "amount": 6, "quote": "The control stored 6 megabytes."},
+                        ],
+                    }
+                ]
+                errs_sci, _ = validate_spec(spec_sci, doc=edge_doc)
+                self.assertTrue(
+                    any(e.code == expected_code for e in errs_sci),
+                    f"Expected {expected_code} for {q_sci!r}, got {errs_sci}",
+                )
 
             # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
             spec_sliced = copy.deepcopy(spec)

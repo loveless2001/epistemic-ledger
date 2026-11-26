@@ -201,9 +201,21 @@ _QUOTE_NUM_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
-_SCI_EXP_RE = re.compile(r"[eE][+-]?\d")
+_SCI_EXP_RE = re.compile(r"\.?[eE][+-]?\d")
 _UNIT_WORD_MAG_RE = re.compile(r"\b(thousand|million|billion)\b", flags=re.IGNORECASE)
 _UNIT_ABBR_MAG_RE = re.compile(r"(?:^|[^A-Za-z0-9])([KMB])(?:$|[^A-Za-z0-9])")
+
+
+def _is_sci_exponent_start(text: str, start: int) -> bool:
+    """Return True iff `text[start:]` begins the exponent of scientific notation
+    (e.g. `6` in `1e6`, `1e+6`, `1e-6`, `1.5E-6`, or `1.e+6`)."""
+    pos = start - 1 if start > 0 and text[start - 1] in "+-" else start
+    if pos >= 2 and text[pos - 1] in "eE":
+        if text[pos - 2].isdigit():
+            return True
+        if pos >= 3 and text[pos - 2] == "." and text[pos - 3].isdigit():
+            return True
+    return False
 
 
 def _unit_magnitude_scale(unit: str) -> int:
@@ -234,6 +246,8 @@ def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
         if start > 0 and qtext[start - 1] == "-" and (start == 1 or not qtext[start - 2].isalnum()):
             continue
         if start > 0 and qtext[start - 1] == "." and (start == 1 or not qtext[start - 2].isalpha()):
+            continue
+        if _is_sci_exponent_start(qtext, start):
             continue
         num_tok = m.group("num")
         suffix = (m.group("word") or m.group("abbr") or "").lower()
@@ -274,6 +288,8 @@ def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int
         if prev == "-" and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
             return False
         if prev == "." and (abs_start == 1 or not doc_text[abs_start - 2].isalpha()):
+            return False
+        if _is_sci_exponent_start(doc_text, abs_start):
             return False
     if abs_end < len(doc_text):
         nxt = doc_text[abs_end]
