@@ -1603,13 +1603,16 @@ class PipelineTests(unittest.TestCase):
             dl_by_id = {c["id"]: c for c in rep_dl["lean_verification"]["claims"]}
 
             self.assertEqual(dl_by_id["thmWithMixedDeclLocs"]["verdict"], "admissible")
+            self.assertEqual(dl_by_id["thmWithMixedDeclLocs"]["declared_bet_count"], 2)
             thm_locs = {x["item"]: x["location"] for x in dl_by_id["thmWithMixedDeclLocs"]["declaration_locations"]}
             self.assertEqual(thm_locs, {"grh": "in_claim", "leanAx": "elsewhere_in_document"})
 
             self.assertEqual(dl_by_id["condWithMixedDeclLocs"]["verdict"], "admissible")
+            self.assertEqual(dl_by_id["condWithMixedDeclLocs"]["declared_bet_count"], 0)
             cond_locs = {x["item"]: x["location"] for x in dl_by_id["condWithMixedDeclLocs"]["declaration_locations"]}
             self.assertEqual(cond_locs, {"inClaimSrc": "in_claim", "bodySrc": "elsewhere_in_document"})
 
+            self.assertIn("rests on 2 declared bets", md_dl)
             self.assertIn("declared in claim sentence", md_dl)
             self.assertIn("declared in document body (offset @", md_dl)
 

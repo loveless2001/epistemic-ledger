@@ -97,14 +97,32 @@ def format_finding_human(f: dict[str, Any]) -> str:
     return json.dumps(f)
 
 
-def _format_verdict_table(verdict: str) -> str:
+def _count_declared_bets(claim_meta: dict[str, Any]) -> int:
+    """Count distinct unchecked (`status == 'bet'`) hypotheses declared in `declared_bets`."""
+    if not isinstance(claim_meta, dict) or claim_meta.get("kind") != "theoremApplication":
+        return 0
+    declared = set(claim_meta.get("declared_bets", []))
+    return sum(
+        1
+        for h in claim_meta.get("hypotheses", [])
+        if isinstance(h, dict) and h.get("status") == "bet" and h.get("tag") in declared
+    )
+
+
+def _format_verdict_table(verdict: str, declared_bet_count: int = 0) -> str:
     if verdict == "admissible":
+        if declared_bet_count > 0:
+            noun = "bet" if declared_bet_count == 1 else "bets"
+            return f"admissible (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
         return "admissible (consistent within declared slice)"
     return verdict
 
 
-def _format_verdict_heading(verdict: str) -> str:
+def _format_verdict_heading(verdict: str, declared_bet_count: int = 0) -> str:
     if verdict == "admissible":
+        if declared_bet_count > 0:
+            noun = "bet" if declared_bet_count == 1 else "bets"
+            return f"ADMISSIBLE (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
         return "ADMISSIBLE (consistent within declared slice)"
     if verdict == "unestablished":
         return "UNESTABLISHED (data/design stops at map edge)"
@@ -312,6 +330,9 @@ def build_single_report_dict(
                     "findings": c.findings,
                     "axioms": c.axioms,
                     "kernel_verified": c.kernel_verified,
+                    "declared_bet_count": _count_declared_bets(
+                        next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {})
+                    ),
                     "declaration_locations": _compute_declaration_locations(
                         doc,
                         spec,
@@ -366,8 +387,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             endpoint = sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}"
             if "excluded_channel" in sig:
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
+        bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'])}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count)}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
@@ -377,8 +399,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
     for c in lv["claims"]:
         meta = claim_by_id[c["id"]]
         prov = meta.get("provenance", "authorClaimed")
+        bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
         lines += [
-            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'])}** (`{prov}`)",
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count)}** (`{prov}`)",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
@@ -740,7 +763,8 @@ def build_comparison_report(
                 extras.append(f"declared={sorted(set(sig['declared_sources']))}")
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
-        return f"**{_format_verdict_table(info['verdict'])}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
+        bet_count = _count_declared_bets(sig)
+        return f"**{_format_verdict_table(info['verdict'], bet_count)}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
 
     for row in rows:
         q_short = row["claim_quote"]
