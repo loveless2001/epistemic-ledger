@@ -408,11 +408,18 @@ def build_comparison_report(
         else:
             source_summary[aud] = {"declared_auditor": rep.get("declared_auditor"), "error": "unverified"}
 
+    combined_out_of_scope: list[str] = []
+    for rep in reports:
+        for item in rep.get("out_of_scope", []):
+            if item not in combined_out_of_scope:
+                combined_out_of_scope.append(item)
+
     comp_dict = {
         "schema_version": "epistemic-ledger-comparison/v2.1",
         "document": {"source_ref": doc.source_ref, "sha256": doc.sha256},
         "auditors": auditors,
         "all_grounding_ok": all_grounding_ok,
+        "out_of_scope": combined_out_of_scope,
         "claim_comparison": rows,
         "sources_by_auditor": source_summary,
     }
@@ -426,6 +433,12 @@ def build_comparison_report(
         "- **Matching Rule:** Claims are aligned strictly by verbatim quote location `(char_offset, normalized_quote)` in this snapshot, preserving all claims per quote (multiple claims on one quote are flagged `AMBIGUOUS`).",
         "",
     ]
+
+    if combined_out_of_scope:
+        md += ["## Out of Scope", ""]
+        for item in combined_out_of_scope:
+            md.append(f"- {item}")
+        md.append("")
 
     if not all_grounding_ok:
         md += ["## Unverified Auditors (Grounding / Schema Failed)", ""]

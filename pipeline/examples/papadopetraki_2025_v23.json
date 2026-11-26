@@ -1,0 +1,186 @@
+{
+  "schema_version": "epistemic-ledger/v2.3",
+  "auditor": "GeminiPapadopetrakiAudit",
+  "paper_title": "Papadopetraki et al. (2025) — The exercise-conditioned human serum and skeletal muscle cells secretome induce apoptosis in breast cancer cells (J Sport Health Sci 14:101051)",
+  "nodes": [
+    "chemotherapyRegimen",
+    "patientExerciseProgram",
+    "inVitroCellLines",
+    "unloadedC2C12Baseline",
+    "washout14Days",
+    "trainedPreExSerum",
+    "trainedPostExSerum",
+    "inVitroSerumAssays",
+    "nonStretchMediaNSM",
+    "stretchMediaSM",
+    "secretomeMcf7Assays",
+    "clinicalPrognosisClaim",
+    "serumComparisonEval"
+  ],
+  "tags": [
+    "chemotherapyConfounder",
+    "baselineMediaConfounder",
+    "clinicalPrognosisSignal",
+    "interventionCost"
+  ],
+  "sources": [
+    {
+      "node": "chemotherapyRegimen",
+      "origin": "setByExperimenter",
+      "carries": ["chemotherapyConfounder", "interventionCost"],
+      "quote": "Ten female breast cancer patients (age = 37.86 § 1.73 years, body mass index: 23.70 § 1.29 kg/m2 (Mean and standard error of the mean § SE)) participated in a 12-week supervised exercise training during their chemotherapy."
+    },
+    {
+      "node": "patientExerciseProgram",
+      "origin": "setByExperimenter",
+      "carries": ["interventionCost"],
+      "quote": "The individualized exercise training program consisted of both resistance (elastic bands: 30 min) and aerobic training (treadmill: 25 min at 40% 60% heart rate reserve) and was carried out in person 3 times per week."
+    },
+    {
+      "node": "inVitroCellLines",
+      "origin": "measured",
+      "carries": [],
+      "quote": "The breast cancer cell lines Michigan Cancer Foundation-7 (MCF-7) and MDA-MB-231 were obtained from the American Type Culture Collection (ATCC)"
+    },
+    {
+      "node": "unloadedC2C12Baseline",
+      "origin": "setByExperimenter",
+      "carries": ["baselineMediaConfounder"],
+      "quote": "C2C12 myoblasts were grown in specialized culture plates (which had elastic membranes as culture surfaces), differentiated to myotubes"
+    }
+  ],
+  "ops": [
+    {
+      "name": "chemo_14day_washout_attempt",
+      "inputs": ["chemotherapyRegimen"],
+      "output": "washout14Days",
+      "kind": "forget",
+      "tag": "chemotherapyConfounder",
+      "evidence": "contradicted",
+      "quote": "The 6th and 36th exercise sessions were conducted at least 14 days after the last chemotherapy dose in order to limit any potential interference of chemotherapeutic drugs with exercise effects."
+    },
+    {
+      "name": "collect_trained_pre_ex_serum",
+      "inputs": ["washout14Days", "patientExerciseProgram"],
+      "output": "trainedPreExSerum",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The sampling procedure was repeated in the 12th week of training (trained PRE-EX; trained POST-EX) (Fig. 1)."
+    },
+    {
+      "name": "collect_trained_post_ex_serum",
+      "inputs": ["trainedPreExSerum", "patientExerciseProgram"],
+      "output": "trainedPostExSerum",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In the 2nd and 12th week of training, patients performed a single bout of exercise (i.e., 2nd week: 6th exercise session at 40% heart rate reserve and 12th week: 36th exercise session at 60% heart rate reserve) and blood samples were collected before and immediately after the completion of the exercise bout."
+    },
+    {
+      "name": "treat_cells_with_serum",
+      "inputs": ["trainedPostExSerum", "inVitroCellLines"],
+      "output": "inVitroSerumAssays",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The isolated serum was utilized to treat breast cancer cells (MCF-7 and MDA-MB-231), which were cultured in their regular growth media supplemented with 10% human serum instead of 10% FBS."
+    },
+    {
+      "name": "collect_nsm_control_media",
+      "inputs": ["unloadedC2C12Baseline"],
+      "output": "nonStretchMediaNSM",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The conditioned media of unloaded myoblasts were also collected and filtered, serving as non-stretch media (NSM)."
+    },
+    {
+      "name": "mechanical_stretch_secretome_sm",
+      "inputs": ["unloadedC2C12Baseline"],
+      "output": "stretchMediaSM",
+      "kind": "forget",
+      "tag": "baselineMediaConfounder",
+      "evidence": "contradicted",
+      "quote": "Interestingly, mechanical loading preconditioning didn’t trigger significant changes, and the observed DNA damage after myotube secretome treatment was independent of the mechanical stretching (p > 0.05, Fig. 5A)."
+    },
+    {
+      "name": "treat_mcf7_with_secretome",
+      "inputs": ["stretchMediaSM", "nonStretchMediaNSM", "inVitroCellLines"],
+      "output": "secretomeMcf7Assays",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "Apart from the treatment of breast cancer cells with the exercise-conditioned human serum, cells were also treated for 24 h with the myotube secretome either after mechanical loading of the myotubes (SM) or without their mechanical preconditioning (NSM)."
+    },
+    {
+      "name": "extrapolate_in_vitro_to_clinical_prognosis",
+      "inputs": ["inVitroSerumAssays", "secretomeMcf7Assays"],
+      "output": "clinicalPrognosisClaim",
+      "kind": "lossy",
+      "introduces": [],
+      "quote": "These findings suggest that even after cancer diagnosis, exercise may exert beneficial effects additive to chemotherapy against breast cancer prognosis."
+    },
+    {
+      "name": "evaluate_serum_vs_pre_chemo_without_non_ex_chemo_arm",
+      "inputs": ["inVitroSerumAssays"],
+      "output": "serumComparisonEval",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "In addition, the extent to which the exercise effects were additive to chemotherapy cannot be determined due to the absence of a non-exercising control group of breast cancer patients undergoing chemotherapy."
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim1_additive_to_chemotherapy_unconfounded",
+      "statement": "Exercise-conditioned serum yields anti-cancer effects separable/additive to chemotherapy without chemotherapy confounding.",
+      "quote": "Importantly, these anti-cancer effects of exercise-conditioned human serum were not masked by the established benefits of chemotherapy treatment but instead were found to be additive against breast cancer cells.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithout",
+      "target": "inVitroSerumAssays",
+      "tag": "chemotherapyConfounder"
+    },
+    {
+      "id": "claim2_mechanical_loading_isolated_from_baseline_secretome",
+      "statement": "Anti-cancer DNA damage, migration suppression, and apoptosis modulation in MCF-7 arise specifically from mechanical loading (SM), excluding unloaded C2C12/conditioned-media baseline effects (NSM).",
+      "quote": "Both exercise-conditioned serum of breast cancer patients and skeletal myotubes secretome after mechanical loading can reduce the metabolic activity, promote cell toxicity and DNA damage, modulate the protein expression of crucial cell survival-regulating factors, and lead to apoptosis in breast cancer cells.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "secretomeMcf7Assays",
+      "excluded_channel": "nonStretchMediaNSM",
+      "tag": "baselineMediaConfounder"
+    },
+    {
+      "id": "claim3_in_vitro_assays_recover_clinical_prognosis",
+      "statement": "2D in vitro cell-line assays uniquely recover clinical breast cancer prognosis benefit and specific anti-carcinogenic exerkines/myokines.",
+      "quote": "Thus, we suggest that even after cancer diagnosis, exercise is not only well-documented to preserve physical performance and mitigate treatment- and disease-related side effects but also exerts beneficial effects additive to chemotherapy to improve breast cancer prognosis.",
+      "provenance": "authorClaimed",
+      "kind": "uniqueRecovery",
+      "target": "clinicalPrognosisClaim",
+      "tag": "clinicalPrognosisSignal"
+    },
+    {
+      "id": "claim4_exercise_training_effectiveness_vs_chemo_control",
+      "statement": "Reviewer stress-test: does this 12-week supervised exercise program during chemotherapy establish additive adjunct-therapy effectiveness over chemotherapy alone? (Not established: no non-exercising chemotherapy control arm or intervention cost ledger.)",
+      "quote": "Taking all the above into account, we can conclude that the high adherence of patients to the specific exercise program suggests its applicability and the possibility of integrating physical exercise as an adjunct therapy alongside chemotherapy regimens.",
+      "notes": "Tagged reviewerStressTest because the authors' wording ('suggests its applicability and the possibility...') is hedged rather than a direct comparative efficacy claim.",
+      "provenance": "reviewerStressTest",
+      "kind": "effectivenessClaim",
+      "method_node": "inVitroSerumAssays",
+      "evaluation_node": "serumComparisonEval",
+      "control_node": null,
+      "cost_ledger_node": null,
+      "cost_tag": "interventionCost",
+      "method_usage": [],
+      "control_usage": []
+    },
+    {
+      "id": "claim5_narrow_within_subject_acute_in_vitro_effect",
+      "statement": "Conditional on the chemotherapy-treated patient cohort (n=7-9 analyzed), 12-week exercise program (60% HRR at week 12), 14-day washout, and 2D MCF-7/MDA-MB-231 in vitro assays, acute Trained POST-EX serum suppressed MTT activity and increased LDH and BOBO-3 dead cells relative to within-subject Trained PRE-EX serum.",
+      "quote": "Moreover, incubation of breast cancer cells with the post-exercise serum induced apoptosis in MCF-7 and MDA-MB-231 cells, as indicated by increase in DNA damage and the percentage of necrotic cells (p < 0.05) when compared to pre-exercise condition.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "inVitroSerumAssays",
+      "declared_sources": [
+        "chemotherapyRegimen",
+        "patientExerciseProgram",
+        "inVitroCellLines"
+      ]
+    }
+  ]
+}

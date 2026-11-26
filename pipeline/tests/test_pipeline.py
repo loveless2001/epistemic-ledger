@@ -816,6 +816,19 @@ class PipelineTests(unittest.TestCase):
             e_bogus, _ = validate_spec(s_bogus, doc=doc)
             self.assertTrue(any(e.code == "unknown_key" for e in e_bogus))
 
+            # 6. Codex #27335: `compare` MUST also propagate `out_of_scope` into comparison.json & comparison.md!
+            out_cmp_oos = Path(tmp) / "out_cmp_oos"
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(doc_path), "--spec", str(sp), "--spec", str(sp_legacy), "--out", str(out_cmp_oos)]),
+                0,
+            )
+            comp_oos = json.loads((out_cmp_oos / "comparison.json").read_text(encoding="utf-8"))
+            comp_oos_md = (out_cmp_oos / "comparison.md").read_text(encoding="utf-8")
+            self.assertTrue(any("invoice reconciliation" in s for s in comp_oos["out_of_scope"]))
+            self.assertTrue(any("Ignored out-of-scope accounting/bookkeeping fields" in s for s in comp_oos["out_of_scope"]))
+            self.assertIn("## Out of Scope", comp_oos_md)
+            self.assertIn("Ignored out-of-scope accounting/bookkeeping fields", comp_oos_md)
+
 
 if __name__ == "__main__":
     unittest.main()
