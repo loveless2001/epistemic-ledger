@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pipeline.ingest import IngestedDocument
+from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize
 from pipeline.lean_runner import LeanVerificationResult
 from pipeline.schema import (
     QuoteMatch,
@@ -291,11 +291,32 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
     return "\n".join(lines)
 
 
-def _claim_anchor_key(doc: IngestedDocument, quote: str) -> tuple[int, str] | None:
+SPAN_OVERLAP_IOU_THRESHOLD = 0.5
+
+
+def _claim_anchor_span(doc: IngestedDocument, quote: str) -> tuple[int, int, str] | None:
+    """Return `(char_start, char_end, normalized_quote)` in a single snapshot coordinate space.
+
+    Uses `doc.dehyphenated_text` when the dehyphenated quote is found (which coincides with
+    `doc.normalized_text` whenever no soft PDF line-break hyphens were joined) so exact-ws
+    and dehyphenated quotes can be compared by character span overlap.
+    """
     qm = verify_quote_in_document(doc, quote, path="claim_anchor")
     if not qm.matched or qm.char_offset is None:
         return None
-    return (qm.char_offset, qm.normalized_quote)
+    dehy_q = dehyphenate_and_normalize(quote)
+    idx_dehy = doc.dehyphenated_text.find(dehy_q)
+    if idx_dehy != -1:
+        return (idx_dehy, idx_dehy + len(dehy_q), qm.normalized_quote)
+    return (qm.char_offset, qm.char_offset + len(qm.normalized_quote), qm.normalized_quote)
+
+
+def _span_iou(span_a: tuple[int, int], span_b: tuple[int, int]) -> float:
+    inter = max(0, min(span_a[1], span_b[1]) - max(span_a[0], span_b[0]))
+    if inter <= 0:
+        return 0.0
+    union = max(span_a[1], span_b[1]) - min(span_a[0], span_b[0])
+    return inter / union if union > 0 else 0.0
 
 
 def build_comparison_report(
@@ -303,18 +324,21 @@ def build_comparison_report(
 ) -> tuple[dict[str, Any], str]:
     """Compare 2+ auditor reports on the same document snapshot.
 
-    Claims are aligned by verbatim quote location `(char_offset, normalized_quote)`.
-    Every claim emitted by an auditor for a given quote is preserved as a list (never
-    overwritten): if any auditor attaches multiple claims to the same quote, the row is
+    Claims are aligned by verbatim quote character span in this snapshot: exact spans match
+    with IoU = 1.0, and minor boundary/punctuation differences (e.g. trailing period or short
+    clause trim) align when character-span IoU strictly exceeds 0.5 (`IoU > 0.5`, which
+    mathematically prevents chaining two disjoint sentences via a spanning block).
+    Every claim emitted by an auditor for a given anchor cluster is preserved as a list (never
+    overwritten): if any auditor attaches multiple claims to the same cluster, the row is
     marked `AMBIGUOUS` (`verdicts_agree = False`) and all claims are shown.
     Full claim signatures (`kind`, `target`, `tag`, `excluded_channel`) are also compared.
     """
     auditors = [r["auditor"] for r in reports]
     all_grounding_ok = all(r["grounding_and_schema_ok"] for r in reports)
 
-    # Index verified claims per (anchor, auditor) as a LIST so no claim is ever dropped
-    anchor_order: list[tuple[int, str]] = []
-    anchor_to_auditor_claims: dict[tuple[int, str], dict[str, list[dict[str, Any]]]] = {}
+    # Cluster verified claims by exact or overlapping quote span (IoU > 0.5)
+    # Each cluster: {"span": (start, end), "quote": canonical_quote, "by_auditor": {aud: [claims]}, "ious": [float]}
+    clusters: list[dict[str, Any]] = []
 
     for rep, spec in zip(reports, specs):
         aud = rep["auditor"]
@@ -324,16 +348,40 @@ def build_comparison_report(
         claim_meta_by_id = {c["id"]: c for c in spec["claims"]}
         for c in lv["claims"]:
             meta = claim_meta_by_id[c["id"]]
-            anchor = _claim_anchor_key(doc, meta["quote"])
+            anchor = _claim_anchor_span(doc, meta["quote"])
             if anchor is None:
                 continue
-            if anchor not in anchor_to_auditor_claims:
-                anchor_order.append(anchor)
-                anchor_to_auditor_claims[anchor] = {}
-            anchor_to_auditor_claims[anchor].setdefault(aud, []).append(
+            start, end, norm_quote = anchor
+            span = (start, end)
+
+            best_idx: int | None = None
+            best_iou = 0.0
+            for ci, cl in enumerate(clusters):
+                iou = _span_iou(span, cl["span"])
+                if iou > SPAN_OVERLAP_IOU_THRESHOLD and iou > best_iou:
+                    best_iou = iou
+                    best_idx = ci
+
+            if best_idx is None:
+                cluster = {
+                    "span": span,
+                    "quote": norm_quote,
+                    "by_auditor": {},
+                    "ious": [1.0],
+                    "quotes_seen": {norm_quote},
+                }
+                clusters.append(cluster)
+            else:
+                cluster = clusters[best_idx]
+                cluster["ious"].append(best_iou)
+                cluster["quotes_seen"].add(norm_quote)
+
+            cluster["by_auditor"].setdefault(aud, []).append(
                 {
                     "claim_id": c["id"],
                     "verdict": c["verdict"],
+                    "quote": norm_quote,
+                    "span": [start, end],
                     "signature": _claim_signature(meta),
                     "finding_types": [f["type"] for f in c["findings"]],
                     "findings": c["findings"],
@@ -341,8 +389,11 @@ def build_comparison_report(
             )
 
     rows: list[dict[str, Any]] = []
-    for idx, anchor in enumerate(anchor_order, 1):
-        char_offset, norm_quote = anchor
+    for idx, cluster in enumerate(clusters, 1):
+        char_offset, char_end = cluster["span"]
+        norm_quote = cluster["quote"]
+        quote_match_mode = "exact" if len(cluster["quotes_seen"]) == 1 else "span_overlap"
+        min_span_iou = round(min(cluster["ious"]), 4)
         by_aud: dict[str, Any] = {}
         verdicts: set[str] = set()
         kinds: set[str] = set()
@@ -361,11 +412,11 @@ def build_comparison_report(
             if not rep["grounding_and_schema_ok"] or rep.get("lean_verification") is None:
                 by_aud[aud] = {"status": "UNVERIFIED", "claims": []}
                 missing_or_unverified = True
-            elif aud not in anchor_to_auditor_claims[anchor]:
+            elif aud not in cluster["by_auditor"]:
                 by_aud[aud] = {"status": "UNMATCHED", "claims": []}
                 missing_or_unverified = True
             else:
-                clist = anchor_to_auditor_claims[anchor][aud]
+                clist = cluster["by_auditor"][aud]
                 if len(clist) > 1:
                     ambiguous_multi_claim = True
                     by_aud[aud] = {"status": "AMBIGUOUS_MULTI_CLAIM", "claims": clist}
@@ -419,7 +470,10 @@ def build_comparison_report(
             {
                 "anchor_index": idx,
                 "char_offset": char_offset,
+                "char_end": char_end,
                 "claim_quote": norm_quote,
+                "quote_match_mode": quote_match_mode,
+                "min_span_iou": min_span_iou,
                 "status": status,
                 "verdicts_agree": verdicts_agree,
                 "same_claim_kind": complete_1to1 and len(kinds) == 1,
@@ -469,7 +523,7 @@ def build_comparison_report(
         f"- **Document SHA-256:** `{doc.sha256[:16]}...`",
         f"- **Auditors:** {', '.join(f'`{a}`' for a in auditors)}",
         f"- **All Grounding & Schema Checks Passed:** `{all_grounding_ok}`",
-        "- **Matching Rule:** Claims are aligned strictly by verbatim quote location `(char_offset, normalized_quote)` in this snapshot, preserving all claims per quote (multiple claims on one quote are flagged `AMBIGUOUS`).",
+        "- **Matching Rule:** Claims are aligned by verbatim quote character span in this snapshot (exact match or overlapping span with `IoU > 0.5`, handling trailing punctuation / minor boundary trims without merging disjoint sentences); multiple claims on one anchor are flagged `AMBIGUOUS`.",
         "",
     ]
 
@@ -550,8 +604,11 @@ def build_comparison_report(
                 cells.append(f"*{entry['status']}*")
             else:
                 cells.append("; ".join(_fmt_claim_cell(c) for c in entry["claims"]))
+        anchor_label = f"@{row['char_offset']}: \"{q_short}\""
+        if row.get("quote_match_mode") == "span_overlap":
+            anchor_label += f" *(span overlap, IoU={row['min_span_iou']:.2f})*"
         md.append(
-            f"| {row['anchor_index']} | @{row['char_offset']}: \"{q_short}\" | {status_cell} | "
+            f"| {row['anchor_index']} | {anchor_label} | {status_cell} | "
             + " | ".join(cells)
             + " |"
         )

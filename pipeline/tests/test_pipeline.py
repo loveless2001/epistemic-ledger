@@ -936,6 +936,109 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(comp["claim_comparison"]), 4)
             self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
 
+    def test_codex_notShown_sole_path_lossy_side_branch_and_claude_span_overlap_compare(self) -> None:
+        """Regression tests for Codex `#27358` and Claude `#27361`:
+        1. Sole path through `.forget tag .notShown` -> `unestablished` (no false `smuggledStructure`),
+           while adding an un-attempted bypass -> `rejected`.
+        2. `uniqueRecovery` with `.lossy` ONLY on an unrelated noise branch -> `admissible`;
+           missing upstream `SourceNode` access (`unaccessedTargetStructure`) -> `unestablished`.
+        3. `compare` aligns claims with minor quote boundary differences (e.g., trailing period
+           omitted by Auditor A, included by Auditor B -> `span_overlap`, `AGREE`), while still
+           NOT merging two disjoint sentences.
+        """
+        doc = ingest_document(str(SAMPLE_DOC))
+        q_a_with_dot = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
+        q_a_no_dot = q_a_with_dot.rstrip(".")
+        q_b = "Under Regime B, 3D geometry emerges purely from 2D relational learning without 3D prediction targets."
+        q_d = "The encoder uniquely recovers the true underlying 3D world state from a single monocular photograph."
+
+        spec_a = {
+            "schema_version": "epistemic-ledger/v2.3",
+            "auditor": "SpanA",
+            "paper_title": "Codex & Claude Regression",
+            "nodes": ["srcTag", "bypassTag", "noise", "forgotten", "roundedNoise", "pairOut", "targetSole", "targetBypass"],
+            "tags": ["geometry3D"],
+            "sources": [
+                {"node": "srcTag", "origin": "setByExperimenter", "carries": ["geometry3D"], "quote": q_a_with_dot},
+                {"node": "bypassTag", "origin": "setByExperimenter", "carries": ["geometry3D"], "quote": q_b},
+                {"node": "noise", "origin": "measured", "carries": [], "quote": q_d},
+            ],
+            "ops": [
+                {"name": "unverified_forget", "inputs": ["srcTag"], "output": "forgotten", "kind": "forget", "tag": "geometry3D", "evidence": "notShown", "quote": q_a_with_dot},
+                {"name": "read_sole", "inputs": ["forgotten"], "output": "targetSole", "kind": "transform", "introduces": [], "quote": q_a_with_dot},
+                {"name": "read_bypass", "inputs": ["forgotten", "bypassTag"], "output": "targetBypass", "kind": "transform", "introduces": [], "quote": q_b},
+                {"name": "round_noise", "inputs": ["noise"], "output": "roundedNoise", "kind": "lossy", "introduces": [], "quote": q_d},
+                {"name": "make_pair", "inputs": ["srcTag", "roundedNoise"], "output": "pairOut", "kind": "transform", "introduces": [], "quote": q_d},
+            ],
+            "claims": [
+                {
+                    "id": "soleNotShown",
+                    "statement": "Sole path passes through .notShown forget.",
+                    "quote": q_a_no_dot,  # intentionally omits trailing period
+                    "kind": "emergesWithout",
+                    "target": "targetSole",
+                    "tag": "geometry3D",
+                },
+                {
+                    "id": "notShownPlusBypass",
+                    "statement": "Unverified forget plus confirmed bypass.",
+                    "quote": q_b,
+                    "kind": "emergesWithout",
+                    "target": "targetBypass",
+                    "tag": "geometry3D",
+                },
+                {
+                    "id": "losslessSignalLossyNoise",
+                    "statement": "Signal preserved while unrelated noise branch is lossy.",
+                    "quote": q_d,
+                    "kind": "uniqueRecovery",
+                    "target": "pairOut",
+                    "tag": "geometry3D",
+                },
+                {
+                    "id": "unaccessedRecovery",
+                    "statement": "No SourceNode carrying geometry3D reaches roundedNoise.",
+                    "quote": "Spatial Emergence Framework (Synthetic Benchmark Document)",
+                    "kind": "uniqueRecovery",
+                    "target": "roundedNoise",
+                    "tag": "geometry3D",
+                },
+            ],
+        }
+        spec_b = copy.deepcopy(spec_a)
+        spec_b["auditor"] = "SpanB"
+        spec_b["claims"][0]["quote"] = q_a_with_dot  # includes trailing period!
+
+        self.assertEqual(validate_spec(spec_a, doc=doc)[0], [])
+        self.assertEqual(validate_spec(spec_b, doc=doc)[0], [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pa, pb = Path(tmp) / "a.json", Path(tmp) / "b.json"
+            pa.write_text(json.dumps(spec_a), encoding="utf-8")
+            pb.write_text(json.dumps(spec_b), encoding="utf-8")
+            out = Path(tmp) / "cmp"
+            rc = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out)])
+            self.assertEqual(rc, 0)
+
+            rep_a = json.loads((out / "SpanA_report.json").read_text(encoding="utf-8"))
+            by_id = {c["id"]: c for c in rep_a["lean_verification"]["claims"]}
+            self.assertEqual(by_id["soleNotShown"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["soleNotShown"]["findings"]], ["failedForgetOnPath"])
+            self.assertEqual(by_id["notShownPlusBypass"]["verdict"], "rejected")
+            self.assertIn("smuggledStructure", [f["type"] for f in by_id["notShownPlusBypass"]["findings"]])
+            self.assertEqual(by_id["losslessSignalLossyNoise"]["verdict"], "admissible")
+            self.assertEqual(by_id["unaccessedRecovery"]["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in by_id["unaccessedRecovery"]["findings"]], ["unaccessedTargetStructure"])
+
+            comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(comp["claim_comparison"]), 4)
+            self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
+            self.assertEqual(comp["claim_comparison"][0]["quote_match_mode"], "span_overlap")
+            self.assertGreater(comp["claim_comparison"][0]["min_span_iou"], 0.95)
+            self.assertEqual(comp["claim_comparison"][1]["quote_match_mode"], "exact")
+            comp_md = (out / "comparison.md").read_text(encoding="utf-8")
+            self.assertIn("span overlap, IoU=", comp_md)
+
 
 if __name__ == "__main__":
     unittest.main()

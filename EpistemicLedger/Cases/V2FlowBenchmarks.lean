@@ -668,6 +668,74 @@ theorem normative_balancing_epistemic_out_of_scope :
       ∈ auditFlow normativeLegalBalancingClaim := by
   decide
 
+/-! #### Codex `#27358` Regression Tests: `.notShown` on sole path vs bypass, and `uniqueRecovery` side-branch `.lossy` -/
+
+inductive RNode where
+  | srcTag | bypassTag | noise | forgotten | roundedNoise | pairOut | target
+  deriving DecidableEq, Repr
+
+inductive RTag where
+  | signal
+  deriving DecidableEq, Repr
+
+/-- Sole path goes through `.forget .signal .notShown` with NO bypass -> `unestablished` (NOT `rejected`). -/
+def solePathNotShownClaim : FlowClaim RNode RTag where
+  statement := "Signal emerges after an unverified forget step on the sole path."
+  graph :=
+    ⟨[⟨.srcTag, .setByExperimenter, [.signal]⟩],
+     [⟨"unverified_forget", [.srcTag], .forgotten, .forget .signal .notShown⟩,
+      ⟨"readout", [.forgotten], .target, .transform []⟩]⟩
+  kind := .emergesWithout .target .signal
+
+/-- Same `.forget .signal .notShown` PLUS an un-attempted bypass -> `rejected` (confirmed leak). -/
+def notShownWithBypassClaim : FlowClaim RNode RTag where
+  statement := "Signal has an unverified forget on one branch and an un-attempted bypass on another."
+  graph :=
+    ⟨[⟨.srcTag, .setByExperimenter, [.signal]⟩,
+      ⟨.bypassTag, .setByExperimenter, [.signal]⟩],
+     [⟨"unverified_forget", [.srcTag], .forgotten, .forget .signal .notShown⟩,
+      ⟨"merge", [.forgotten, .bypassTag], .target, .transform []⟩]⟩
+  kind := .emergesWithout .target .signal
+
+/-- Codex Finding 2a: `pair(signal_raw, rounded_noise)` — `.lossy` is ONLY on the unrelated `noise` branch,
+    so `uniqueRecovery pairOut .signal` is `admissible` (no false rejection!). -/
+def losslessSignalWithLossyNoiseClaim : FlowClaim RNode RTag where
+  statement := "Recovering raw signal from a pair (raw signal, rounded noise)."
+  graph :=
+    ⟨[⟨.srcTag, .measured, [.signal]⟩,
+      ⟨.noise, .measured, []⟩],
+     [⟨"round_noise", [.noise], .roundedNoise, .lossy []⟩,
+      ⟨"make_pair", [.srcTag, .roundedNoise], .pairOut, .transform []⟩]⟩
+  kind := .uniqueRecovery .pairOut .signal
+
+/-- Codex Finding 2b: `uniqueRecovery` with NO upstream `SourceNode` carrying `.signal` -> `unestablished`
+    (missing observational access in the declared graph; legacy `flowVerdict` remains `.rejected`). -/
+def unaccessedRecoveryClaim : FlowClaim RNode RTag where
+  statement := "Claiming unique recovery of signal with no declared SourceNode carrying signal."
+  graph := ⟨[⟨.noise, .measured, []⟩], [⟨"readout", [.noise], .target, .transform []⟩]⟩
+  kind := .uniqueRecovery .target .signal
+
+theorem sole_path_notShown_is_unestablished_not_rejected :
+    flowVerdict solePathNotShownClaim = .rejected ∧
+    epistemicVerdict solePathNotShownClaim = .unestablished ∧
+    auditFlow solePathNotShownClaim = [FlowFinding.failedForgetOnPath "unverified_forget" RTag.signal Invariance.notShown] := by
+  decide
+
+theorem notShown_with_confirmed_bypass_is_rejected :
+    epistemicVerdict notShownWithBypassClaim = .rejected ∧
+    FlowFinding.smuggledStructure RTag.signal RNode.bypassTag [.bypassTag, .target]
+      ∈ auditFlow notShownWithBypassClaim := by
+  decide
+
+theorem lossless_signal_with_lossy_unrelated_noise_admissible :
+    epistemicVerdict losslessSignalWithLossyNoiseClaim = .admissible := by
+  decide
+
+theorem unaccessed_recovery_is_unestablished_in_epistemic_verdict :
+    flowVerdict unaccessedRecoveryClaim = .rejected ∧
+    epistemicVerdict unaccessedRecoveryClaim = .unestablished := by
+  decide
+
 end EpistemicVerdictTests
 
 end EpistemicLedger.Cases.V2FlowBenchmarks

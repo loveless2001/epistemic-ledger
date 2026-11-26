@@ -27,8 +27,8 @@ Every structural claim also checks graph completeness (`danglingInput`).
 | Verdict | Meaning |
 |---|---|
 | `admissible` | **Consistent within declared slice** — zero structural findings in the modeled graph (never certifies unmodeled reality). |
-| `unestablished` | **Data/design stops at the map edge** — missing control, missing cost ledger, unquantified budget, `.notShown` forget, undeclared upstream source, or dangling graph input (not a proven structural contradiction). |
-| `rejected` | **Direct structural/empirical contradiction** — smuggled/author-supplied structure, excluded-channel leak, contradicted forget, shared upstream/experimenter branch, lossy channel, unaccessed target structure, dependent/self control, unaccounted cost source, or unmatched numeric budgets. |
+| `unestablished` | **Data/design stops at the map edge** — missing control, missing cost ledger, unquantified budget, `.notShown` forget on the sole path, missing observational access (`unaccessedTargetStructure`), undeclared upstream source, or dangling graph input (not a proven structural contradiction). |
+| `rejected` | **Direct structural/empirical contradiction** — confirmed smuggled/author-supplied structure (bypass or `.contradicted` forget), excluded-channel leak, shared upstream/experimenter branch, lossy channel on a `tag`-carrying path, dependent/self control, unaccounted cost source, or unmatched numeric budgets. |
 | `outOfScope` | **Outside structural operation-flow scope** — normative, legal-policy, or bookkeeping dispute explicitly marked via `kind: "outOfScope"`. |
 
 ## Out of Scope (Explicitly Reported in Every Output)
@@ -44,7 +44,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline test suite (19 tests)
+### 2. Run the pipeline test suite (20 tests)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v

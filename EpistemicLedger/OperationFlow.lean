@@ -218,6 +218,17 @@ def opBlocksTag (op : Op ν σ) (tag : σ) : Bool :=
 def opPropagatesTag (op : Op ν σ) (tag : σ) : Bool :=
   !opBlocksTag op tag
 
+/-- Does operation `op` propagate `tag` as a **confirmed** leak (i.e. NOT blocked by `.shown`
+    and NOT gated by an unverified `.notShown` forget)?
+    Only non-forget ops, forgets of other tags, and `.forget tag .contradicted` propagate
+    confirmed leaks; `.forget tag .notShown` is flagged via `failedForgetOnPath` without
+    elevating an unverified ablation on the sole path to a confirmed contradiction. -/
+def opPropagatesConfirmedTag (op : Op ν σ) (tag : σ) : Bool :=
+  match op.kind with
+  | .forget t .shown    => !decide (t = tag)
+  | .forget t .notShown => !decide (t = tag)
+  | _ => true
+
 /-- Does `source` carry `tag` (regardless of `origin`)? -/
 def sourceCarries (g : FlowGraph ν σ) (n : ν) (tag : σ) : Bool :=
   g.sources.any (fun s => s.node = n ∧ tag ∈ s.carries)
@@ -251,6 +262,23 @@ def findSmugglingPathAux (g : FlowGraph ν σ) (tag : σ) : Nat → ν → Optio
 def findSmugglingPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : Option (List ν) :=
   findSmugglingPathAux g tag (g.ops.length + 1) target
 
+/-- Confirmed smuggling path: traverses only operations satisfying `opPropagatesConfirmedTag`
+    (does not pass through `.forget tag .shown` or unverified `.forget tag .notShown`). -/
+def findConfirmedSmugglingPathAux (g : FlowGraph ν σ) (tag : σ) : Nat → ν → Option (List ν)
+  | 0, _ => none
+  | fuel + 1, cur =>
+    if sourceCarries g cur tag || opInjectsAt g cur tag then
+      some [cur]
+    else
+      let incoming := g.ops.filter (fun op => op.output = cur && opPropagatesConfirmedTag op tag)
+      incoming.findSome? fun op =>
+        op.inputs.findSome? fun inp =>
+          (findConfirmedSmugglingPathAux g tag fuel inp).map (· ++ [cur])
+
+/-- Find a confirmed smuggling path of `tag` reaching `target` (not gated by `.notShown`). -/
+def findConfirmedSmugglingPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : Option (List ν) :=
+  findConfirmedSmugglingPathAux g tag (g.ops.length + 1) target
+
 /--
 Backward reachability restricted to author-supplied origins (`origin = .setByExperimenter`
 sources and `Op` introductions). Measured sources carrying `tag` are NOT counted as
@@ -270,6 +298,22 @@ def findAuthorSuppliedPathAux (g : FlowGraph ν σ) (tag : σ) : Nat → ν → 
 /-- Find an author-supplied (`setByExperimenter` / `Op`) path of `tag` reaching `target`. -/
 def findAuthorSuppliedPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : Option (List ν) :=
   findAuthorSuppliedPathAux g tag (g.ops.length + 1) target
+
+/-- Confirmed author-supplied path (not gated by `.forget tag .shown` or `.forget tag .notShown`). -/
+def findConfirmedAuthorSuppliedPathAux (g : FlowGraph ν σ) (tag : σ) : Nat → ν → Option (List ν)
+  | 0, _ => none
+  | fuel + 1, cur =>
+    if experimenterSourceCarries g cur tag || opInjectsAt g cur tag then
+      some [cur]
+    else
+      let incoming := g.ops.filter (fun op => op.output = cur && opPropagatesConfirmedTag op tag)
+      incoming.findSome? fun op =>
+        op.inputs.findSome? fun inp =>
+          (findConfirmedAuthorSuppliedPathAux g tag fuel inp).map (· ++ [cur])
+
+/-- Find a confirmed author-supplied path of `tag` reaching `target`. -/
+def findConfirmedAuthorSuppliedPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : Option (List ν) :=
+  findConfirmedAuthorSuppliedPathAux g tag (g.ops.length + 1) target
 
 /-- Pure reachability of upstream nodes (ignoring forget barriers) to find ancestors of `target`. -/
 def ancestorsAux (ops : List (Op ν σ)) : Nat → List ν → List ν
@@ -422,11 +466,12 @@ def failedAuthorForgetsUpstream (g : FlowGraph ν σ) (tag : σ) (target : ν) :
       | _ => none
     else none
 
-/-- Lossy operations sitting anywhere upstream of `target`. -/
-def lossyOpsUpstream (g : FlowGraph ν σ) (target : ν) : List (FlowFinding ν σ) :=
-  let reach := ancestors g target
+/-- Lossy operations sitting on a `tag`-carrying path upstream of `target`.
+    A `.lossy` op on an unrelated side-branch that does not carry `tag` does not destroy `tag`. -/
+def lossyOpsOnTagPath (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
+  let reach := tagAncestors g tag target
   g.ops.filterMap fun op =>
-    if op.output ∈ reach then
+    if op.output ∈ reach && op.inputs.any (fun inp => !(sourceOrigins g tag inp).isEmpty) then
       match op.kind with
       | .lossy _ => some (.lossyChannelOnPath op.name op.output)
       | _ => none
@@ -442,7 +487,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
   match c.kind with
   | .emergesWithout target tag =>
     let smuggled : List (FlowFinding ν σ) :=
-      match findSmugglingPath c.graph tag target with
+      match findConfirmedSmugglingPath c.graph tag target with
       | some path =>
         match path with
         | origin :: _ => [.smuggledStructure tag origin path]
@@ -451,14 +496,14 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
     smuggled ++ failedForgetsUpstream c.graph tag target ++ danglingInputsUpstream c.graph target
   | .emergesWithExclusion target excludedChannel tag =>
     let alarm1 : List (FlowFinding ν σ) :=
-      match findSmugglingPath c.graph tag excludedChannel with
+      match findConfirmedSmugglingPath c.graph tag excludedChannel with
       | some path =>
         match path with
         | origin :: _ => [.excludedChannelLeak tag origin path]
         | [] => []
       | none => []
     let alarm2 : List (FlowFinding ν σ) :=
-      match findAuthorSuppliedPath c.graph tag target with
+      match findConfirmedAuthorSuppliedPath c.graph tag target with
       | some path =>
         match path with
         | origin :: _ => [.authorSuppliedStructure tag origin path]
@@ -480,7 +525,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
       ++ danglingInputsUpstream c.graph branchA
       ++ danglingInputsUpstream c.graph branchB
   | .uniqueRecovery target tag =>
-    let lossy := lossyOpsUpstream c.graph target
+    let lossy := lossyOpsOnTagPath c.graph tag target
     let access :=
       if (sourceOrigins c.graph tag target).isEmpty then
         [.unaccessedTargetStructure target tag]
@@ -570,7 +615,7 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .sharedUpstreamStructure _ _          => true
   | .sharedExperimenterSource _           => true
   | .lossyChannelOnPath _ _               => true
-  | .unaccessedTargetStructure _ _        => true
+  | .unaccessedTargetStructure _ _        => false
   | .undeclaredUpstreamSource _           => false
   | .danglingInput _ _                    => false
   | .missingCostAccounting _ _            => false
@@ -616,10 +661,348 @@ theorem findSmugglingPathAux_ne_nil (g : FlowGraph ν σ) (tag : σ) (fuel : Nat
       | none => simp [hm] at hinp
       | some p => simp [hm] at hinp
 
+/-- Helper: `findConfirmedSmugglingPathAux` never returns `some []`. -/
+theorem findConfirmedSmugglingPathAux_ne_nil (g : FlowGraph ν σ) (tag : σ) (fuel : Nat) (cur : ν) :
+    findConfirmedSmugglingPathAux g tag fuel cur ≠ some [] := by
+  cases fuel with
+  | zero => simp [findConfirmedSmugglingPathAux]
+  | succ k =>
+    unfold findConfirmedSmugglingPathAux
+    split
+    · simp
+    · intro h
+      have ⟨_, op, _, _, hop, _⟩ := List.findSome?_eq_some_iff.mp h
+      have ⟨_, inp, _, _, hinp, _⟩ := List.findSome?_eq_some_iff.mp hop
+      cases hm : findConfirmedSmugglingPathAux g tag k inp with
+      | none => simp [hm] at hinp
+      | some p => simp [hm] at hinp
+
+private theorem findSome?_isSome_of_mem {α β : Type} {f : α → Option β} :
+    ∀ {l : List α} {a : α}, a ∈ l → (f a).isSome = true → (l.findSome? f).isSome = true
+  | [], _, h, _ => by cases h
+  | x :: xs, a, hmem, hsome => by
+    simp only [List.findSome?]
+    cases hx : f x with
+    | some _ => rfl
+    | none =>
+      cases List.mem_cons.mp hmem with
+      | inl heq => rw [heq] at hsome; simp [hx] at hsome
+      | inr htail => exact findSome?_isSome_of_mem htail hsome
+
+private theorem findSmugglingPathAux_mono (g : FlowGraph ν σ) (tag : σ) :
+    ∀ {k m : Nat} {cur : ν}, k ≤ m →
+    (findSmugglingPathAux g tag k cur).isSome = true →
+    (findSmugglingPathAux g tag m cur).isSome = true
+  | 0, _, _, _, h => by simp [findSmugglingPathAux] at h
+  | k + 1, 0, _, hle, _ => absurd hle (Nat.not_succ_le_zero k)
+  | k + 1, m + 1, cur, hle, h => by
+    have hkm : k ≤ m := Nat.le_of_succ_le_succ hle
+    unfold findSmugglingPathAux at h ⊢
+    split at h
+    · rename_i hc; simp [hc]
+    · rename_i hc
+      simp only [hc, Bool.false_eq_true, ↓reduceIte]
+      obtain ⟨_, hval⟩ := Option.isSome_iff_exists.mp h
+      obtain ⟨_, op, _, hsplitOp, hopVal, _⟩ := List.findSome?_eq_some_iff.mp hval
+      have hopMem : op ∈ g.ops.filter (fun o => o.output = cur && opPropagatesTag o tag) := by
+        rw [hsplitOp]; simp
+      obtain ⟨_, inp, _, hsplitInp, hinpVal, _⟩ := List.findSome?_eq_some_iff.mp hopVal
+      have hinpMem : inp ∈ op.inputs := by rw [hsplitInp]; simp
+      cases hprev : findSmugglingPathAux g tag k inp with
+      | none => simp [hprev] at hinpVal
+      | some _ =>
+        have hsome' := findSmugglingPathAux_mono g tag hkm (by rw [hprev]; rfl)
+        obtain ⟨p', hp'⟩ := Option.isSome_iff_exists.mp hsome'
+        apply findSome?_isSome_of_mem hopMem
+        apply findSome?_isSome_of_mem hinpMem
+        simp [hp']
+
+private theorem findAuthorSuppliedPathAux_mono (g : FlowGraph ν σ) (tag : σ) :
+    ∀ {k m : Nat} {cur : ν}, k ≤ m →
+    (findAuthorSuppliedPathAux g tag k cur).isSome = true →
+    (findAuthorSuppliedPathAux g tag m cur).isSome = true
+  | 0, _, _, _, h => by simp [findAuthorSuppliedPathAux] at h
+  | k + 1, 0, _, hle, _ => absurd hle (Nat.not_succ_le_zero k)
+  | k + 1, m + 1, cur, hle, h => by
+    have hkm : k ≤ m := Nat.le_of_succ_le_succ hle
+    unfold findAuthorSuppliedPathAux at h ⊢
+    split at h
+    · rename_i hc; simp [hc]
+    · rename_i hc
+      simp only [hc, Bool.false_eq_true, ↓reduceIte]
+      obtain ⟨_, hval⟩ := Option.isSome_iff_exists.mp h
+      obtain ⟨_, op, _, hsplitOp, hopVal, _⟩ := List.findSome?_eq_some_iff.mp hval
+      have hopMem : op ∈ g.ops.filter (fun o => o.output = cur && opPropagatesTag o tag) := by
+        rw [hsplitOp]; simp
+      obtain ⟨_, inp, _, hsplitInp, hinpVal, _⟩ := List.findSome?_eq_some_iff.mp hopVal
+      have hinpMem : inp ∈ op.inputs := by rw [hsplitInp]; simp
+      cases hprev : findAuthorSuppliedPathAux g tag k inp with
+      | none => simp [hprev] at hinpVal
+      | some _ =>
+        have hsome' := findAuthorSuppliedPathAux_mono g tag hkm (by rw [hprev]; rfl)
+        obtain ⟨p', hp'⟩ := Option.isSome_iff_exists.mp hsome'
+        apply findSome?_isSome_of_mem hopMem
+        apply findSome?_isSome_of_mem hinpMem
+        simp [hp']
+
+private theorem mem_foldl_insert_of_mem_init {x : ν} :
+    ∀ {ps acc : List ν}, x ∈ acc → x ∈ ps.foldl (fun a y => if y ∈ a then a else y :: a) acc
+  | [], _, h => h
+  | p :: _, _, h => by
+    dsimp only [List.foldl]
+    split
+    · exact mem_foldl_insert_of_mem_init h
+    · exact mem_foldl_insert_of_mem_init (List.mem_cons_of_mem p h)
+
+private theorem mem_foldl_insert_of_mem_preds {x : ν} :
+    ∀ {ps acc : List ν}, x ∈ ps → x ∈ ps.foldl (fun a y => if y ∈ a then a else y :: a) acc
+  | [], _, h => by cases h
+  | p :: _, _, h => by
+    dsimp only [List.foldl]
+    cases List.mem_cons.mp h with
+    | inl heq =>
+      subst heq
+      split
+      · rename_i hin; exact mem_foldl_insert_of_mem_init hin
+      · exact mem_foldl_insert_of_mem_init List.mem_cons_self
+    | inr htail =>
+      exact mem_foldl_insert_of_mem_preds htail
+
+private theorem length_le_foldl_insert :
+    ∀ (ps acc : List ν), acc.length ≤ (ps.foldl (fun a y => if y ∈ a then a else y :: a) acc).length
+  | [], _ => Nat.le_refl _
+  | p :: ps, acc => by
+    dsimp only [List.foldl]
+    split
+    · exact length_le_foldl_insert ps acc
+    · exact Nat.le_trans (Nat.le_succ _) (length_le_foldl_insert ps (p :: acc))
+
+private theorem mem_init_of_foldl_insert_length_eq :
+    ∀ {ps acc : List ν},
+    (ps.foldl (fun a y => if y ∈ a then a else y :: a) acc).length = acc.length →
+    ∀ x ∈ ps, x ∈ acc
+  | [], _, _, _, hx => by cases hx
+  | p :: ps, acc, hlen, x, hx => by
+    dsimp only [List.foldl] at hlen
+    have hp : p ∈ acc := by
+      split at hlen
+      · assumption
+      · exfalso
+        have hge := length_le_foldl_insert ps (p :: acc)
+        simp only [List.length_cons] at hge
+        omega
+    simp only [hp, ↓reduceIte] at hlen
+    cases List.mem_cons.mp hx with
+    | inl heq => rw [heq]; exact hp
+    | inr htail => exact mem_init_of_foldl_insert_length_eq hlen x htail
+
+private theorem mem_foldl_preds_of_mem_acc {tag : σ} {visited : List ν} {y : ν} :
+    ∀ {ops : List (Op ν σ)} {acc : List ν}, y ∈ acc →
+    y ∈ ops.foldl (fun a op => if op.output ∈ visited && opPropagatesTag op tag then a ++ op.inputs else a) acc
+  | [], _, h => h
+  | _ :: _, _, h => by
+    dsimp only [List.foldl]
+    split
+    · exact mem_foldl_preds_of_mem_acc (List.mem_append_left _ h)
+    · exact mem_foldl_preds_of_mem_acc h
+
+private theorem mem_foldl_preds_of_op {tag : σ} {visited : List ν} {op : Op ν σ} {y : ν} :
+    ∀ {ops : List (Op ν σ)} {acc : List ν},
+    op ∈ ops → op.output ∈ visited → opPropagatesTag op tag = true → y ∈ op.inputs →
+    y ∈ ops.foldl (fun a o => if o.output ∈ visited && opPropagatesTag o tag then a ++ o.inputs else a) acc
+  | [], _, hmem, _, _, _ => by cases hmem
+  | o :: _, _, hmem, hout, hprop, hinp => by
+    dsimp only [List.foldl]
+    cases List.mem_cons.mp hmem with
+    | inl heq =>
+      subst heq
+      have hcond : (op.output ∈ visited && opPropagatesTag op tag) = true := by simp [hout, hprop]
+      simp only [hcond, ↓reduceIte]
+      exact mem_foldl_preds_of_mem_acc (List.mem_append_right _ hinp)
+    | inr htail =>
+      exact mem_foldl_preds_of_op htail hout hprop hinp
+
+private inductive TagReach (ops : List (Op ν σ)) (tag : σ) : Nat → ν → ν → Prop where
+  | zero (x : ν) : TagReach ops tag 0 x x
+  | step {k : Nat} {x y z : ν} (op : Op ν σ) :
+      op ∈ ops → op.output = x → opPropagatesTag op tag = true → y ∈ op.inputs →
+      TagReach ops tag k y z → TagReach ops tag (k + 1) x z
+
+omit [DecidableEq ν] in
+private theorem tagReach_snoc {ops : List (Op ν σ)} {tag : σ} {k : Nat} {x y z : ν}
+    (hr : TagReach ops tag k x y) (op : Op ν σ)
+    (hop : op ∈ ops) (hout : op.output = y) (hprop : opPropagatesTag op tag = true) (hinp : z ∈ op.inputs) :
+    TagReach ops tag (k + 1) x z := by
+  induction hr with
+  | zero _ => exact .step op hop hout hprop hinp (.zero z)
+  | step op' hop' hout' hprop' hinp' _ ih =>
+    exact .step op' hop' hout' hprop' hinp' (ih hout)
+
+private theorem mem_tagAncestorsAux_of_mem_init (ops : List (Op ν σ)) (tag : σ) :
+    ∀ (m : Nat) (visited : List ν) {x : ν}, x ∈ visited → x ∈ tagAncestorsAux ops tag m visited
+  | 0, _, _, h => h
+  | m + 1, visited, _, h => by
+    unfold tagAncestorsAux
+    dsimp only
+    split
+    · exact h
+    · exact mem_tagAncestorsAux_of_mem_init ops tag m _ (mem_foldl_insert_of_mem_init h)
+
+private theorem tagReach_mem_tagAncestorsAux {ops : List (Op ν σ)} {tag : σ} :
+    ∀ {d m : Nat} {visited : List ν} {x z : ν},
+    TagReach ops tag d x z → x ∈ visited → d ≤ m → z ∈ tagAncestorsAux ops tag m visited
+  | 0, m, visited, _, _, .zero _, hx, _ =>
+    mem_tagAncestorsAux_of_mem_init ops tag m visited hx
+  | d + 1, 0, _, _, _, _, _, hle => absurd hle (Nat.not_succ_le_zero d)
+  | d + 1, m + 1, visited, _, _, .step op hop hout hprop hinp hr, hx, hle => by
+    unfold tagAncestorsAux
+    dsimp only
+    have hyPreds := mem_foldl_preds_of_op (acc := []) hop (by rw [hout]; exact hx) hprop hinp
+    have hyNext := mem_foldl_insert_of_mem_preds (acc := visited) hyPreds
+    split
+    · rename_i hlenEq
+      have hyVis := mem_init_of_foldl_insert_length_eq hlenEq _ hyPreds
+      have hsub := tagReach_mem_tagAncestorsAux hr hyVis (Nat.le_trans (Nat.le_of_succ_le_succ hle) (Nat.le_succ m))
+      unfold tagAncestorsAux at hsub
+      dsimp only at hsub
+      simp only [hlenEq, ↓reduceIte] at hsub
+      exact hsub
+    · exact tagReach_mem_tagAncestorsAux hr hyNext (Nat.le_of_succ_le_succ hle)
+
+omit [DecidableEq ν] in
+private theorem op_not_confirmed_is_notShown {op : Op ν σ} {tag : σ}
+    (hprop : opPropagatesTag op tag = true)
+    (hnotConf : opPropagatesConfirmedTag op tag = false) :
+    op.kind = .forget tag .notShown := by
+  cases hk : op.kind with
+  | transform _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
+  | partition _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
+  | lossy _ => simp [opPropagatesConfirmedTag, hk] at hnotConf
+  | forget t ev =>
+    cases ev with
+    | shown =>
+      simp [opPropagatesTag, opBlocksTag, hk] at hprop
+      simp [opPropagatesConfirmedTag, hk, hprop] at hnotConf
+    | contradicted =>
+      simp [opPropagatesConfirmedTag, hk] at hnotConf
+    | notShown =>
+      simp [opPropagatesConfirmedTag, hk] at hnotConf
+      rw [hnotConf]
+
+private theorem findSmugglingPathAux_none_of_confirmed_and_forgets_clean
+    (g : FlowGraph ν σ) (tag : σ) (target : ν)
+    (hforgets : failedForgetsUpstream g tag target = []) :
+    ∀ {fuel d : Nat} {cur : ν},
+    TagReach g.ops tag d target cur →
+    fuel + d ≤ g.ops.length + 1 →
+    findConfirmedSmugglingPathAux g tag fuel cur = none →
+    findSmugglingPathAux g tag fuel cur = none
+  | 0, _, _, _, _, _ => by simp [findSmugglingPathAux]
+  | k + 1, d, cur, hreach, hbound, hconf => by
+    unfold findSmugglingPathAux
+    unfold findConfirmedSmugglingPathAux at hconf
+    split at hconf
+    · cases hconf
+    · rename_i hbase
+      simp only [hbase, Bool.false_eq_true, ↓reduceIte]
+      apply List.findSome?_eq_none_iff.mpr
+      intro op hopFilt
+      have ⟨hopMem, hopCond⟩ := List.mem_filter.mp hopFilt
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hopCond
+      have ⟨hout, hprop⟩ := hopCond
+      apply List.findSome?_eq_none_iff.mpr
+      intro inp hinp
+      cases hconfProp : opPropagatesConfirmedTag op tag with
+      | true =>
+        have hopConfFilt : op ∈ g.ops.filter (fun o => o.output = cur && opPropagatesConfirmedTag o tag) :=
+          List.mem_filter.mpr ⟨hopMem, by simp [hout, hconfProp]⟩
+        have hstepNone := List.findSome?_eq_none_iff.mp hconf op hopConfFilt
+        have hinpMapNone := List.findSome?_eq_none_iff.mp hstepNone inp hinp
+        have hinpConfNone : findConfirmedSmugglingPathAux g tag k inp = none := by
+          cases hck : findConfirmedSmugglingPathAux g tag k inp with
+          | none => rfl
+          | some _ => simp [hck] at hinpMapNone
+        have hreach' := tagReach_snoc hreach op hopMem hout hprop hinp
+        have hnone' :=
+          findSmugglingPathAux_none_of_confirmed_and_forgets_clean g tag target hforgets hreach' (by omega) hinpConfNone
+        simp [hnone']
+      | false =>
+        have hkind := op_not_confirmed_is_notShown hprop hconfProp
+        cases hsmug : findSmugglingPathAux g tag k inp with
+        | none => rfl
+        | some _ =>
+          exfalso
+          have hcurAnc : cur ∈ tagAncestors g tag target :=
+            tagReach_mem_tagAncestorsAux hreach List.mem_cons_self (by omega)
+          have hsmugFull : (findSmugglingPath g tag inp).isSome = true :=
+            findSmugglingPathAux_mono g tag (k := k) (by omega) (by rw [hsmug]; rfl)
+          have hany : op.inputs.any (fun i => (findSmugglingPath g tag i).isSome) = true :=
+            List.any_eq_true.mpr ⟨inp, hinp, hsmugFull⟩
+          unfold failedForgetsUpstream at hforgets
+          have hfm := List.filterMap_eq_nil_iff.mp hforgets op hopMem
+          have hcond : (op.output ∈ tagAncestors g tag target && op.inputs.any (fun i => (findSmugglingPath g tag i).isSome)) = true := by
+            rw [hout]; simp [hcurAnc, hany]
+          simp [hcond, hkind] at hfm
+
+private theorem findAuthorSuppliedPathAux_none_of_confirmed_and_forgets_clean
+    (g : FlowGraph ν σ) (tag : σ) (target : ν)
+    (hforgets : failedAuthorForgetsUpstream g tag target = []) :
+    ∀ {fuel d : Nat} {cur : ν},
+    TagReach g.ops tag d target cur →
+    fuel + d ≤ g.ops.length + 1 →
+    findConfirmedAuthorSuppliedPathAux g tag fuel cur = none →
+    findAuthorSuppliedPathAux g tag fuel cur = none
+  | 0, _, _, _, _, _ => by simp [findAuthorSuppliedPathAux]
+  | k + 1, d, cur, hreach, hbound, hconf => by
+    unfold findAuthorSuppliedPathAux
+    unfold findConfirmedAuthorSuppliedPathAux at hconf
+    split at hconf
+    · cases hconf
+    · rename_i hbase
+      simp only [hbase, Bool.false_eq_true, ↓reduceIte]
+      apply List.findSome?_eq_none_iff.mpr
+      intro op hopFilt
+      have ⟨hopMem, hopCond⟩ := List.mem_filter.mp hopFilt
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hopCond
+      have ⟨hout, hprop⟩ := hopCond
+      apply List.findSome?_eq_none_iff.mpr
+      intro inp hinp
+      cases hconfProp : opPropagatesConfirmedTag op tag with
+      | true =>
+        have hopConfFilt : op ∈ g.ops.filter (fun o => o.output = cur && opPropagatesConfirmedTag o tag) :=
+          List.mem_filter.mpr ⟨hopMem, by simp [hout, hconfProp]⟩
+        have hstepNone := List.findSome?_eq_none_iff.mp hconf op hopConfFilt
+        have hinpMapNone := List.findSome?_eq_none_iff.mp hstepNone inp hinp
+        have hinpConfNone : findConfirmedAuthorSuppliedPathAux g tag k inp = none := by
+          cases hck : findConfirmedAuthorSuppliedPathAux g tag k inp with
+          | none => rfl
+          | some _ => simp [hck] at hinpMapNone
+        have hreach' := tagReach_snoc hreach op hopMem hout hprop hinp
+        have hnone' :=
+          findAuthorSuppliedPathAux_none_of_confirmed_and_forgets_clean g tag target hforgets hreach' (by omega) hinpConfNone
+        simp [hnone']
+      | false =>
+        have hkind := op_not_confirmed_is_notShown hprop hconfProp
+        cases hsmug : findAuthorSuppliedPathAux g tag k inp with
+        | none => rfl
+        | some _ =>
+          exfalso
+          have hcurAnc : cur ∈ tagAncestors g tag target :=
+            tagReach_mem_tagAncestorsAux hreach List.mem_cons_self (by omega)
+          have hsmugFull : (findAuthorSuppliedPath g tag inp).isSome = true :=
+            findAuthorSuppliedPathAux_mono g tag (k := k) (by omega) (by rw [hsmug]; rfl)
+          have hany : op.inputs.any (fun i => (findAuthorSuppliedPath g tag i).isSome) = true :=
+            List.any_eq_true.mpr ⟨inp, hinp, hsmugFull⟩
+          unfold failedAuthorForgetsUpstream at hforgets
+          have hfm := List.filterMap_eq_nil_iff.mp hforgets op hopMem
+          have hcond : (op.output ∈ tagAncestors g tag target && op.inputs.any (fun i => (findAuthorSuppliedPath g tag i).isSome)) = true := by
+            rw [hout]; simp [hcurAnc, hany]
+          simp [hcond, hkind] at hfm
+
 /--
 Theorem 1 (Soundness of `emergesWithout`):
 If an `emergesWithout target tag` claim is `admissible`, then no unblocked smuggling
-path carries `tag` to `target`.
+path carries `tag` to `target` (neither confirmed nor gated by `.notShown`).
 -/
 theorem admissible_emerges_has_no_smuggling_path
     (c : FlowClaim ν σ) (target : ν) (tag : σ)
@@ -634,13 +1017,17 @@ theorem admissible_emerges_has_no_smuggling_path
     dsimp only at hnil
     have hleft1 := (List.append_eq_nil_iff.mp hnil).1
     have hleft := (List.append_eq_nil_iff.mp hleft1).1
-    cases hp : findSmugglingPath c.graph tag target with
-    | none => rfl
-    | some p =>
-      rw [hp] at hleft
-      cases p with
-      | nil => exact False.elim (findSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
-      | cons _ _ => simp at hleft
+    have hforgets := (List.append_eq_nil_iff.mp hleft1).2
+    have hconfNone : findConfirmedSmugglingPath c.graph tag target = none := by
+      cases hp : findConfirmedSmugglingPath c.graph tag target with
+      | none => rfl
+      | some p =>
+        rw [hp] at hleft
+        cases p with
+        | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
+        | cons _ _ => simp at hleft
+    exact findSmugglingPathAux_none_of_confirmed_and_forgets_clean
+      c.graph tag target hforgets (.zero target) (Nat.le_refl _) hconfNone
   · cases hadm
 
 /--
@@ -711,6 +1098,31 @@ theorem danglingInputsUpstream_add_source_of_empty
   · rename_i hnot
     simp [hnot]
 
+theorem findConfirmedSmugglingPathAux_add_unrelated_source
+    (g : FlowGraph ν σ) (s : SourceNode ν σ) (tag : σ) (hnot : tag ∉ s.carries)
+    (fuel : Nat) (cur : ν) :
+    findConfirmedSmugglingPathAux { g with sources := s :: g.sources } tag fuel cur =
+      findConfirmedSmugglingPathAux g tag fuel cur := by
+  induction fuel generalizing cur with
+  | zero => simp [findConfirmedSmugglingPathAux]
+  | succ k ih =>
+    unfold findConfirmedSmugglingPathAux
+    rw [sourceCarries_add_unrelated_source g s tag hnot cur]
+    have hinj : opInjectsAt { g with sources := s :: g.sources } cur tag = opInjectsAt g cur tag := rfl
+    rw [hinj]
+    split
+    · rfl
+    · have hfn :
+          (fun op : Op ν σ => op.inputs.findSome? fun inp =>
+              (findConfirmedSmugglingPathAux { g with sources := s :: g.sources } tag k inp).map (· ++ [cur])) =
+          (fun op : Op ν σ => op.inputs.findSome? fun inp =>
+              (findConfirmedSmugglingPathAux g tag k inp).map (· ++ [cur])) := by
+        funext op
+        congr 1
+        funext inp
+        rw [ih inp]
+      exact congrArg (List.findSome? · _) hfn
+
 theorem unrelated_experimenter_source_preserves_emerges_audit
     (c : FlowClaim ν σ) (target : ν) (tag : σ) (s : SourceNode ν σ)
     (hkind : c.kind = .emergesWithout target tag)
@@ -720,9 +1132,9 @@ theorem unrelated_experimenter_source_preserves_emerges_audit
   rw [auditFlow, auditFlow, hkind]
   dsimp only
   have hpath :
-      findSmugglingPath { c.graph with sources := s :: c.graph.sources } tag target =
-        findSmugglingPath c.graph tag target :=
-    findSmugglingPathAux_add_unrelated_source c.graph s tag hnot (c.graph.ops.length + 1) target
+      findConfirmedSmugglingPath { c.graph with sources := s :: c.graph.sources } tag target =
+        findConfirmedSmugglingPath c.graph tag target :=
+    findConfirmedSmugglingPathAux_add_unrelated_source c.graph s tag hnot (c.graph.ops.length + 1) target
   have hforgets :
       failedForgetsUpstream { c.graph with sources := s :: c.graph.sources } tag target =
         failedForgetsUpstream c.graph tag target := by
@@ -777,6 +1189,22 @@ theorem findAuthorSuppliedPathAux_ne_nil (g : FlowGraph ν σ) (tag : σ) (fuel 
       | none => simp [hm] at hinp
       | some p => simp [hm] at hinp
 
+/-- Helper: `findConfirmedAuthorSuppliedPathAux` never returns `some []`. -/
+theorem findConfirmedAuthorSuppliedPathAux_ne_nil (g : FlowGraph ν σ) (tag : σ) (fuel : Nat) (cur : ν) :
+    findConfirmedAuthorSuppliedPathAux g tag fuel cur ≠ some [] := by
+  cases fuel with
+  | zero => simp [findConfirmedAuthorSuppliedPathAux]
+  | succ k =>
+    unfold findConfirmedAuthorSuppliedPathAux
+    split
+    · simp
+    · intro h
+      have ⟨_, op, _, _, hop, _⟩ := List.findSome?_eq_some_iff.mp h
+      have ⟨_, inp, _, _, hinp, _⟩ := List.findSome?_eq_some_iff.mp hop
+      cases hm : findConfirmedAuthorSuppliedPathAux g tag k inp with
+      | none => simp [hm] at hinp
+      | some p => simp [hm] at hinp
+
 /--
 Theorem 5 (Soundness of Policy 3 — `emergesWithExclusion`):
 If an `emergesWithExclusion target excludedChannel tag` claim is `admissible`,
@@ -795,24 +1223,35 @@ theorem admissible_policy3_clean_both_alarms
     have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
     rw [auditFlow, hkind] at hnil
     dsimp only at hnil
-    have h12 := (List.append_eq_nil_iff.mp (List.append_eq_nil_iff.mp (List.append_eq_nil_iff.mp (List.append_eq_nil_iff.mp hnil).1).1).1).1
+    have h4 := (List.append_eq_nil_iff.mp hnil).1
+    have h3 := (List.append_eq_nil_iff.mp h4).1
+    have h2 := (List.append_eq_nil_iff.mp h3).1
+    have hforgetsAuthor := (List.append_eq_nil_iff.mp h3).2
+    have h12 := (List.append_eq_nil_iff.mp h2).1
+    have hforgetsExcl := (List.append_eq_nil_iff.mp h2).2
     have ha1 := (List.append_eq_nil_iff.mp h12).1
     have ha2 := (List.append_eq_nil_iff.mp h12).2
-    constructor
-    · cases hp : findSmugglingPath c.graph tag excludedChannel with
+    have hconf1 : findConfirmedSmugglingPath c.graph tag excludedChannel = none := by
+      cases hp : findConfirmedSmugglingPath c.graph tag excludedChannel with
       | none => rfl
       | some p =>
         rw [hp] at ha1
         cases p with
-        | nil => exact False.elim (findSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) excludedChannel hp)
+        | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) excludedChannel hp)
         | cons _ _ => simp at ha1
-    · cases hp : findAuthorSuppliedPath c.graph tag target with
+    have hconf2 : findConfirmedAuthorSuppliedPath c.graph tag target = none := by
+      cases hp : findConfirmedAuthorSuppliedPath c.graph tag target with
       | none => rfl
       | some p =>
         rw [hp] at ha2
         cases p with
-        | nil => exact False.elim (findAuthorSuppliedPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
+        | nil => exact False.elim (findConfirmedAuthorSuppliedPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
         | cons _ _ => simp at ha2
+    exact
+      ⟨ findSmugglingPathAux_none_of_confirmed_and_forgets_clean
+          c.graph tag excludedChannel hforgetsExcl (.zero excludedChannel) (Nat.le_refl _) hconf1
+      , findAuthorSuppliedPathAux_none_of_confirmed_and_forgets_clean
+          c.graph tag target hforgetsAuthor (.zero target) (Nat.le_refl _) hconf2 ⟩
   · cases hadm
 
 /--
