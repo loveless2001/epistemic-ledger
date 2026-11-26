@@ -1409,6 +1409,38 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["recoverFromPairPR"]["findings"]], ["lossyWithSideInformation"])
             self.assertEqual(by_id["recoverFromPairPR"]["findings"][0]["side_nodes"], ["rBit"])
 
+            # Codex #27382: uniqueRecovery reports explicitly disclose DAG independent-source-support boundary,
+            # and modeling coupled `(r, c)` (`c = r`) via a shared upstream SourceNode triggers `lossyWithSideInformation`.
+            md_xor = (out / "XorSideInfo_report.md").read_text(encoding="utf-8")
+            self.assertIn("Unmodeled joint support constraints across disconnected SourceNodes", md_xor)
+            self.assertTrue(any("joint support constraints" in s for s in rep["out_of_scope"]))
+
+            spec_coupled = copy.deepcopy(spec)
+            spec_coupled["auditor"] = "XorCoupled"
+            spec_coupled["nodes"] = ["sBit", "sharedR", "rCopy", "cCopy", "parityP", "pairPC"]
+            spec_coupled["sources"] = [
+                {"node": "sBit", "origin": "measured", "carries": ["signal"], "quote": q},
+                {"node": "sharedR", "origin": "measured", "carries": ["reference"], "quote": q},
+            ]
+            spec_coupled["ops"] = [
+                {"name": "emit_r", "inputs": ["sharedR"], "output": "rCopy", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "emit_c_eq_r", "inputs": ["sharedR"], "output": "cCopy", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "measure_parity", "inputs": ["sBit", "rCopy"], "output": "parityP", "kind": "lossy", "loses": ["signal", "reference"], "introduces": [], "quote": q},
+                {"name": "combine_pc", "inputs": ["parityP", "cCopy"], "output": "pairPC", "kind": "transform", "introduces": [], "quote": q},
+            ]
+            spec_coupled["claims"] = [
+                {"id": "recoverCoupledPC", "statement": "Recover s from (s XOR r, c) with c = r via sharedR.", "quote": q, "kind": "uniqueRecovery", "target": "pairPC", "tag": "signal"},
+            ]
+            sp_c = base / "xor_coupled.json"
+            sp_c.write_text(json.dumps(spec_coupled), encoding="utf-8")
+            out_c = base / "out_c"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_c), "--out", str(out_c)]), 0)
+            rep_c = json.loads((out_c / "XorCoupled_report.json").read_text(encoding="utf-8"))
+            c0 = rep_c["lean_verification"]["claims"][0]
+            self.assertEqual(c0["verdict"], "unestablished")
+            self.assertEqual([f["type"] for f in c0["findings"]], ["lossyWithSideInformation"])
+            self.assertEqual(c0["findings"][0]["side_nodes"], ["sharedR"])
+
 
 if __name__ == "__main__":
     unittest.main()

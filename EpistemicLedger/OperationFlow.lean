@@ -613,8 +613,12 @@ def sideInfoBypassNodes (g : FlowGraph ν σ) (op : Op ν σ) (target : ν) : Li
 /-- Single **complete** tag-specific `.lossyOn` bottleneck operations whose output node cuts ALL
     `tag`-carrying source paths to `target`, is produced exclusively by ops witnessing collision on `tag`,
     is not a `tag` source itself, AND has NO side-information bypass (`sideInfoBypassNodes = []`).
-    When such a complete bottleneck exists, `target(u, v) = G(f(u), v)` with `u` and `v` independent,
-    so colliding `u1, u2` with distinct `tag` values provably yield identical full outputs (`rejected`). -/
+    Modeling boundary: this certifies non-recoverability under independent-source-support semantics
+    (i.e. assuming both colliding assignments to `op`'s inputs remain jointly valid while holding
+    disconnected outside sources fixed). If an outside `SourceNode` has an unmodeled joint constraint
+    with an input of `op` (e.g. `c = r`), connect them via a shared upstream `SourceNode` (yielding
+    `lossyWithSideInformation` / `unestablished`) or omit `loses` (yielding `untargetedLossyChannel` /
+    `unestablished`). -/
 def singleLossyBottlenecks (g : FlowGraph ν σ) (tag : σ) (target : ν) : List (FlowFinding ν σ) :=
   let reach := tagAncestors g tag target
   g.ops.filterMap fun op =>

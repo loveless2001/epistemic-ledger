@@ -30,7 +30,11 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "sharedExperimenterSource":
         return f"**[Shared Experimenter Source]** branches share unforgotten experimenter input `{f['shared']}`"
     if ft == "lossyChannelOnPath":
-        return f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` witnesses tag collision and cuts all paths to target"
+        return (
+            f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` witnesses tag collision and "
+            f"cuts all paths to target (assuming colliding inputs remain jointly valid while holding disconnected outside "
+            f"sources fixed; if outside sources have unmodeled joint constraints, treat recovery on the constrained support as unestablished)"
+        )
     if ft == "untargetedLossyChannel":
         return (
             f"**[Untargeted Lossy Channel]** op `{f['op']}` at `{f['output']}` is marked `lossy` without specifying "
@@ -169,6 +173,12 @@ OUT_OF_SCOPE_ACCOUNTING = (
     "EpistemicLedger; Lean checks structural control independence, forget-proof cost-source coverage, "
     "and arithmetic parity of declared (source, unit, amount) entries."
 )
+OUT_OF_SCOPE_SOURCE_SUPPORT = (
+    "Unmodeled joint support constraints across disconnected SourceNodes (e.g., an external coupling "
+    "`c = r` not represented by a shared upstream SourceNode) are out of scope for pure DAG topology: "
+    "`lossyChannelOnPath` certifies non-recoverability assuming both colliding inputs of the bottleneck op "
+    "remain jointly valid while holding disconnected outside observations fixed."
+)
 
 
 def build_single_report_dict(
@@ -183,6 +193,9 @@ def build_single_report_dict(
     has_effectiveness = isinstance(spec, dict) and any(
         isinstance(c, dict) and c.get("kind") == "effectivenessClaim" for c in spec.get("claims", [])
     )
+    has_unique_recovery = isinstance(spec, dict) and any(
+        isinstance(c, dict) and c.get("kind") == "uniqueRecovery" for c in spec.get("claims", [])
+    )
     oos_claim_ids = [
         str(c.get("id"))
         for c in (spec.get("claims", []) if isinstance(spec, dict) else [])
@@ -191,6 +204,8 @@ def build_single_report_dict(
     out_of_scope = [OUT_OF_SCOPE_CORE]
     if has_effectiveness:
         out_of_scope.append(OUT_OF_SCOPE_ACCOUNTING)
+    if has_unique_recovery:
+        out_of_scope.append(OUT_OF_SCOPE_SOURCE_SUPPORT)
     if oos_claim_ids:
         out_of_scope.append(
             f"Explicitly out-of-scope claim(s) ({', '.join(oos_claim_ids)}): "
@@ -762,7 +777,7 @@ CRITICAL RULES:
     - `target`: node receiving the theorem application
     - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
     - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
-11. For `kind: "lossy"` ops, add optional `"loses": ["<tag>", ...]` ONLY when the document explicitly witnesses that distinct values of those specific tag(s) collide to identical outputs; omit `"loses"` if the document only describes the step as lossy in general (untargeted `lossy` yields `unestablished` rather than falsely rejecting unaffected tags).
+11. For `kind: "lossy"` ops, add optional `"loses": ["<tag>", ...]` ONLY when the document explicitly witnesses that distinct values of those specific tag(s) collide to identical outputs while remaining jointly valid with any outside observations; omit `"loses"` if the document only describes the step as lossy in general or if unmodeled joint constraints couple separate inputs (when two inputs share a coupling like `c = r`, derive both from one shared upstream `SourceNode` so side-information bypass is detected).
 
 JSON TEMPLATE:
 {{
