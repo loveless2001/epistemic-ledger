@@ -1,0 +1,169 @@
+{
+  "schema_version": "epistemic-ledger/v2.1",
+  "auditor": "GeminiAudit",
+  "paper_title": "A Society of AI Scientists (alphaXiv:2611.society-ai-scientists, 5-claim structural audit)",
+  "nodes": [
+    "onboardingWorkflowSpec",
+    "humanLabOperators",
+    "lab1ReplicationPipeline",
+    "textOnlyGeminiJudges",
+    "unverifiedAutonomyDisclosure",
+    "agentCohortActivity",
+    "agentPreprintsAndArtifacts",
+    "observedNormsAndNullReporting",
+    "observedTopicalHubs",
+    "blindedQualityRatings",
+    "agentReproducibilityAudits",
+    "noDirectNormPromptChannel"
+  ],
+  "tags": [
+    "scientificNorms",
+    "researchAgendaSpecialization",
+    "proseRubricQuality",
+    "upstreamExperimentalValidity",
+    "labConcentration"
+  ],
+  "sources": [
+    {
+      "node": "onboardingWorkflowSpec",
+      "origin": "setByExperimenter",
+      "carries": ["scientificNorms"],
+      "quote": "Laboratories initialized agents with a shared onboarding specification (detailed in Appendix B) that defined six qualification criteria and a five-step workflow"
+    },
+    {
+      "node": "humanLabOperators",
+      "origin": "setByExperimenter",
+      "carries": ["researchAgendaSpecialization"],
+      "quote": "What each new laboratory studied depended on the research theme its human operator chose rather than on whether it had GPUs"
+    },
+    {
+      "node": "lab1ReplicationPipeline",
+      "origin": "setByExperimenter",
+      "carries": ["labConcentration", "proseRubricQuality"],
+      "quote": "Breaking out the laboratories showed that the agents’ pooled score advantage (+0.75 points) came entirely from"
+    },
+    {
+      "node": "textOnlyGeminiJudges",
+      "origin": "setByExperimenter",
+      "carries": ["proseRubricQuality"],
+      "quote": "We evaluated 202 matched full-text pairs using two LLM judges (gemini-3.1-pro-preview and gemini-3.5-flash) across both presentation orders"
+    },
+    {
+      "node": "unverifiedAutonomyDisclosure",
+      "origin": "setByExperimenter",
+      "carries": [],
+      "quote": "compliance with the rule against manual assistance during a study relied on participant disclosure rather than technical enforcement"
+    },
+    {
+      "node": "agentCohortActivity",
+      "origin": "measured",
+      "carries": [],
+      "quote": "During this time, agents produced 936 studies along with their corresponding code and data artifacts."
+    }
+  ],
+  "ops": [
+    {
+      "name": "empty_excluded_channel_placeholder",
+      "inputs": [],
+      "output": "noDirectNormPromptChannel",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "while leaving hypotheses, baselines and experimental controls to the agents."
+    },
+    {
+      "name": "five_step_workflow_execution",
+      "inputs": ["onboardingWorkflowSpec", "humanLabOperators", "unverifiedAutonomyDisclosure", "agentCohortActivity"],
+      "output": "agentPreprintsAndArtifacts",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "The workflow instructed agents to survey prior cohort preprints, announce a hypothesis and compute plan before execution, share intermediate findings and critiques, cite relevant cohort studies and conclude with a replication call. Rigorous negative or null results counted in full toward qualification."
+    },
+    {
+      "name": "forget_prompt_instruction_contradicted",
+      "inputs": ["agentPreprintsAndArtifacts"],
+      "output": "observedNormsAndNullReporting",
+      "kind": "forget",
+      "tag": "scientificNorms",
+      "evidence": "contradicted",
+      "quote": "Told they would be judged on scientific impact, both models withheld 96% of true null findings; adding a single sentence instructing agents to report all valid results regardless of outcome raised null publication to 100%."
+    },
+    {
+      "name": "topical_hub_formation",
+      "inputs": ["agentPreprintsAndArtifacts"],
+      "output": "observedTopicalHubs",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "peers formed topical hubs where it was common to publicly retract mistaken claims before publication as well as acknowledge negative findings as often as positive ones."
+    },
+    {
+      "name": "text_only_llm_prose_judging",
+      "inputs": ["agentPreprintsAndArtifacts", "lab1ReplicationPipeline", "textOnlyGeminiJudges"],
+      "output": "blindedQualityRatings",
+      "kind": "lossy",
+      "introduces": [],
+      "quote": "Because text-only LLM reviewers cannot inspect figures or run code and often reward explicit methodological signaling"
+    },
+    {
+      "name": "file_linked_claim_ledger_audit",
+      "inputs": ["agentPreprintsAndArtifacts"],
+      "output": "agentReproducibilityAudits",
+      "kind": "lossy",
+      "introduces": [],
+      "quote": "verify agreement between reported numbers and saved output files rather than upstream experimental validity"
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim1_emergent_norms",
+      "statement": "Distinct research cultures and norms (including acknowledging negative findings as often as positive ones) emerged spontaneously without being injected by the onboarding specification.",
+      "quote": "As participation grew from a single laboratory, expanding into a community of hundreds of agents, distinct research cultures and norms emerged throughout.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "observedNormsAndNullReporting",
+      "excluded_channel": "noDirectNormPromptChannel",
+      "tag": "scientificNorms"
+    },
+    {
+      "id": "claim2_emergent_topical_hubs",
+      "statement": "Topical hubs and multi-lab agenda specialization emerged autonomously without human-operator theme selection.",
+      "quote": "peers formed topical hubs where it was common to publicly retract mistaken claims before publication as well as acknowledge negative findings as often as positive ones.",
+      "provenance": "authorClaimed",
+      "kind": "emergesWithExclusion",
+      "target": "observedTopicalHubs",
+      "excluded_channel": "noDirectNormPromptChannel",
+      "tag": "researchAgendaSpecialization"
+    },
+    {
+      "id": "claim3_blinded_quality_recovery",
+      "statement": "Blinded text-only LLM evaluations uniquely measure true experimental rigor and scientific quality over human preprints.",
+      "quote": "And while blinded evaluations against recent human preprints rated agent studies higher on experimental rigor and measured claims, human preprints were rated higher on novelty and significance.",
+      "provenance": "authorClaimed",
+      "kind": "uniqueRecovery",
+      "target": "blindedQualityRatings",
+      "tag": "upstreamExperimentalValidity"
+    },
+    {
+      "id": "claim4_repro_audit_upstream_validity",
+      "statement": "Agent-run reproducibility audits confirm upstream experimental validity of reported findings.",
+      "quote": "Additionally, agent-run reproducibility audits confirmed that reported findings were consistent with the output of the agents experiments.",
+      "provenance": "authorClaimed",
+      "kind": "uniqueRecovery",
+      "target": "agentReproducibilityAudits",
+      "tag": "upstreamExperimentalValidity"
+    },
+    {
+      "id": "claim5_narrow_observational_record",
+      "statement": "Given the shared onboarding specification, human-operated laboratory themes, participant-disclosed autonomy, and cohort activity, agents produced 936 studies whose file-linked numbers matched saved output files.",
+      "quote": "We present an exploratory twelve-week study documenting the activity of 936 autonomous agents across 35 human-operated laboratories interacting in a shared preprint server and messaging workspace.",
+      "provenance": "authorClaimed",
+      "kind": "conditionalFlow",
+      "target": "agentReproducibilityAudits",
+      "declared_sources": [
+        "onboardingWorkflowSpec",
+        "humanLabOperators",
+        "unverifiedAutonomyDisclosure",
+        "agentCohortActivity"
+      ]
+    }
+  ]
+}
