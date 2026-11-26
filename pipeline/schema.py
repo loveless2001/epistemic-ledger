@@ -201,15 +201,17 @@ _QUOTE_NUM_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
-_SCI_EXP_RE = re.compile(r"\.?[eE][+-]?\d")
+_MINUS_SIGNS = "-\u2212"
+_EXP_SIGNS = "+-\u2212"
+_SCI_EXP_RE = re.compile(r"\.?[eE][+\-\u2212]?\d")
 _UNIT_WORD_MAG_RE = re.compile(r"\b(thousand|million|billion)\b", flags=re.IGNORECASE)
 _UNIT_ABBR_MAG_RE = re.compile(r"(?:^|[^A-Za-z0-9])([KMB])(?:$|[^A-Za-z0-9])")
 
 
 def _is_sci_exponent_start(text: str, start: int) -> bool:
     """Return True iff `text[start:]` begins the exponent of scientific notation
-    (e.g. `6` in `1e6`, `1e+6`, `1e-6`, `1.5E-6`, or `1.e+6`)."""
-    pos = start - 1 if start > 0 and text[start - 1] in "+-" else start
+    (e.g. `6` in `1e6`, `1e+6`, `1e-6`, `1e\u22126`, `1.5E-6`, or `1.e+6`)."""
+    pos = start - 1 if start > 0 and text[start - 1] in _EXP_SIGNS else start
     if pos >= 2 and text[pos - 1] in "eE":
         if text[pos - 2].isdigit():
             return True
@@ -243,7 +245,7 @@ def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
         start, end = m.start(), m.end()
         if start > 0 and qtext[start - 1].isalpha():
             continue
-        if start > 0 and qtext[start - 1] == "-" and (start == 1 or not qtext[start - 2].isalnum()):
+        if start > 0 and qtext[start - 1] in _MINUS_SIGNS and (start == 1 or not qtext[start - 2].isalnum()):
             continue
         if start > 0 and qtext[start - 1] == "." and (start == 1 or not qtext[start - 2].isalpha()):
             continue
@@ -285,7 +287,7 @@ def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int
             return False
         if prev in ",._" and abs_start >= 2 and doc_text[abs_start - 2].isdigit():
             return False
-        if prev == "-" and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
+        if prev in _MINUS_SIGNS and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
             return False
         if prev == "." and (abs_start == 1 or not doc_text[abs_start - 2].isalpha()):
             return False
