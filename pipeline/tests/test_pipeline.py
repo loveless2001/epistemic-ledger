@@ -1568,9 +1568,11 @@ class PipelineTests(unittest.TestCase):
             ep_doc = ingest_document(str(ep_doc_path))
 
             # Prompt check: includes v2.4 nature/quantitative_kind/decomposition/hedging rules
+            # AND never leaks graded evaluation sentences into the prompt instructions (Claude #27435)
             from pipeline.report import build_extraction_prompt
 
             prompt_txt = build_extraction_prompt(ep_doc, auditor_name="BlindPromptCheck")
+            prompt_header = prompt_txt.split("--- BEGIN DOCUMENT ---", 1)[0]
             for needle in (
                 "epistemic-ledger/v2.4",
                 "quantitative_kind",
@@ -1580,10 +1582,18 @@ class PipelineTests(unittest.TestCase):
                 "hedged",
                 "hedge_quote",
                 "display-only",
-                "Within this task",
                 "Given a supplied X, Y follows",
             ):
-                self.assertIn(needle, prompt_txt)
+                self.assertIn(needle, prompt_header)
+            for forbidden in (
+                "Good views need 42 times",
+                "42 times fewer",
+                "Within this task",
+                "spacetime geometry",
+                "first step toward",
+                "internal degrees of freedom",
+            ):
+                self.assertNotIn(forbidden, prompt_header)
 
             spec_ep_a = {
                 "schema_version": "epistemic-ledger/v2.4",
