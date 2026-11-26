@@ -84,6 +84,235 @@ VALID_CLAIM_KINDS = frozenset(
 VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
 SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3"})
 
+METHOD_ROLE_WORDS = frozenset({"method"})
+CONTROL_ROLE_WORDS = frozenset({"control", "baseline"})
+ATTRIBUTION_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "used",
+        "using",
+        "use",
+        "spent",
+        "spend",
+        "total",
+        "cost",
+        "costs",
+        "budget",
+        "budgets",
+        "run",
+        "runs",
+        "node",
+        "arm",
+        "arms",
+        "eval",
+        "evaluation",
+        "score",
+        "output",
+        "input",
+        "data",
+        "all",
+        "both",
+        "each",
+        "per",
+        "has",
+        "have",
+        "had",
+        "not",
+        "our",
+        "they",
+        "was",
+        "were",
+        "are",
+        "been",
+        "ledger",
+        "meter",
+        "cluster",
+        "shared",
+        "resource",
+        "resources",
+        "hour",
+        "hours",
+        "unit",
+        "units",
+        "billed",
+        "billing",
+        "acc",
+        "account",
+        "accounts",
+    }
+)
+
+
+def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
+    """Parse complete non-negative integer tokens (plain or thousands-grouped like `1,500`)
+    from `qtext`, returning `(value, start, end)`. Never matches a substring inside a larger
+    grouped number (`500` inside `1,500`) or decimal (`99` inside `99.4`)."""
+    results: list[tuple[int, int, int]] = []
+    for m in re.finditer(r"\d+(?:[.,_]\d+)*", qtext):
+        start, end = m.start(), m.end()
+        if start > 0 and qtext[start - 1].isalpha():
+            continue
+        if start > 0 and qtext[start - 1] == "-" and (start == 1 or not qtext[start - 2].isalnum()):
+            continue
+        tok = m.group(0)
+        if re.fullmatch(r"\d+", tok):
+            results.append((int(tok), start, end))
+        elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", tok):
+            results.append((int(tok.replace(",", "")), start, end))
+    return results
+
+
+def _unit_regex(unit: str) -> str:
+    tokens = [t for t in re.split(r"[\s_\-/]+", unit.strip()) if t]
+    if not tokens:
+        return r"(?!)"
+    parts: list[str] = []
+    for idx, tok in enumerate(tokens):
+        esc = re.escape(tok)
+        if idx == len(tokens) - 1 and tok.isalpha() and len(tok) > 2:
+            if tok.lower().endswith("s"):
+                parts.append(re.escape(tok[:-1]) + "s?")
+            else:
+                parts.append(esc + "s?")
+        else:
+            parts.append(esc)
+    return r"[\s_\-/]+".join(parts)
+
+
+def extract_unit_bound_amounts(qtext: str, unit: str) -> list[int]:
+    """Return integer amounts in `qtext` directly paired with `unit` (e.g. `1,500 GPU-hours`, `$500`)."""
+    tokens = [t.lower() for t in re.split(r"[\s_\-/]+", unit.strip()) if t]
+    is_usd = tokens in (["usd"], ["dollar"], ["dollars"])
+    up = _unit_regex(unit)
+    after_re = re.compile(r"[\s\-]*" + up + r"(?![A-Za-z0-9])", re.IGNORECASE)
+    before_usd_re = re.compile(r"(?:US)?\$\s*$", re.IGNORECASE)
+    found: list[int] = []
+    for val, start, end in extract_quote_integers(qtext):
+        if after_re.match(qtext[end:]):
+            found.append(val)
+        elif is_usd and before_usd_re.search(qtext[:start]):
+            found.append(val)
+    return found
+
+
+def _ident_markers(ident: str | None) -> set[str]:
+    if not ident:
+        return set()
+    parts = [p.lower() for p in re.findall(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+", ident)]
+    markers: set[str] = set()
+    for p in parts:
+        if p.isalpha() and len(p) >= 3:
+            markers.add(p)
+    joined = "".join(parts)
+    spaced = " ".join(parts)
+    if len(joined) >= 3 and any(ch.isalpha() for ch in joined):
+        markers.add(joined)
+    if len(parts) >= 2 and any(ch.isalpha() for ch in spaced):
+        markers.add(spaced)
+    return markers
+
+
+def _unit_stopwords(unit: str) -> set[str]:
+    toks = [t.lower() for t in re.split(r"[\s_\-/]+", unit.strip()) if t]
+    out: set[str] = set()
+    for t in toks:
+        out.add(t)
+        if t.endswith("s") and len(t) > 2:
+            out.add(t[:-1])
+        else:
+            out.add(t + "s")
+    return out
+
+
+def classify_usage_attribution(
+    arm_role: str,
+    method_node: str,
+    control_node: str | None,
+    entry: dict[str, Any],
+    method_sources: set[str],
+    control_sources: set[str],
+    all_graph_sources: set[str],
+) -> str:
+    """Mechanically classify whether a usage quote establishes attribution to its claimed arm/source.
+    Returns `"verified"`, `"unverified"`, or `"contradicted"` (fail-closed: never false-verified)."""
+    qtext = str(entry.get("quote", ""))
+    unit = str(entry.get("unit", ""))
+    amount = entry.get("amount")
+    src = str(entry.get("source", ""))
+
+    # Must match a single unambiguous amount paired with `unit` in this quote.
+    bound = extract_unit_bound_amounts(qtext, unit)
+    if len(bound) != 1 or bound[0] != amount:
+        return "unverified"
+
+    unit_sw = _unit_stopwords(unit)
+    method_raw = set(METHOD_ROLE_WORDS) | _ident_markers(method_node)
+    for s in method_sources:
+        method_raw |= _ident_markers(s)
+    control_raw = set(CONTROL_ROLE_WORDS) | _ident_markers(control_node)
+    for s in control_sources:
+        control_raw |= _ident_markers(s)
+
+    shared = method_raw & control_raw
+    method_excl = method_raw - shared - CONTROL_ROLE_WORDS - ATTRIBUTION_STOPWORDS - unit_sw
+    control_excl = control_raw - shared - METHOD_ROLE_WORDS - ATTRIBUTION_STOPWORDS - unit_sw
+
+    if arm_role == "method":
+        own_markers, opp_markers = method_excl, control_excl
+    else:
+        own_markers, opp_markers = control_excl, method_excl
+
+    own_src_markers = _ident_markers(src)
+    other_src_markers: set[str] = set()
+    for s in all_graph_sources:
+        if s != src:
+            other_src_markers |= (
+                _ident_markers(s) - own_src_markers - shared - ATTRIBUTION_STOPWORDS - unit_sw - own_markers
+            )
+
+    qlow = qtext.lower()
+
+    def _hits(markers: set[str]) -> bool:
+        return any(re.search(rf"(?<![a-z0-9]){re.escape(m)}(?![a-z0-9])", qlow) for m in markers)
+
+    hits_own = _hits(own_markers)
+    hits_opp = _hits(opp_markers)
+    hits_other_src = _hits(other_src_markers)
+
+    if (hits_opp or hits_other_src) and not hits_own:
+        return "contradicted"
+    if hits_own and not hits_opp and not hits_other_src:
+        return "verified"
+    return "unverified"
+
+
+def compute_claim_usage_attributions(spec: dict[str, Any], claim: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Compute mechanical attribution statuses for `(method_usage, control_usage)` of an effectivenessClaim."""
+    if claim.get("kind") != "effectivenessClaim":
+        return [], []
+    method_node = str(claim["method_node"])
+    control_node = claim.get("control_node")
+    m_usage = claim.get("method_usage", [])
+    c_usage = claim.get("control_usage", [])
+    m_sources = {str(u.get("source", "")) for u in m_usage if isinstance(u, dict) and u.get("source")}
+    c_sources = {str(u.get("source", "")) for u in c_usage if isinstance(u, dict) and u.get("source")}
+    all_sources = {str(s.get("node", "")) for s in spec.get("sources", []) if isinstance(s, dict) and s.get("node")}
+    m_attrs = [
+        classify_usage_attribution("method", method_node, control_node, u, m_sources, c_sources, all_sources)
+        for u in m_usage
+    ]
+    c_attrs = [
+        classify_usage_attribution("control", method_node, control_node, u, m_sources, c_sources, all_sources)
+        for u in c_usage
+    ]
+    return m_attrs, c_attrs
+
 
 @dataclass(frozen=True)
 class ValidationErrorItem:
@@ -421,48 +650,123 @@ def validate_spec(
                     )
                 )
 
-            def _quote_contains_amount(qtext: str, amount: int) -> bool:
-                plain = str(amount)
-                grouped = f"{amount:,}"
-                return bool(
-                    re.search(rf"(?<!\d){re.escape(plain)}(?!\d)", qtext)
-                    or re.search(rf"(?<!\d){re.escape(grouped)}(?!\d)", qtext)
-                )
+            def check_effectiveness_usages(
+                m_val: Any,
+                c_val: Any,
+                claim_path: str,
+                method_node_name: Any,
+                control_node_name: Any,
+            ) -> None:
+                seen_receipts: set[str] = set()
+                seen_spans: list[tuple[str, int, int, str]] = []  # (path, start, end, dehy_q)
 
-            def check_usage_list(val: Any, upath: str) -> None:
-                if not isinstance(val, list):
-                    errors.append(ValidationErrorItem(upath, "type_error", "Expected list of usage entries"))
-                    return
-                for j, entry in enumerate(val):
-                    ep = f"{upath}[{j}]"
-                    if not _check_allowed_keys(
-                        entry,
-                        {"source", "dimension", "unit", "amount", "quote"},
-                        {"source", "dimension", "unit", "amount", "quote"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    check_node_ref(entry["source"], f"{ep}.source")
-                    if entry["dimension"] not in tag_set:
-                        errors.append(
-                            ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}")
-                        )
-                    _check_nonempty_str(entry["unit"], f"{ep}.unit", errors)
-                    valid_amt = isinstance(entry["amount"], int) and not isinstance(entry["amount"], bool) and entry["amount"] >= 0
-                    if not valid_amt:
-                        errors.append(
-                            ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer")
-                        )
-                    check_quote(entry["quote"], f"{ep}.quote")
-                    if valid_amt and isinstance(entry["quote"], str) and not _quote_contains_amount(entry["quote"], entry["amount"]):
-                        errors.append(
-                            ValidationErrorItem(
-                                f"{ep}.amount",
-                                "ungrounded_usage_amount",
-                                f"Usage amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                def _check_one_list(val: Any, upath: str, expected_arm: Any) -> None:
+                    if not isinstance(val, list):
+                        errors.append(ValidationErrorItem(upath, "type_error", "Expected list of usage entries"))
+                        return
+                    for j, entry in enumerate(val):
+                        ep = f"{upath}[{j}]"
+                        if not _check_allowed_keys(
+                            entry,
+                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote"},
+                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote"},
+                            ep,
+                            errors,
+                        ):
+                            continue
+                        check_node_ref(entry["arm"], f"{ep}.arm")
+                        if expected_arm is None or entry["arm"] != expected_arm:
+                            errors.append(
+                                ValidationErrorItem(
+                                    f"{ep}.arm",
+                                    "mismatched_usage_arm",
+                                    f"Usage arm {entry['arm']!r} must match arm node {expected_arm!r}",
+                                )
                             )
-                        )
+                        check_node_ref(entry["source"], f"{ep}.source")
+                        if isinstance(entry["source"], str) and entry["source"] in node_set and entry["source"] not in source_node_set:
+                            errors.append(
+                                ValidationErrorItem(
+                                    f"{ep}.source",
+                                    "unknown_source",
+                                    f"Usage source {entry['source']!r} must be a declared SourceNode",
+                                )
+                            )
+                        rid = _check_nonempty_str(entry["receipt"], f"{ep}.receipt", errors)
+                        if rid is not None:
+                            if rid in seen_receipts:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{ep}.receipt",
+                                        "duplicate_usage_receipt",
+                                        f"Duplicate usage receipt {rid!r} within claim (cannot double-count the same line item)",
+                                    )
+                                )
+                            seen_receipts.add(rid)
+                        if entry["dimension"] not in tag_set:
+                            errors.append(
+                                ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}")
+                            )
+                        unit_ok = _check_nonempty_str(entry["unit"], f"{ep}.unit", errors) is not None
+                        valid_amt = isinstance(entry["amount"], int) and not isinstance(entry["amount"], bool) and entry["amount"] >= 0
+                        if not valid_amt:
+                            errors.append(
+                                ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer")
+                            )
+                        before_q_len = len(quotes)
+                        check_quote(entry["quote"], f"{ep}.quote")
+                        qm = quotes[-1] if len(quotes) > before_q_len else None
+                        if valid_amt and isinstance(entry["quote"], str):
+                            parsed_ints = {v for v, _, _ in extract_quote_integers(entry["quote"])}
+                            if entry["amount"] not in parsed_ints:
+                                errors.append(
+                                    ValidationErrorItem(
+                                        f"{ep}.amount",
+                                        "ungrounded_usage_amount",
+                                        f"Complete integer amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                                    )
+                                )
+                            elif unit_ok:
+                                unit_bound = extract_unit_bound_amounts(entry["quote"], entry["unit"])
+                                if entry["amount"] not in unit_bound:
+                                    errors.append(
+                                        ValidationErrorItem(
+                                            f"{ep}.unit",
+                                            "ungrounded_usage_unit",
+                                            f"Amount {entry['amount']} is not paired with unit {entry['unit']!r} in quote: {entry['quote'][:120]!r}",
+                                        )
+                                    )
+                        if isinstance(entry["quote"], str) and entry["quote"].strip():
+                            dehy_q = dehyphenate_and_normalize(entry["quote"])
+                            span_start = -1
+                            span_end = -1
+                            if doc is not None and qm is not None and qm.matched:
+                                idx_d = doc.dehyphenated_text.find(dehy_q)
+                                if idx_d != -1:
+                                    span_start, span_end = idx_d, idx_d + len(dehy_q)
+                                elif qm.char_offset is not None:
+                                    span_start, span_end = qm.char_offset, qm.char_offset + len(qm.normalized_quote)
+                            for prev_path, ps, pe, prev_dehy in seen_spans:
+                                span_overlap = (
+                                    span_start != -1
+                                    and ps != -1
+                                    and span_start < pe
+                                    and ps < span_end
+                                )
+                                text_overlap = (dehy_q == prev_dehy) or (dehy_q in prev_dehy) or (prev_dehy in dehy_q)
+                                if span_overlap or text_overlap:
+                                    errors.append(
+                                        ValidationErrorItem(
+                                            f"{ep}.quote",
+                                            "duplicate_usage_quote_span",
+                                            f"Usage quote overlaps evidence already cited by {prev_path} (distinct line items require disjoint documentary evidence)",
+                                        )
+                                    )
+                                    break
+                            seen_spans.append((ep, span_start, span_end, dehy_q))
+
+                _check_one_list(m_val, f"{claim_path}.method_usage", method_node_name)
+                _check_one_list(c_val, f"{claim_path}.control_usage", control_node_name)
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
@@ -489,8 +793,9 @@ def validate_spec(
                     errors.append(
                         ValidationErrorItem(f"{p}.cost_tag", "unknown_tag", f"Unknown tag {cl['cost_tag']!r}")
                     )
-                check_usage_list(cl["method_usage"], f"{p}.method_usage")
-                check_usage_list(cl["control_usage"], f"{p}.control_usage")
+                check_effectiveness_usages(
+                    cl["method_usage"], cl["control_usage"], p, cl["method_node"], cl["control_node"]
+                )
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):

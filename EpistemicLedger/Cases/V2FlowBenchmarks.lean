@@ -526,8 +526,8 @@ def unevenQuantitiesSameCluster : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 100⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 1⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "r_m1", .resourceCost, "gpu_hours", 100, .verified⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "r_c1", .resourceCost, "gpu_hours", 1, .verified⟩]
 
 /-- Case 2 (Codex P1-1 converse + post-hoc meter): Two separate accounts both spending 500 USD -> ADMISSIBLE! -/
 def separateAccountsEqualDollars : FlowClaim Node Tag where
@@ -543,8 +543,8 @@ def separateAccountsEqualDollars : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.accountA, .resourceCost, "USD", 500⟩]
-    [⟨.accountB, .resourceCost, "USD", 500⟩]
+    [⟨.autonomousSocietyRun, .accountA, "r_a1", .resourceCost, "USD", 500, .verified⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "r_b1", .resourceCost, "USD", 500, .verified⟩]
 
 /-- Case 3 (Codex P1-2): `forget .resourceCost .shown` CANNOT erase physically spent human hours! -/
 def forgetShownCannotEraseCost : FlowClaim Node Tag where
@@ -560,8 +560,8 @@ def forgetShownCannotEraseCost : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "r_m2", .resourceCost, "gpu_hours", 10, .verified⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "r_c2", .resourceCost, "gpu_hours", 10, .verified⟩]
 
 /-- Case 4 (Codex P1-3): Control arm derived from method output -> REJECTED (`dependentControlArm`)! -/
 def controlDerivedFromMethod : FlowClaim Node Tag where
@@ -575,8 +575,8 @@ def controlDerivedFromMethod : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .clonedControlArm) (some .postHocBillingMeter) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "r_m3", .resourceCost, "gpu_hours", 10, .verified⟩]
+    [⟨.clonedControlArm, .sharedGpuCluster, "r_c3", .resourceCost, "gpu_hours", 10, .verified⟩]
 
 /-- Case 5 (Codex R2 P1-2): Ledger cloned solely from control output (no direct metering path) -> REJECTED! -/
 def ledgerClonedFromControlOnly : FlowClaim Node Tag where
@@ -590,8 +590,8 @@ def ledgerClonedFromControlOnly : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
+    [⟨.autonomousSocietyRun, .sharedGpuCluster, "r_m4", .resourceCost, "gpu_hours", 10, .verified⟩]
+    [⟨.humanPlusAiControlRun, .sharedGpuCluster, "r_c4", .resourceCost, "gpu_hours", 10, .verified⟩]
 
 /-- Case 6 (Society of AI Scientists macro): no control, no ledger, unquantified budget -> REJECTED! -/
 def societyNoControlNoCost : FlowClaim Node Tag where
@@ -602,6 +602,36 @@ def societyNoControlNoCost : FlowClaim Node Tag where
      [⟨"run_936_agents", [.sharedGpuCluster, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
       ⟨"count_papers", [.autonomousSocietyRun], .rawStudyCountReport, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost [] []
+
+/-- Case 7 (Codex #27315 Bug 3): Triple-counting the same control receipt (500 x 3 = 1500) -> REJECTED! -/
+def tripleCountedControlReceipt : FlowClaim Node Tag where
+  statement := "Control repeats the exact same 500 GPU-hour receipt three times to match 1,500."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "r_m1500", .resourceCost, "GPU-hours", 1500, .verified⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "r_c500", .resourceCost, "GPU-hours", 500, .verified⟩,
+     ⟨.humanPlusAiControlRun, .accountB, "r_c500", .resourceCost, "GPU-hours", 500, .verified⟩,
+     ⟨.humanPlusAiControlRun, .accountB, "r_c500", .resourceCost, "GPU-hours", 500, .verified⟩]
+
+/-- Case 8 (Codex #27315 Bug 2): Unverified/contradicted arm attribution CANNOT certify matched budget! -/
+def unverifiedAttributionClaim : FlowClaim Node Tag where
+  statement := "Free-text quote does not establish which arm incurred the 500 GPU-hours."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "r_a_unv", .resourceCost, "GPU-hours", 500, .unverified⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "r_b_ver", .resourceCost, "GPU-hours", 500, .verified⟩]
+
+/-- Case 9 (Honest multi-item sum): Two distinct verified receipts (500 + 1000) match control 1500 -> ADMISSIBLE! -/
+def distinctReceiptsMultiItemSum : FlowClaim Node Tag where
+  statement := "Two distinct verified method receipts (500 + 1000) match verified control 1500."
+  graph := separateAccountsEqualDollars.graph
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
+    [⟨.autonomousSocietyRun, .accountA, "r_m_stage1", .resourceCost, "GPU-hours", 500, .verified⟩,
+     ⟨.autonomousSocietyRun, .accountA, "r_m_stage2", .resourceCost, "GPU-hours", 1000, .verified⟩]
+    [⟨.humanPlusAiControlRun, .accountB, "r_c_total", .resourceCost, "GPU-hours", 1500, .verified⟩]
 
 theorem uneven_quantities_rejected :
     flowVerdict unevenQuantitiesSameCluster = .rejected ∧
@@ -635,6 +665,22 @@ theorem society_rejected_no_control_no_cost :
     flowVerdict societyNoControlNoCost = .rejected ∧
     FlowFinding.missingMatchedControl Node.autonomousSocietyRun ∈ auditFlow societyNoControlNoCost ∧
     FlowFinding.missingCostAccounting Node.autonomousSocietyRun Tag.resourceCost ∈ auditFlow societyNoControlNoCost := by
+  decide
+
+theorem triple_counted_control_receipt_rejected :
+    flowVerdict tripleCountedControlReceipt = .rejected ∧
+    FlowFinding.duplicateUsageReceipt Node.humanPlusAiControlRun "r_c500" Tag.resourceCost
+      ∈ auditFlow tripleCountedControlReceipt := by
+  decide
+
+theorem unverified_attribution_rejected :
+    flowVerdict unverifiedAttributionClaim = .rejected ∧
+    FlowFinding.unverifiedUsageAttribution Node.autonomousSocietyRun Node.accountA "r_a_unv"
+      Tag.resourceCost UsageAttribution.unverified ∈ auditFlow unverifiedAttributionClaim := by
+  decide
+
+theorem distinct_receipts_multi_item_sum_admissible :
+    flowVerdict distinctReceiptsMultiItemSum = .admissible := by
   decide
 
 end EffectivenessTests

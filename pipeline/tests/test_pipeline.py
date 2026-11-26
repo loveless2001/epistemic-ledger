@@ -502,156 +502,228 @@ class PipelineTests(unittest.TestCase):
         (4) control derived from method -> dependentControlArm,
         (5) empty usage lists -> unquantifiedBudget,
         (6) reviewerStressTest provenance recorded cleanly in report."""
-        doc = ingest_document(str(SAMPLE_DOC))
-        q = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
-        q_num = "We investigate whether 3D spatial structure emerges in neural representations trained without 3D prediction targets across two experimental regimes."
-        spec = {
-            "schema_version": "epistemic-ledger/v2.3",
-            "auditor": "CostAuditorV23",
-            "paper_title": "Tier-2 v2.3 Cost & Control Test",
-            "nodes": [
-                "sharedCluster",
-                "accountA",
-                "accountB",
-                "humanHours",
-                "forgottenHours",
-                "methodCluster",
-                "ctrlCluster",
-                "methodForgetHours",
-                "clonedCtrl",
-                "methodAccA",
-                "ctrlAccB",
-                "meterCluster",
-                "postHocMeter",
-                "clonedCtrlLedger",
-                "evalUneven",
-                "evalEqualSep",
-                "evalForgotten",
-                "evalDependent",
-                "evalUnquantified",
-                "evalClonedLedger",
-            ],
-            "tags": ["resourceCost"],
-            "sources": [
-                {"node": "sharedCluster", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-                {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-                {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-                {"node": "humanHours", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q},
-            ],
-            "ops": [
-                {"name": "run_m_cluster", "inputs": ["sharedCluster"], "output": "methodCluster", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "run_c_cluster", "inputs": ["sharedCluster"], "output": "ctrlCluster", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "forget_hours", "inputs": ["humanHours"], "output": "forgottenHours", "kind": "forget", "tag": "resourceCost", "evidence": "shown", "quote": q},
-                {"name": "run_m_forgot", "inputs": ["sharedCluster", "forgottenHours"], "output": "methodForgetHours", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "clone_ctrl", "inputs": ["methodCluster"], "output": "clonedCtrl", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "run_m_accA", "inputs": ["accountA"], "output": "methodAccA", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "bill_cluster", "inputs": ["sharedCluster"], "output": "meterCluster", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "post_hoc_bill", "inputs": ["accountA", "accountB", "methodAccA", "ctrlAccB"], "output": "postHocMeter", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "clone_ctrl_ledger", "inputs": ["ctrlCluster"], "output": "clonedCtrlLedger", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_uneven", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUneven", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_equal", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalEqualSep", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_forgot", "inputs": ["methodForgetHours", "ctrlCluster", "meterCluster"], "output": "evalForgotten", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_dep", "inputs": ["methodCluster", "clonedCtrl", "meterCluster"], "output": "evalDependent", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_unq", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUnquantified", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_cloned_l", "inputs": ["methodCluster", "ctrlCluster", "clonedCtrlLedger"], "output": "evalClonedLedger", "kind": "transform", "introduces": [], "quote": q},
-            ],
-            "claims": [
-                {
-                    "id": "unevenSameCluster",
-                    "statement": "3 vs 2 units on same cluster.",
-                    "quote": q_num,
-                    "provenance": "reviewerStressTest",
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodCluster",
-                    "evaluation_node": "evalUneven",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "meterCluster",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 2, "quote": "purely 2D patch-matching loss objective"}],
-                },
-                {
-                    "id": "equalSeparateAccountsPostHoc",
-                    "statement": "Two separate accounts both spending 3 units, post-hoc metered.",
-                    "quote": q,
-                    "provenance": "authorClaimed",
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodAccA",
-                    "evaluation_node": "evalEqualSep",
-                    "control_node": "ctrlAccB",
-                    "cost_ledger_node": "postHocMeter",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "accountA", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "accountB", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                },
-                {
-                    "id": "forgetCannotEraseSpentHours",
-                    "statement": "Forget .shown cannot erase humanHours spent during run.",
-                    "quote": q,
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodForgetHours",
-                    "evaluation_node": "evalForgotten",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "meterCluster",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                },
-                {
-                    "id": "dependentControlRejected",
-                    "statement": "Control cloned from method output.",
-                    "quote": q,
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodCluster",
-                    "evaluation_node": "evalDependent",
-                    "control_node": "clonedCtrl",
-                    "cost_ledger_node": "meterCluster",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                },
-                {
-                    "id": "clonedControlLedgerRejected",
-                    "statement": "Fake ledger cloned solely from control output.",
-                    "quote": q,
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodCluster",
-                    "evaluation_node": "evalClonedLedger",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "clonedCtrlLedger",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                },
-                {
-                    "id": "unquantifiedBudgetRejected",
-                    "statement": "Missing usage numbers cannot certify matched budget.",
-                    "quote": q,
-                    "kind": "effectivenessClaim",
-                    "method_node": "methodCluster",
-                    "evaluation_node": "evalUnquantified",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "meterCluster",
-                    "cost_tag": "resourceCost",
-                    "method_usage": [],
-                    "control_usage": [],
-                },
-            ],
-        }
-        self.assertEqual(validate_spec(spec, doc=doc)[0], [])
-
-        # Codex R2 P1-1: fabricated amount 1234567 not in verbatim quote MUST fail grounding!
-        fab = copy.deepcopy(spec)
-        fab["claims"][1]["method_usage"][0]["amount"] = 1234567
-        fab_errs, _ = validate_spec(fab, doc=doc)
-        self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in fab_errs))
-
+        cost_doc_text = (
+            "Compute Accounting Evaluation Study.\n"
+            "The method used 1,500 GPU-hours on accountA during evaluation.\n"
+            "The control used 500 GPU-hours on accountB during evaluation.\n"
+            "On the shared cluster, the method used 1,500 GPU-hours.\n"
+            "On the shared cluster, the control used 500 GPU-hours.\n"
+            "On the shared cluster, the method used 500 GPU-hours.\n"
+            "On the shared cluster, the baseline control used 500 GPU-hours.\n"
+            "Specifically, the method used 500 GPU-hours on accountA.\n"
+            "Separately, the control used 500 GPU-hours on accountB.\n"
+            "For multi-stage billing, stage 1 of the method used 500 GPU-hours.\n"
+            "Stage 2 of the method used 1,000 GPU-hours.\n"
+            "The control baseline used 1,500 GPU-hours in total.\n"
+            "An unattributed log line reports 500 GPU-hours were billed on Tuesday.\n"
+            "Another unattributed log line reports 500 GPU-hours were billed on Wednesday.\n"
+            "The method ran for 500 seconds in a warmup probe.\n"
+            "The baseline used 500 GPU-hours in a separate replication.\n"
+        )
         with tempfile.TemporaryDirectory() as tmp:
+            cost_doc_path = Path(tmp) / "cost_study.md"
+            cost_doc_path.write_text(cost_doc_text, encoding="utf-8")
+            doc = ingest_document(str(cost_doc_path))
+            q_hdr = "Compute Accounting Evaluation Study."
+            q_m1500 = "The method used 1,500 GPU-hours on accountA during evaluation."
+            q_c500 = "The control used 500 GPU-hours on accountB during evaluation."
+            q_cl_m1500 = "On the shared cluster, the method used 1,500 GPU-hours."
+            q_cl_c500 = "On the shared cluster, the control used 500 GPU-hours."
+            q_cl_m500 = "On the shared cluster, the method used 500 GPU-hours."
+            q_cl_c500_2 = "On the shared cluster, the baseline control used 500 GPU-hours."
+            q_m500 = "Specifically, the method used 500 GPU-hours on accountA."
+            q_c500_b = "Separately, the control used 500 GPU-hours on accountB."
+            q_m_s1 = "For multi-stage billing, stage 1 of the method used 500 GPU-hours."
+            q_m_s2 = "Stage 2 of the method used 1,000 GPU-hours."
+            q_c1500 = "The control baseline used 1,500 GPU-hours in total."
+
+            spec = {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": "CostAuditorV23",
+                "paper_title": "Tier-2 v2.3.2 Cost & Control Test",
+                "nodes": [
+                    "sharedCluster",
+                    "accountA",
+                    "accountB",
+                    "humanHours",
+                    "forgottenHours",
+                    "methodCluster",
+                    "ctrlCluster",
+                    "methodForgetHours",
+                    "clonedCtrl",
+                    "methodAccA",
+                    "ctrlAccB",
+                    "meterCluster",
+                    "postHocMeter",
+                    "clonedCtrlLedger",
+                    "evalUneven",
+                    "evalEqualSep",
+                    "evalMultiStage",
+                    "evalForgotten",
+                    "evalDependent",
+                    "evalUnquantified",
+                    "evalClonedLedger",
+                ],
+                "tags": ["resourceCost"],
+                "sources": [
+                    {"node": "sharedCluster", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
+                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_m1500},
+                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_c500},
+                    {"node": "humanHours", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_hdr},
+                ],
+                "ops": [
+                    {"name": "run_m_cluster", "inputs": ["sharedCluster"], "output": "methodCluster", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "run_c_cluster", "inputs": ["sharedCluster"], "output": "ctrlCluster", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "forget_hours", "inputs": ["humanHours"], "output": "forgottenHours", "kind": "forget", "tag": "resourceCost", "evidence": "shown", "quote": q_hdr},
+                    {"name": "run_m_forgot", "inputs": ["sharedCluster", "forgottenHours"], "output": "methodForgetHours", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "clone_ctrl", "inputs": ["methodCluster"], "output": "clonedCtrl", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "run_m_accA", "inputs": ["accountA"], "output": "methodAccA", "kind": "transform", "introduces": [], "quote": q_m1500},
+                    {"name": "run_c_accB", "inputs": ["accountB"], "output": "ctrlAccB", "kind": "transform", "introduces": [], "quote": q_c500},
+                    {"name": "bill_cluster", "inputs": ["sharedCluster"], "output": "meterCluster", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "post_hoc_bill", "inputs": ["accountA", "accountB", "methodAccA", "ctrlAccB"], "output": "postHocMeter", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "clone_ctrl_ledger", "inputs": ["ctrlCluster"], "output": "clonedCtrlLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_uneven", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUneven", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_equal", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalEqualSep", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_multi", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalMultiStage", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_forgot", "inputs": ["methodForgetHours", "ctrlCluster", "meterCluster"], "output": "evalForgotten", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_dep", "inputs": ["methodCluster", "clonedCtrl", "meterCluster"], "output": "evalDependent", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_unq", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUnquantified", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "e_cloned_l", "inputs": ["methodCluster", "ctrlCluster", "clonedCtrlLedger"], "output": "evalClonedLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
+                ],
+                "claims": [
+                    {
+                        "id": "unevenSameCluster",
+                        "statement": "1,500 vs 500 GPU-hours on same cluster.",
+                        "quote": q_m1500,
+                        "provenance": "reviewerStressTest",
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodCluster",
+                        "evaluation_node": "evalUneven",
+                        "control_node": "ctrlCluster",
+                        "cost_ledger_node": "meterCluster",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "m_1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_cl_m1500}
+                        ],
+                        "control_usage": [
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "c_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500}
+                        ],
+                    },
+                    {
+                        "id": "equalSeparateAccountsPostHoc",
+                        "statement": "Two separate accounts both spending 500 GPU-hours, post-hoc metered.",
+                        "quote": q_m500,
+                        "provenance": "authorClaimed",
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodAccA",
+                        "evaluation_node": "evalEqualSep",
+                        "control_node": "ctrlAccB",
+                        "cost_ledger_node": "postHocMeter",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_500_a", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m500}
+                        ],
+                        "control_usage": [
+                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "c_500_b", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500_b}
+                        ],
+                    },
+                    {
+                        "id": "distinctMultiStageSumAdmissible",
+                        "statement": "Two distinct verified method receipts (500 + 1,000) match 1,500 control GPU-hours.",
+                        "quote": q_c1500,
+                        "provenance": "authorClaimed",
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodAccA",
+                        "evaluation_node": "evalMultiStage",
+                        "control_node": "ctrlAccB",
+                        "cost_ledger_node": "postHocMeter",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_s1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m_s1},
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_s2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1000, "quote": q_m_s2},
+                        ],
+                        "control_usage": [
+                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "c_1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_c1500}
+                        ],
+                    },
+                    {
+                        "id": "forgetCannotEraseSpentHours",
+                        "statement": "Forget .shown cannot erase humanHours spent during run.",
+                        "quote": q_hdr,
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodForgetHours",
+                        "evaluation_node": "evalForgotten",
+                        "control_node": "ctrlCluster",
+                        "cost_ledger_node": "meterCluster",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodForgetHours", "source": "sharedCluster", "receipt": "mf_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                        ],
+                        "control_usage": [
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "cf_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                        ],
+                    },
+                    {
+                        "id": "dependentControlRejected",
+                        "statement": "Control cloned from method output.",
+                        "quote": q_hdr,
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodCluster",
+                        "evaluation_node": "evalDependent",
+                        "control_node": "clonedCtrl",
+                        "cost_ledger_node": "meterCluster",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "md_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                        ],
+                        "control_usage": [
+                            {"arm": "clonedCtrl", "source": "sharedCluster", "receipt": "cd_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                        ],
+                    },
+                    {
+                        "id": "clonedControlLedgerRejected",
+                        "statement": "Fake ledger cloned solely from control output.",
+                        "quote": q_hdr,
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodCluster",
+                        "evaluation_node": "evalClonedLedger",
+                        "control_node": "ctrlCluster",
+                        "cost_ledger_node": "clonedCtrlLedger",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "ml_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                        ],
+                        "control_usage": [
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "cl_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                        ],
+                    },
+                    {
+                        "id": "unquantifiedBudgetRejected",
+                        "statement": "Missing usage numbers cannot certify matched budget.",
+                        "quote": q_hdr,
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodCluster",
+                        "evaluation_node": "evalUnquantified",
+                        "control_node": "ctrlCluster",
+                        "cost_ledger_node": "meterCluster",
+                        "cost_tag": "resourceCost",
+                        "method_usage": [],
+                        "control_usage": [],
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec, doc=doc)[0], [])
+
+            # Codex R2 P1-1: fabricated amount 1234567 not in verbatim quote MUST fail grounding!
+            fab = copy.deepcopy(spec)
+            fab["claims"][1]["method_usage"][0]["amount"] = 1234567
+            fab_errs, _ = validate_spec(fab, doc=doc)
+            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in fab_errs))
+
             sp = Path(tmp) / "v23.json"
             out = Path(tmp) / "out"
             sp.write_text(json.dumps(spec), encoding="utf-8")
-            rc = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(sp), "--out", str(out)])
+            rc = cli_main(["run", "--doc", str(cost_doc_path), "--spec", str(sp), "--out", str(out)])
             self.assertEqual(rc, 0)
             rep = json.loads((out / "CostAuditorV23_report.json").read_text(encoding="utf-8"))
             md = (out / "CostAuditorV23_report.md").read_text(encoding="utf-8")
@@ -662,6 +734,8 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["unevenSameCluster"]["findings"]], ["unmatchedControlBudget"])
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["verdict"], "admissible")
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["findings"], [])
+            self.assertEqual(by_id["distinctMultiStageSumAdmissible"]["verdict"], "admissible")
+            self.assertEqual(by_id["distinctMultiStageSumAdmissible"]["findings"], [])
             self.assertEqual(by_id["forgetCannotEraseSpentHours"]["verdict"], "rejected")
             self.assertIn("unaccountedCostSource", [f["type"] for f in by_id["forgetCannotEraseSpentHours"]["findings"]])
             self.assertEqual(by_id["dependentControlRejected"]["verdict"], "rejected")
@@ -678,13 +752,13 @@ class PipelineTests(unittest.TestCase):
             s_cmp_b = copy.deepcopy(s_cmp_a)
             s_cmp_b["auditor"] = "CmpB"
             s_cmp_b["claims"][0]["provenance"] = "reviewerStressTest"
-            s_cmp_b["claims"][0]["method_usage"][0]["unit"] = "other_units"
-            s_cmp_b["claims"][0]["control_usage"][0]["unit"] = "other_units"
+            s_cmp_b["claims"][0]["method_usage"][0]["unit"] = "gpu_hours"
+            s_cmp_b["claims"][0]["control_usage"][0]["unit"] = "gpu_hours"
             pa, pb = Path(tmp) / "ca.json", Path(tmp) / "cb.json"
             pa.write_text(json.dumps(s_cmp_a), encoding="utf-8")
             pb.write_text(json.dumps(s_cmp_b), encoding="utf-8")
             out_cmp = Path(tmp) / "cmp_v23"
-            rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)])
+            rc_cmp = cli_main(["compare", "--doc", str(cost_doc_path), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)])
             self.assertEqual(rc_cmp, 0)
             comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
             row = comp["claim_comparison"][0]
@@ -693,6 +767,176 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(row["same_usage"])
             cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
             self.assertIn("provenance/usage differs", cmp_md)
+
+    def test_codex_27315_budget_attribution_grouped_int_and_triple_counting(self) -> None:
+        """Codex #27315 exact counterexamples:
+        1. `500` MUST NOT match inside `1,500` (`ungrounded_usage_amount`).
+        2. Method citing a quote about control (`The control used 500 GPU-hours.`) MUST NOT pass
+           (blocked by `duplicate_usage_quote_span` when reused, and by Lean
+           `unverifiedUsageAttribution(contradicted)` even when control cites another quote).
+        3. Repeating the control's 500 entry 3x to equal 1,500 MUST NOT pass (`duplicate_usage_receipt`
+           and `duplicate_usage_quote_span` even with 3 different receipt IDs or trimmed substrings).
+        4. Ambiguous free-text quote (no arm attribution) MUST report unverified attribution
+           (`unverifiedUsageAttribution(unverified)`), NEVER `admissible`.
+        5. Wrong unit (`500 seconds` claimed as `GPU-hours`) MUST fail grounding (`ungrounded_usage_unit`).
+        """
+        doc_text = (
+            "Budget Verification Benchmark.\n"
+            "The method used 1,500 GPU-hours.\n"
+            "The control used 500 GPU-hours.\n"
+            "The baseline used 500 GPU-hours in a separate replication.\n"
+            "An anonymous log records 500 GPU-hours billed on Tuesday.\n"
+            "Another anonymous log records 500 GPU-hours billed on Wednesday.\n"
+            "The method ran for 500 seconds during warmup.\n"
+        )
+        q_hdr = "Budget Verification Benchmark."
+        q_m1500 = "The method used 1,500 GPU-hours."
+        q_c500 = "The control used 500 GPU-hours."
+        q_b500 = "The baseline used 500 GPU-hours in a separate replication."
+        q_anon1 = "An anonymous log records 500 GPU-hours billed on Tuesday."
+        q_anon2 = "Another anonymous log records 500 GPU-hours billed on Wednesday."
+        q_sec = "The method ran for 500 seconds during warmup."
+
+        def make_base_spec(auditor: str, m_usage: list[dict], c_usage: list[dict]) -> dict:
+            return {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": auditor,
+                "paper_title": "Codex 27315 Counterexamples",
+                "nodes": ["accountA", "accountB", "methodRun", "controlRun", "costLedger", "evalNode"],
+                "tags": ["resourceCost"],
+                "sources": [
+                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_m1500},
+                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_c500},
+                ],
+                "ops": [
+                    {"name": "run_method", "inputs": ["accountA"], "output": "methodRun", "kind": "transform", "introduces": [], "quote": q_m1500},
+                    {"name": "run_control", "inputs": ["accountB"], "output": "controlRun", "kind": "transform", "introduces": [], "quote": q_c500},
+                    {"name": "meter_all", "inputs": ["accountA", "accountB"], "output": "costLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "eval_both", "inputs": ["methodRun", "controlRun", "costLedger"], "output": "evalNode", "kind": "transform", "introduces": [], "quote": q_hdr},
+                ],
+                "claims": [
+                    {
+                        "id": "budgetClaim",
+                        "statement": "Method and control have matched GPU-hour budgets.",
+                        "quote": q_hdr,
+                        "provenance": "authorClaimed",
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodRun",
+                        "evaluation_node": "evalNode",
+                        "control_node": "controlRun",
+                        "cost_ledger_node": "costLedger",
+                        "cost_tag": "resourceCost",
+                        "method_usage": m_usage,
+                        "control_usage": c_usage,
+                    }
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "codex_27315.md"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            # 0. Honest 1500 vs 500 -> rejected: unmatchedControlBudget
+            s_honest = make_base_spec(
+                "HonestAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+            )
+            p0 = Path(tmp) / "honest.json"
+            p0.write_text(json.dumps(s_honest), encoding="utf-8")
+            rc0 = cli_main(["run", "--doc", str(doc_path), "--spec", str(p0), "--out", str(Path(tmp) / "o0")])
+            self.assertEqual(rc0, 0)
+            rep0 = json.loads((Path(tmp) / "o0" / "HonestAuditor_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(rep0["lean_verification"]["claims"][0]["verdict"], "rejected")
+            self.assertEqual([f["type"] for f in rep0["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
+
+            # 1. Bug 1: `500` inside `1,500` MUST fail grounding!
+            s_bug1 = make_base_spec(
+                "Bug1Auditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+            )
+            errs1, _ = validate_spec(s_bug1, doc=doc)
+            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs1))
+
+            # 2a. Bug 2 (shared quote): method steals control's exact quote -> duplicate_usage_quote_span!
+            s_bug2a = make_base_spec(
+                "Bug2aAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+            )
+            errs2a, _ = validate_spec(s_bug2a, doc=doc)
+            self.assertTrue(any(e.code == "duplicate_usage_quote_span" for e in errs2a))
+
+            # 2b. Bug 2 (distinct quotes): method cites "The control used 500 GPU-hours." while control cites baseline quote -> Lean rejects as contradicted attribution!
+            s_bug2b = make_base_spec(
+                "Bug2bAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_b500}],
+            )
+            p2b = Path(tmp) / "bug2b.json"
+            p2b.write_text(json.dumps(s_bug2b), encoding="utf-8")
+            rc2b = cli_main(["run", "--doc", str(doc_path), "--spec", str(p2b), "--out", str(Path(tmp) / "o2b")])
+            self.assertEqual(rc2b, 0)
+            rep2b = json.loads((Path(tmp) / "o2b" / "Bug2bAuditor_report.json").read_text(encoding="utf-8"))
+            cl2b = rep2b["lean_verification"]["claims"][0]
+            self.assertEqual(cl2b["verdict"], "rejected")
+            self.assertEqual(cl2b["findings"][0]["type"], "unverifiedUsageAttribution")
+            self.assertEqual(cl2b["findings"][0]["status"], "contradicted")
+
+            # 3a. Bug 3 (same receipt x3) -> duplicate_usage_receipt + duplicate_usage_quote_span!
+            s_bug3a = make_base_spec(
+                "Bug3aAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                ],
+            )
+            errs3a, _ = validate_spec(s_bug3a, doc=doc)
+            self.assertTrue(any(e.code == "duplicate_usage_receipt" for e in errs3a))
+            self.assertTrue(any(e.code == "duplicate_usage_quote_span" for e in errs3a))
+
+            # 3b. Bug 3 (3 fake distinct receipts + trimmed substrings of the same sentence) -> duplicate_usage_quote_span!
+            s_bug3b = make_base_spec(
+                "Bug3bAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "The control used 500 GPU-hours."},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "control used 500 GPU-hours."},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c3", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "used 500 GPU-hours."},
+                ],
+            )
+            errs3b, _ = validate_spec(s_bug3b, doc=doc)
+            self.assertTrue(any(e.code == "duplicate_usage_quote_span" for e in errs3b))
+
+            # 4. Unattributed free-text quotes -> Lean reports unverifiedUsageAttribution(unverified), NEVER admissible!
+            s_unv = make_base_spec(
+                "UnverifiedAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_anon1}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_anon2}],
+            )
+            p_unv = Path(tmp) / "unv.json"
+            p_unv.write_text(json.dumps(s_unv), encoding="utf-8")
+            rc_unv = cli_main(["run", "--doc", str(doc_path), "--spec", str(p_unv), "--out", str(Path(tmp) / "o_unv")])
+            self.assertEqual(rc_unv, 0)
+            rep_unv = json.loads((Path(tmp) / "o_unv" / "UnverifiedAuditor_report.json").read_text(encoding="utf-8"))
+            cl_unv = rep_unv["lean_verification"]["claims"][0]
+            self.assertEqual(cl_unv["verdict"], "rejected")
+            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverified" for f in cl_unv["findings"]))
+            md_unv = (Path(tmp) / "o_unv" / "UnverifiedAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("Unverified Budget Attribution", md_unv)
+
+            # 5. Wrong unit (`500 seconds` claimed as `GPU-hours`) -> ungrounded_usage_unit!
+            s_unit = make_base_spec(
+                "WrongUnitAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_sec}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+            )
+            errs_u, _ = validate_spec(s_unit, doc=doc)
+            self.assertTrue(any(e.code == "ungrounded_usage_unit" for e in errs_u))
 
 
 if __name__ == "__main__":

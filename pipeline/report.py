@@ -54,6 +54,19 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unquantified Budget]** `{f['method']}` lacks numeric `{f['cost_tag']}` resource usage quantities for both arms"
     if ft == "unboundUsageSource":
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
+    if ft == "duplicateUsageReceipt":
+        return f"**[Duplicate Usage Receipt]** arm `{f['arm']}` reuses or omits receipt `{f['receipt']}` for `{f['cost_tag']}`"
+    if ft == "unverifiedUsageAttribution":
+        status = f.get("status", "unverified")
+        if status == "contradicted":
+            return (
+                f"**[Contradicted Budget Attribution]** usage item `{f['receipt']}` on `{f['arm']}` "
+                f"(`{f['source']}`, `{f['cost_tag']}`) is contradicted by its quote (cites opposite arm or wrong source)"
+            )
+        return (
+            f"**[Unverified Budget Attribution]** usage item `{f['receipt']}` on `{f['arm']}` "
+            f"(`{f['source']}`, `{f['cost_tag']}`) cannot be mechanically attributed to that arm from its free-text quote — budget parity unverified"
+        )
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
     return json.dumps(f)
@@ -63,14 +76,23 @@ def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         [
             {
+                "arm": u.get("arm"),
                 "source": u.get("source"),
+                "receipt": u.get("receipt"),
                 "dimension": u.get("dimension"),
                 "unit": u.get("unit"),
                 "amount": u.get("amount"),
             }
             for u in usages
         ],
-        key=lambda x: (str(x["source"]), str(x["dimension"]), str(x["unit"]), int(x["amount"] or 0)),
+        key=lambda x: (
+            str(x["arm"]),
+            str(x["source"]),
+            str(x["receipt"]),
+            str(x["dimension"]),
+            str(x["unit"]),
+            int(x["amount"] or 0),
+        ),
     )
 
 
@@ -510,14 +532,14 @@ def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA
 Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.3`.
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the exact numeric `amount` must appear inside its `quote`. Do NOT paraphrase or invent numbers.
+1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the complete integer `amount` paired with `unit` must appear inside its `quote` (disjoint document spans across distinct line items). Do NOT paraphrase or invent numbers.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
 4. Set `"provenance"` on every claim: `"authorClaimed"` if explicitly claimed by the authors, or `"reviewerStressTest"` if testing a reviewer-posed counterfactual question.
 5. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`).
 6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
-   - `method_usage` and `control_usage`: lists of `{{"source": "<node>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing amount>"}}` (empty `[]` if unquantified in the paper).
+   - `method_usage` and `control_usage`: lists of `{{"arm": "<arm_node>", "source": "<source_node>", "receipt": "<unique_id>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing full amount + unit and identifying the arm>"}}` (empty `[]` if unquantified in the paper; ambiguous free-text quotes are flagged `unverified` rather than certified `admissible`).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 
