@@ -504,38 +504,34 @@ class PipelineTests(unittest.TestCase):
         (6) reviewerStressTest provenance recorded cleanly in report."""
         cost_doc_text = (
             "Compute Accounting Evaluation Study.\n"
-            "The method used 1,500 GPU-hours on accountA during evaluation.\n"
-            "The control used 500 GPU-hours on accountB during evaluation.\n"
-            "On the shared cluster, the method used 1,500 GPU-hours.\n"
-            "On the shared cluster, the control used 500 GPU-hours.\n"
-            "On the shared cluster, the method used 500 GPU-hours.\n"
-            "On the shared cluster, the baseline control used 500 GPU-hours.\n"
-            "Specifically, the method used 500 GPU-hours on accountA.\n"
-            "Separately, the control used 500 GPU-hours on accountB.\n"
-            "For multi-stage billing, stage 1 of the method used 500 GPU-hours.\n"
-            "Stage 2 of the method used 1,000 GPU-hours.\n"
-            "The control baseline used 1,500 GPU-hours in total.\n"
-            "An unattributed log line reports 500 GPU-hours were billed on Tuesday.\n"
-            "Another unattributed log line reports 500 GPU-hours were billed on Wednesday.\n"
-            "The method ran for 500 seconds in a warmup probe.\n"
-            "The baseline used 500 GPU-hours in a separate replication.\n"
+            "TXN-M1500: The method used 1,500 GPU-hours on accountA during evaluation.\n"
+            "TXN-C500: The control used 500 GPU-hours on accountB during evaluation.\n"
+            "TXN-CLM1: On the shared cluster, the method used 1,500 GPU-hours.\n"
+            "TXN-CLC1: On the shared cluster, the control used 500 GPU-hours.\n"
+            "TXN-CLM2: On the shared cluster, the method used 500 GPU-hours.\n"
+            "TXN-CLC2: On the shared cluster, the baseline control used 500 GPU-hours.\n"
+            "TXN-M500: Specifically, the method used 500 GPU-hours on accountA.\n"
+            "TXN-C500B: Separately, the control used 500 GPU-hours on accountB.\n"
+            "TXN-S1: For multi-stage billing, stage 1 of the method used 500 GPU-hours.\n"
+            "TXN-S2: Stage 2 of the method used 1,000 GPU-hours.\n"
+            "TXN-C1500: The control baseline used 1,500 GPU-hours in total.\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
             cost_doc_path = Path(tmp) / "cost_study.md"
             cost_doc_path.write_text(cost_doc_text, encoding="utf-8")
             doc = ingest_document(str(cost_doc_path))
             q_hdr = "Compute Accounting Evaluation Study."
-            q_m1500 = "The method used 1,500 GPU-hours on accountA during evaluation."
-            q_c500 = "The control used 500 GPU-hours on accountB during evaluation."
-            q_cl_m1500 = "On the shared cluster, the method used 1,500 GPU-hours."
-            q_cl_c500 = "On the shared cluster, the control used 500 GPU-hours."
-            q_cl_m500 = "On the shared cluster, the method used 500 GPU-hours."
-            q_cl_c500_2 = "On the shared cluster, the baseline control used 500 GPU-hours."
-            q_m500 = "Specifically, the method used 500 GPU-hours on accountA."
-            q_c500_b = "Separately, the control used 500 GPU-hours on accountB."
-            q_m_s1 = "For multi-stage billing, stage 1 of the method used 500 GPU-hours."
-            q_m_s2 = "Stage 2 of the method used 1,000 GPU-hours."
-            q_c1500 = "The control baseline used 1,500 GPU-hours in total."
+            q_m1500 = "TXN-M1500: The method used 1,500 GPU-hours on accountA during evaluation."
+            q_c500 = "TXN-C500: The control used 500 GPU-hours on accountB during evaluation."
+            q_cl_m1500 = "TXN-CLM1: On the shared cluster, the method used 1,500 GPU-hours."
+            q_cl_c500 = "TXN-CLC1: On the shared cluster, the control used 500 GPU-hours."
+            q_cl_m500 = "TXN-CLM2: On the shared cluster, the method used 500 GPU-hours."
+            q_cl_c500_2 = "TXN-CLC2: On the shared cluster, the baseline control used 500 GPU-hours."
+            q_m500 = "TXN-M500: Specifically, the method used 500 GPU-hours on accountA."
+            q_c500_b = "TXN-C500B: Separately, the control used 500 GPU-hours on accountB."
+            q_m_s1 = "TXN-S1: For multi-stage billing, stage 1 of the method used 500 GPU-hours."
+            q_m_s2 = "TXN-S2: Stage 2 of the method used 1,000 GPU-hours."
+            q_c1500 = "TXN-C1500: The control baseline used 1,500 GPU-hours in total."
 
             spec = {
                 "schema_version": "epistemic-ledger/v2.3",
@@ -603,10 +599,10 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "meterCluster",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "m_1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_cl_m1500}
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "TXN-CLM1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_cl_m1500}
                         ],
                         "control_usage": [
-                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "c_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500}
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500}
                         ],
                     },
                     {
@@ -621,10 +617,10 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "postHocMeter",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_500_a", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m500}
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "TXN-M500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m500}
                         ],
                         "control_usage": [
-                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "c_500_b", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500_b}
+                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "TXN-C500B", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500_b}
                         ],
                     },
                     {
@@ -639,11 +635,11 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "postHocMeter",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_s1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m_s1},
-                            {"arm": "methodAccA", "source": "accountA", "receipt": "m_s2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1000, "quote": q_m_s2},
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "TXN-S1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m_s1},
+                            {"arm": "methodAccA", "source": "accountA", "receipt": "TXN-S2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1000, "quote": q_m_s2},
                         ],
                         "control_usage": [
-                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "c_1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_c1500}
+                            {"arm": "ctrlAccB", "source": "accountB", "receipt": "TXN-C1500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_c1500}
                         ],
                     },
                     {
@@ -657,10 +653,10 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "meterCluster",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodForgetHours", "source": "sharedCluster", "receipt": "mf_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                            {"arm": "methodForgetHours", "source": "sharedCluster", "receipt": "TXN-CLM2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
                         ],
                         "control_usage": [
-                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "cf_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
                         ],
                     },
                     {
@@ -674,10 +670,10 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "meterCluster",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "md_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "TXN-CLM2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
                         ],
                         "control_usage": [
-                            {"arm": "clonedCtrl", "source": "sharedCluster", "receipt": "cd_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                            {"arm": "clonedCtrl", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
                         ],
                     },
                     {
@@ -691,10 +687,10 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": "clonedCtrlLedger",
                         "cost_tag": "resourceCost",
                         "method_usage": [
-                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "ml_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
+                            {"arm": "methodCluster", "source": "sharedCluster", "receipt": "TXN-CLM2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_m500}
                         ],
                         "control_usage": [
-                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "cl_500", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
+                            {"arm": "ctrlCluster", "source": "sharedCluster", "receipt": "TXN-CLC2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_cl_c500_2}
                         ],
                     },
                     {
@@ -782,17 +778,17 @@ class PipelineTests(unittest.TestCase):
         """
         doc_text = (
             "Budget Verification Benchmark.\n"
-            "The method used 1,500 GPU-hours.\n"
-            "The control used 500 GPU-hours.\n"
-            "The baseline used 500 GPU-hours in a separate replication.\n"
+            "TXN-M1: The method used 1,500 GPU-hours.\n"
+            "TXN-C1: The control used 500 GPU-hours.\n"
+            "TXN-B1: The baseline used 500 GPU-hours in a separate replication.\n"
             "An anonymous log records 500 GPU-hours billed on Tuesday.\n"
             "Another anonymous log records 500 GPU-hours billed on Wednesday.\n"
             "The method ran for 500 seconds during warmup.\n"
         )
         q_hdr = "Budget Verification Benchmark."
-        q_m1500 = "The method used 1,500 GPU-hours."
-        q_c500 = "The control used 500 GPU-hours."
-        q_b500 = "The baseline used 500 GPU-hours in a separate replication."
+        q_m1500 = "TXN-M1: The method used 1,500 GPU-hours."
+        q_c500 = "TXN-C1: The control used 500 GPU-hours."
+        q_b500 = "TXN-B1: The baseline used 500 GPU-hours in a separate replication."
         q_anon1 = "An anonymous log records 500 GPU-hours billed on Tuesday."
         q_anon2 = "Another anonymous log records 500 GPU-hours billed on Wednesday."
         q_sec = "The method ran for 500 seconds during warmup."
@@ -840,8 +836,8 @@ class PipelineTests(unittest.TestCase):
             # 0. Honest 1500 vs 500 -> rejected: unmatchedControlBudget
             s_honest = make_base_spec(
                 "HonestAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
-                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
             )
             p0 = Path(tmp) / "honest.json"
             p0.write_text(json.dumps(s_honest), encoding="utf-8")
@@ -854,8 +850,8 @@ class PipelineTests(unittest.TestCase):
             # 1. Bug 1: `500` inside `1,500` MUST fail grounding!
             s_bug1 = make_base_spec(
                 "Bug1Auditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1500}],
-                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m1500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
             )
             errs1, _ = validate_spec(s_bug1, doc=doc)
             self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs1))
@@ -863,17 +859,17 @@ class PipelineTests(unittest.TestCase):
             # 2a. Bug 2 (shared quote): method steals control's exact quote -> duplicate_usage_quote_span!
             s_bug2a = make_base_spec(
                 "Bug2aAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
-                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
             )
             errs2a, _ = validate_spec(s_bug2a, doc=doc)
             self.assertTrue(any(e.code == "duplicate_usage_quote_span" for e in errs2a))
 
-            # 2b. Bug 2 (distinct quotes): method cites "The control used 500 GPU-hours." while control cites baseline quote -> Lean rejects as contradicted attribution!
+            # 2b. Bug 2 (distinct quotes): method cites control quote while control cites baseline quote -> Lean rejects as contradicted attribution!
             s_bug2b = make_base_spec(
                 "Bug2bAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
-                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_b500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-B1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_b500}],
             )
             p2b = Path(tmp) / "bug2b.json"
             p2b.write_text(json.dumps(s_bug2b), encoding="utf-8")
@@ -888,11 +884,11 @@ class PipelineTests(unittest.TestCase):
             # 3a. Bug 3 (same receipt x3) -> duplicate_usage_receipt + duplicate_usage_quote_span!
             s_bug3a = make_base_spec(
                 "Bug3aAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
                 [
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500},
                 ],
             )
             errs3a, _ = validate_spec(s_bug3a, doc=doc)
@@ -902,17 +898,17 @@ class PipelineTests(unittest.TestCase):
             # 3b. Bug 3 (3 fake distinct receipts + trimmed substrings of the same sentence) -> duplicate_usage_quote_span!
             s_bug3b = make_base_spec(
                 "Bug3bAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500}],
                 [
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "The control used 500 GPU-hours."},
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "control used 500 GPU-hours."},
-                    {"arm": "controlRun", "source": "accountB", "receipt": "c3", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "used 500 GPU-hours."},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "TXN-C1: The control used 500 GPU-hours."},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "The control used 500 GPU-hours."},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "TXN-C3", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": "used 500 GPU-hours."},
                 ],
             )
             errs3b, _ = validate_spec(s_bug3b, doc=doc)
             self.assertTrue(any(e.code == "duplicate_usage_quote_span" for e in errs3b))
 
-            # 4. Unattributed free-text quotes -> Lean reports unverifiedUsageAttribution(unverified), NEVER admissible!
+            # 4. Unattributed free-text quotes -> Lean reports unverifiedUsageAttribution(unverifiedProse), NEVER admissible!
             s_unv = make_base_spec(
                 "UnverifiedAuditor",
                 [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_anon1}],
@@ -925,18 +921,160 @@ class PipelineTests(unittest.TestCase):
             rep_unv = json.loads((Path(tmp) / "o_unv" / "UnverifiedAuditor_report.json").read_text(encoding="utf-8"))
             cl_unv = rep_unv["lean_verification"]["claims"][0]
             self.assertEqual(cl_unv["verdict"], "rejected")
-            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverified" for f in cl_unv["findings"]))
+            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl_unv["findings"]))
             md_unv = (Path(tmp) / "o_unv" / "UnverifiedAuditor_report.md").read_text(encoding="utf-8")
-            self.assertIn("Unverified Budget Attribution", md_unv)
+            self.assertIn("Unverified Prose Budget", md_unv)
+            self.assertIn("Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED**", md_unv)
 
             # 5. Wrong unit (`500 seconds` claimed as `GPU-hours`) -> ungrounded_usage_unit!
             s_unit = make_base_spec(
                 "WrongUnitAuditor",
-                [{"arm": "methodRun", "source": "accountA", "receipt": "m1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_sec}],
-                [{"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_sec}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
             )
             errs_u, _ = validate_spec(s_unit, doc=doc)
             self.assertTrue(any(e.code == "ungrounded_usage_unit" for e in errs_u))
+
+    def test_codex_27317_sliced_number_requested_quantity_and_prose_restatements(self) -> None:
+        """Codex #27317 exact counterexamples:
+        1. Quote sliced mid-number (`500 GPU-hours were charged to the method under TXN-M1.`
+           sliced out of `1,500 GPU-hours were charged to the method under TXN-M1.`) MUST fail
+           grounding (`truncated_numeric_quote`).
+        2. `The method requested 500 GPU-hours before the experiment.` claimed as actual spend
+           MUST be rejected (`nonActualUsageQuantity(requestedOrAllocated)` + `contradicted`).
+        3. Three disjoint prose sentences mentioning the same control 500 GPU-hours (including
+           `as previously reported` and `is restated here`), OR three clean prose mentions with
+           auditor-invented IDs (`c1`, `c2`, `c3`), MUST NEVER certify `admissible`.
+        """
+        doc_text = (
+            "Codex 27317 Counterexample Study.\n"
+            "1,500 GPU-hours were charged to the method under TXN-M1.\n"
+            "TXN-REQ1: The method requested 500 GPU-hours before the experiment.\n"
+            "TXN-C1: The control was charged 500 GPU-hours.\n"
+            "In Section 2, the control used 500 GPU-hours.\n"
+            "In Section 4, as previously reported, the control used 500 GPU-hours.\n"
+            "In Appendix A, the control total of 500 GPU-hours is restated here.\n"
+            "In Section 5, the control spent 500 GPU-hours.\n"
+            "In Section 6, the control consumed 500 GPU-hours.\n"
+        )
+        q_hdr = "Codex 27317 Counterexample Study."
+        q_m1500_full = "1,500 GPU-hours were charged to the method under TXN-M1."
+        q_m500_sliced = "500 GPU-hours were charged to the method under TXN-M1."
+        q_req = "TXN-REQ1: The method requested 500 GPU-hours before the experiment."
+        q_c500_txn = "TXN-C1: The control was charged 500 GPU-hours."
+        q_prose1 = "In Section 2, the control used 500 GPU-hours."
+        q_prose_prev = "In Section 4, as previously reported, the control used 500 GPU-hours."
+        q_prose_restated = "In Appendix A, the control total of 500 GPU-hours is restated here."
+        q_prose2 = "In Section 5, the control spent 500 GPU-hours."
+        q_prose3 = "In Section 6, the control consumed 500 GPU-hours."
+
+        def make_spec(auditor: str, m_usage: list[dict], c_usage: list[dict]) -> dict:
+            return {
+                "schema_version": "epistemic-ledger/v2.3",
+                "auditor": auditor,
+                "paper_title": "Codex 27317",
+                "nodes": ["accountA", "accountB", "methodRun", "controlRun", "costLedger", "evalNode"],
+                "tags": ["resourceCost"],
+                "sources": [
+                    {"node": "accountA", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_m1500_full},
+                    {"node": "accountB", "origin": "setByExperimenter", "carries": ["resourceCost"], "quote": q_c500_txn},
+                ],
+                "ops": [
+                    {"name": "run_m", "inputs": ["accountA"], "output": "methodRun", "kind": "transform", "introduces": [], "quote": q_m1500_full},
+                    {"name": "run_c", "inputs": ["accountB"], "output": "controlRun", "kind": "transform", "introduces": [], "quote": q_c500_txn},
+                    {"name": "bill", "inputs": ["accountA", "accountB"], "output": "costLedger", "kind": "transform", "introduces": [], "quote": q_hdr},
+                    {"name": "eval", "inputs": ["methodRun", "controlRun", "costLedger"], "output": "evalNode", "kind": "transform", "introduces": [], "quote": q_hdr},
+                ],
+                "claims": [
+                    {
+                        "id": "claimBudget",
+                        "statement": "Method and control spent equal GPU-hours.",
+                        "quote": q_hdr,
+                        "provenance": "authorClaimed",
+                        "kind": "effectivenessClaim",
+                        "method_node": "methodRun",
+                        "evaluation_node": "evalNode",
+                        "control_node": "controlRun",
+                        "cost_ledger_node": "costLedger",
+                        "cost_tag": "resourceCost",
+                        "method_usage": m_usage,
+                        "control_usage": c_usage,
+                    }
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            doc_path = Path(tmp) / "codex_27317.md"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            # Attack 1: Sliced quote `500 GPU-hours...` from `1,500 GPU-hours...` -> truncated_numeric_quote!
+            s1 = make_spec(
+                "SlicedNumAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_m500_sliced}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500_txn}],
+            )
+            errs1, _ = validate_spec(s1, doc=doc)
+            self.assertTrue(any(e.code == "truncated_numeric_quote" for e in errs1))
+
+            # Attack 2: Requested quota (`requested 500 GPU-hours`) claimed as actual spend -> rejected!
+            s2 = make_spec(
+                "RequestedAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-REQ1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quantity_kind": "actualSpend", "quote": q_req}],
+                [{"arm": "controlRun", "source": "accountB", "receipt": "TXN-C1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quantity_kind": "actualSpend", "quote": q_c500_txn}],
+            )
+            p2 = Path(tmp) / "req.json"
+            p2.write_text(json.dumps(s2), encoding="utf-8")
+            rc2 = cli_main(["run", "--doc", str(doc_path), "--spec", str(p2), "--out", str(Path(tmp) / "o2")])
+            self.assertEqual(rc2, 0)
+            rep2 = json.loads((Path(tmp) / "o2" / "RequestedAuditor_report.json").read_text(encoding="utf-8"))
+            cl2 = rep2["lean_verification"]["claims"][0]
+            self.assertEqual(cl2["verdict"], "rejected")
+            ftypes2 = {f["type"] for f in cl2["findings"]}
+            self.assertIn("nonActualUsageQuantity", ftypes2)
+            self.assertIn("unverifiedUsageAttribution", ftypes2)
+
+            # Attack 3a: 3 disjoint prose mentions with restatement cues ("as previously reported", "is restated here") -> rejected!
+            s3a = make_spec(
+                "RestatedAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500_full}],
+                [
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose1},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose_prev},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "c3", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose_restated},
+                ],
+            )
+            p3a = Path(tmp) / "restated.json"
+            p3a.write_text(json.dumps(s3a), encoding="utf-8")
+            rc3a = cli_main(["run", "--doc", str(doc_path), "--spec", str(p3a), "--out", str(Path(tmp) / "o3a")])
+            self.assertEqual(rc3a, 0)
+            rep3a = json.loads((Path(tmp) / "o3a" / "RestatedAuditor_report.json").read_text(encoding="utf-8"))
+            cl3a = rep3a["lean_verification"]["claims"][0]
+            self.assertEqual(cl3a["verdict"], "rejected")
+            statuses3a = [f["status"] for f in cl3a["findings"] if f["type"] == "unverifiedUsageAttribution"]
+            self.assertIn("contradicted", statuses3a)
+            self.assertIn("unverifiedProse", statuses3a)
+
+            # Attack 3b: 3 clean disjoint prose mentions WITHOUT restatement cues, auditor-invented IDs -> STILL unverifiedProse (never admissible)!
+            s3b = make_spec(
+                "ProseOnlyAuditor",
+                [{"arm": "methodRun", "source": "accountA", "receipt": "TXN-M1", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1500, "quote": q_m1500_full}],
+                [
+                    {"arm": "controlRun", "source": "accountB", "receipt": "Section 2", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose1},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "Section 5", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose2},
+                    {"arm": "controlRun", "source": "accountB", "receipt": "Section 6", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_prose3},
+                ],
+            )
+            p3b = Path(tmp) / "prose3.json"
+            p3b.write_text(json.dumps(s3b), encoding="utf-8")
+            rc3b = cli_main(["run", "--doc", str(doc_path), "--spec", str(p3b), "--out", str(Path(tmp) / "o3b")])
+            self.assertEqual(rc3b, 0)
+            rep3b = json.loads((Path(tmp) / "o3b" / "ProseOnlyAuditor_report.json").read_text(encoding="utf-8"))
+            cl3b = rep3b["lean_verification"]["claims"][0]
+            self.assertEqual(cl3b["verdict"], "rejected")
+            self.assertTrue(all(f["type"] == "unverifiedUsageAttribution" and f["status"] == "unverifiedProse" for f in cl3b["findings"]))
+            md3b = (Path(tmp) / "o3b" / "ProseOnlyAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED**", md3b)
 
 
 if __name__ == "__main__":

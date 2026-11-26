@@ -82,7 +82,41 @@ VALID_CLAIM_KINDS = frozenset(
     }
 )
 VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
+VALID_USAGE_QUANTITY_KINDS = frozenset({"actualSpend", "requestedOrAllocated", "estimatedOrProjected", "unknown"})
 SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3"})
+
+# Structured billing/transaction/run receipt IDs grounded verbatim inside billing records.
+# Plain prose words ("Section 2", "Table 1", "c1") intentionally do NOT match this pattern.
+STRUCTURED_RECEIPT_RE = re.compile(
+    r"^(?:TXN|INV|REC|RECEIPT|BILL|JOB|RUN|LEDGER|CHARGE|METER|ACCT)[-_:#][A-Za-z0-9][A-Za-z0-9_.\-]*$",
+    re.IGNORECASE,
+)
+
+# Cues indicating a figure is a request/allocation/cap/estimate/projection rather than actual spend.
+REQUESTED_OR_ALLOCATED_CUES_RE = re.compile(
+    r"\b(?:requested|request|requests|allocated|allocation|budgeted|capped|quota|limit|proposed|saved|avoided)\b",
+    re.IGNORECASE,
+)
+ESTIMATED_OR_PROJECTED_CUES_RE = re.compile(
+    r"\b(?:estimated|estimate|estimates|projected|projection|planned|expected|target|approx(?:imately)?|hypothetic(?:al|ally)?)\b"
+    r"|\bwould\s+(?:require|need|use|cost|spend)\b",
+    re.IGNORECASE,
+)
+# Cues indicating a prose mention restates a previously reported figure rather than a distinct new charge.
+RESTATEMENT_CUES_RE = re.compile(
+    r"\b(?:previously\s+reported|as\s+(?:previously\s+)?reported|restated|repeated|mentioned\s+(?:above|earlier|before)|"
+    r"noted\s+(?:above|earlier|before)|summarized\s+(?:above|earlier)|recalled|recapitulated)\b",
+    re.IGNORECASE,
+)
+ACTUAL_SPEND_CUES_RE = re.compile(
+    r"\b(?:used|consumed|charged|billed|spent|incurred|expended|measured|logged)\b",
+    re.IGNORECASE,
+)
+NEGATED_ACTUAL_CUES_RE = re.compile(
+    r"\b(?:not|never|no|without)\s+(?:be\s+|been\s+|was\s+|were\s+|have\s+|actually\s+)?(?:used|consumed|charged|billed|spent|incurred|expended|measured)\b"
+    r"|n't\s+(?:be\s+|been\s+)?(?:used|consumed|charged|billed|spent|incurred|expended|measured)\b",
+    re.IGNORECASE,
+)
 
 METHOD_ROLE_WORDS = frozenset({"method"})
 CONTROL_ROLE_WORDS = frozenset({"control", "baseline"})
@@ -168,6 +202,51 @@ def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
     return results
 
 
+def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int) -> bool:
+    """Return True iff `doc_text[abs_start:abs_end]` is NOT sliced out of a larger numeric
+    or alphanumeric token in the full source document (e.g. `500` sliced from `1,500`,
+    `1500`, `-500`, `500.5`, or `500,000`)."""
+    if abs_start > 0:
+        prev = doc_text[abs_start - 1]
+        if prev.isdigit() or prev.isalpha():
+            return False
+        if prev in ",._" and abs_start >= 2 and doc_text[abs_start - 2].isdigit():
+            return False
+        if prev == "-" and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
+            return False
+    if abs_end < len(doc_text):
+        nxt = doc_text[abs_end]
+        if nxt.isdigit():
+            return False
+        if nxt in ",._" and abs_end + 1 < len(doc_text) and doc_text[abs_end + 1].isdigit():
+            return False
+    return True
+
+
+def extract_doc_bounded_quote_integers(
+    qtext: str,
+    doc: IngestedDocument | None = None,
+    qm: QuoteMatch | None = None,
+) -> tuple[list[tuple[int, int, int]], set[int]]:
+    """Return `(intact_integers, truncated_values)` for `qtext`.
+    When `doc` and a matched `QuoteMatch` are provided, validates each integer's left and right
+    boundaries on the full source document at the matched offset so sliced substrings like
+    `500 ...` from `1,500 ...` are rejected rather than parsed as `500`."""
+    if doc is not None and qm is not None and qm.matched and qm.char_offset is not None:
+        doc_text = doc.normalized_text if qm.mode == "exact_ws" else doc.dehyphenated_text
+        scan_text = qm.normalized_quote
+        q_offset = qm.char_offset
+        intact: list[tuple[int, int, int]] = []
+        truncated: set[int] = set()
+        for val, rel_s, rel_e in extract_quote_integers(scan_text):
+            if _has_intact_doc_numeric_boundary(doc_text, q_offset + rel_s, q_offset + rel_e):
+                intact.append((val, rel_s, rel_e))
+            else:
+                truncated.add(val)
+        return intact, truncated
+    return extract_quote_integers(qtext), set()
+
+
 def _unit_regex(unit: str) -> str:
     tokens = [t for t in re.split(r"[\s_\-/]+", unit.strip()) if t]
     if not tokens:
@@ -185,7 +264,11 @@ def _unit_regex(unit: str) -> str:
     return r"[\s_\-/]+".join(parts)
 
 
-def extract_unit_bound_amounts(qtext: str, unit: str) -> list[int]:
+def extract_unit_bound_amounts(
+    qtext: str,
+    unit: str,
+    integers: list[tuple[int, int, int]] | None = None,
+) -> list[int]:
     """Return integer amounts in `qtext` directly paired with `unit` (e.g. `1,500 GPU-hours`, `$500`)."""
     tokens = [t.lower() for t in re.split(r"[\s_\-/]+", unit.strip()) if t]
     is_usd = tokens in (["usd"], ["dollar"], ["dollars"])
@@ -193,7 +276,8 @@ def extract_unit_bound_amounts(qtext: str, unit: str) -> list[int]:
     after_re = re.compile(r"[\s\-]*" + up + r"(?![A-Za-z0-9])", re.IGNORECASE)
     before_usd_re = re.compile(r"(?:US)?\$\s*$", re.IGNORECASE)
     found: list[int] = []
-    for val, start, end in extract_quote_integers(qtext):
+    scan_ints = integers if integers is not None else extract_quote_integers(qtext)
+    for val, start, end in scan_ints:
         if after_re.match(qtext[end:]):
             found.append(val)
         elif is_usd and before_usd_re.search(qtext[:start]):
@@ -230,7 +314,7 @@ def _unit_stopwords(unit: str) -> set[str]:
     return out
 
 
-def classify_usage_attribution(
+def classify_usage_entry(
     arm_role: str,
     method_node: str,
     control_node: str | None,
@@ -238,19 +322,44 @@ def classify_usage_attribution(
     method_sources: set[str],
     control_sources: set[str],
     all_graph_sources: set[str],
-) -> str:
-    """Mechanically classify whether a usage quote establishes attribution to its claimed arm/source.
-    Returns `"verified"`, `"unverified"`, or `"contradicted"` (fail-closed: never false-verified)."""
+) -> tuple[str, str]:
+    """Mechanically classify `(effective_quantity_kind, attribution)` for a `ResourceUsage` entry.
+
+    Scope & trust boundary:
+    - Checks single unambiguous unit-bound integer, non-contradictory actual-spend phrasing
+      (rejecting requested/allocated/estimated/negated/restated prose), exclusive arm/source
+      markers, and a structured billing/run `receipt` ID grounded verbatim inside `quote`.
+    - Plain prose mentions lacking a source-grounded structured billing/run receipt ID are
+      classified `unverifiedProse` (never `verifiedRecord`), so prose restatements cannot be
+      certified as verified actual budget parity.
+    - Semantic authenticity of the underlying billing log itself remains outside automated text
+      checks and requires human/external audit.
+    """
     qtext = str(entry.get("quote", ""))
     unit = str(entry.get("unit", ""))
     amount = entry.get("amount")
     src = str(entry.get("source", ""))
+    receipt = str(entry.get("receipt", ""))
+    declared_qkind = str(entry.get("quantity_kind", "actualSpend"))
 
-    # Must match a single unambiguous amount paired with `unit` in this quote.
+    # 1. Quantity kind check: non-actual quantities (requests, allocations, estimates) cannot certify spend.
+    if REQUESTED_OR_ALLOCATED_CUES_RE.search(qtext):
+        return "requestedOrAllocated", "contradicted"
+    if ESTIMATED_OR_PROJECTED_CUES_RE.search(qtext):
+        return "estimatedOrProjected", "contradicted"
+    if declared_qkind != "actualSpend":
+        return declared_qkind, "unverifiedProse"
+
+    # 2. Restatement / negation check: restated figures or negated spend cannot certify a distinct charge.
+    if RESTATEMENT_CUES_RE.search(qtext) or NEGATED_ACTUAL_CUES_RE.search(qtext):
+        return "actualSpend", "contradicted"
+
+    # 3. Single unambiguous amount paired with `unit` in this quote.
     bound = extract_unit_bound_amounts(qtext, unit)
     if len(bound) != 1 or bound[0] != amount:
-        return "unverified"
+        return "actualSpend", "unverifiedProse"
 
+    # 4. Arm & source marker attribution.
     unit_sw = _unit_stopwords(unit)
     method_raw = set(METHOD_ROLE_WORDS) | _ident_markers(method_node)
     for s in method_sources:
@@ -286,14 +395,28 @@ def classify_usage_attribution(
     hits_other_src = _hits(other_src_markers)
 
     if (hits_opp or hits_other_src) and not hits_own:
-        return "contradicted"
-    if hits_own and not hits_opp and not hits_other_src:
-        return "verified"
-    return "unverified"
+        return "actualSpend", "contradicted"
+    if not (hits_own and not hits_opp and not hits_other_src):
+        return "actualSpend", "unverifiedProse"
+
+    # 5. Require an explicit actual-spend predicate (reject ambiguous verbs like "had 500 GPU-hours").
+    if not ACTUAL_SPEND_CUES_RE.search(qtext):
+        return "unknown", "unverifiedProse"
+
+    # 6. Require a structured billing/run receipt ID grounded verbatim (word-bounded) inside the quote.
+    # Plain prose without a source-grounded receipt ID is classified `unverifiedProse`.
+    if not STRUCTURED_RECEIPT_RE.fullmatch(receipt):
+        return "actualSpend", "unverifiedProse"
+    if not re.search(rf"(?<![A-Za-z0-9_.\-]){re.escape(receipt)}(?![A-Za-z0-9_.\-])", qtext, re.IGNORECASE):
+        return "actualSpend", "unverifiedProse"
+
+    return "actualSpend", "verifiedRecord"
 
 
-def compute_claim_usage_attributions(spec: dict[str, Any], claim: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Compute mechanical attribution statuses for `(method_usage, control_usage)` of an effectivenessClaim."""
+def compute_claim_usage_classifications(
+    spec: dict[str, Any], claim: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Compute mechanical `(quantity_kind, attribution)` pairs for `(method_usage, control_usage)`."""
     if claim.get("kind") != "effectivenessClaim":
         return [], []
     method_node = str(claim["method_node"])
@@ -303,15 +426,15 @@ def compute_claim_usage_attributions(spec: dict[str, Any], claim: dict[str, Any]
     m_sources = {str(u.get("source", "")) for u in m_usage if isinstance(u, dict) and u.get("source")}
     c_sources = {str(u.get("source", "")) for u in c_usage if isinstance(u, dict) and u.get("source")}
     all_sources = {str(s.get("node", "")) for s in spec.get("sources", []) if isinstance(s, dict) and s.get("node")}
-    m_attrs = [
-        classify_usage_attribution("method", method_node, control_node, u, m_sources, c_sources, all_sources)
+    m_cls = [
+        classify_usage_entry("method", method_node, control_node, u, m_sources, c_sources, all_sources)
         for u in m_usage
     ]
-    c_attrs = [
-        classify_usage_attribution("control", method_node, control_node, u, m_sources, c_sources, all_sources)
+    c_cls = [
+        classify_usage_entry("control", method_node, control_node, u, m_sources, c_sources, all_sources)
         for u in c_usage
     ]
-    return m_attrs, c_attrs
+    return m_cls, c_cls
 
 
 @dataclass(frozen=True)
@@ -668,12 +791,20 @@ def validate_spec(
                         ep = f"{upath}[{j}]"
                         if not _check_allowed_keys(
                             entry,
-                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote"},
+                            {"arm", "source", "receipt", "dimension", "unit", "amount", "quote", "quantity_kind"},
                             {"arm", "source", "receipt", "dimension", "unit", "amount", "quote"},
                             ep,
                             errors,
                         ):
                             continue
+                        if "quantity_kind" in entry and entry["quantity_kind"] not in VALID_USAGE_QUANTITY_KINDS:
+                            errors.append(
+                                ValidationErrorItem(
+                                    f"{ep}.quantity_kind",
+                                    "invalid_enum",
+                                    f"quantity_kind must be in {sorted(VALID_USAGE_QUANTITY_KINDS)}",
+                                )
+                            )
                         check_node_ref(entry["arm"], f"{ep}.arm")
                         if expected_arm is None or entry["arm"] != expected_arm:
                             errors.append(
@@ -717,17 +848,34 @@ def validate_spec(
                         check_quote(entry["quote"], f"{ep}.quote")
                         qm = quotes[-1] if len(quotes) > before_q_len else None
                         if valid_amt and isinstance(entry["quote"], str):
-                            parsed_ints = {v for v, _, _ in extract_quote_integers(entry["quote"])}
+                            intact_ints, truncated_vals = extract_doc_bounded_quote_integers(
+                                entry["quote"], doc=doc, qm=qm
+                            )
+                            parsed_ints = {v for v, _, _ in intact_ints}
                             if entry["amount"] not in parsed_ints:
-                                errors.append(
-                                    ValidationErrorItem(
-                                        f"{ep}.amount",
-                                        "ungrounded_usage_amount",
-                                        f"Complete integer amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                                if entry["amount"] in truncated_vals:
+                                    errors.append(
+                                        ValidationErrorItem(
+                                            f"{ep}.amount",
+                                            "truncated_numeric_quote",
+                                            f"Amount {entry['amount']} in quote is sliced from a larger numeric token in the source document: {entry['quote'][:120]!r}",
+                                        )
                                     )
-                                )
+                                else:
+                                    errors.append(
+                                        ValidationErrorItem(
+                                            f"{ep}.amount",
+                                            "ungrounded_usage_amount",
+                                            f"Complete integer amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                                        )
+                                    )
                             elif unit_ok:
-                                unit_bound = extract_unit_bound_amounts(entry["quote"], entry["unit"])
+                                scan_text = (
+                                    qm.normalized_quote
+                                    if (doc is not None and qm is not None and qm.matched)
+                                    else entry["quote"]
+                                )
+                                unit_bound = extract_unit_bound_amounts(scan_text, entry["unit"], integers=intact_ints)
                                 if entry["amount"] not in unit_bound:
                                     errors.append(
                                         ValidationErrorItem(

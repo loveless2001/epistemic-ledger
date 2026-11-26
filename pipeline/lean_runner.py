@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pipeline.schema import compute_claim_usage_attributions
+from pipeline.schema import compute_claim_usage_classifications
 
 ALLOWED_AXIOMS = frozenset({"propext", "Quot.sound"})
 AXIOM_LINE_RE = re.compile(r"^'([^']+)' depends on axioms: \[([^\]]*)\]$")
@@ -63,12 +63,13 @@ def _lean_op_kind(op: dict[str, Any]) -> str:
     return f".{kind} {_lean_tag_list(op['introduces'])}"
 
 
-def _lean_usage_list(usages: list[dict[str, Any]], attributions: list[str]) -> str:
+def _lean_usage_list(usages: list[dict[str, Any]], classifications: list[tuple[str, str]]) -> str:
     if not usages:
         return "[]"
     items = [
-        f'⟨.{u["arm"]}, .{u["source"]}, "{escape_lean_str(u["receipt"])}", .{u["dimension"]}, "{escape_lean_str(u["unit"])}", {u["amount"]}, .{attr}⟩'
-        for u, attr in zip(usages, attributions)
+        f'⟨.{u["arm"]}, .{u["source"]}, "{escape_lean_str(u["receipt"])}", .{u["dimension"]}, '
+        f'"{escape_lean_str(u["unit"])}", {u["amount"]}, .{qkind}, .{attr}⟩'
+        for u, (qkind, attr) in zip(usages, classifications)
     ]
     return "[" + ", ".join(items) + "]"
 
@@ -86,9 +87,9 @@ def _lean_claim_kind(spec: dict[str, Any], cl: dict[str, Any]) -> str:
     if kind == "effectivenessClaim":
         ctrl = "none" if cl["control_node"] is None else f"(some .{cl['control_node']})"
         ledger = "none" if cl["cost_ledger_node"] is None else f"(some .{cl['cost_ledger_node']})"
-        m_attrs, c_attrs = compute_claim_usage_attributions(spec, cl)
-        mu = _lean_usage_list(cl["method_usage"], m_attrs)
-        cu = _lean_usage_list(cl["control_usage"], c_attrs)
+        m_cls, c_cls = compute_claim_usage_classifications(spec, cl)
+        mu = _lean_usage_list(cl["method_usage"], m_cls)
+        cu = _lean_usage_list(cl["control_usage"], c_cls)
         return f".effectivenessClaim .{cl['method_node']} .{cl['evaluation_node']} {ctrl} {ledger} .{cl['cost_tag']} {mu} {cu}"
     return f".conditionalFlow .{cl['target']} {_lean_node_list(cl['declared_sources'])}"
 
@@ -126,9 +127,15 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .notShown => "notShown"',
         '  | .contradicted => "contradicted"',
         "",
+        "def qkindName : UsageQuantityKind → String",
+        '  | .actualSpend => "actualSpend"',
+        '  | .requestedOrAllocated => "requestedOrAllocated"',
+        '  | .estimatedOrProjected => "estimatedOrProjected"',
+        '  | .unknown => "unknown"',
+        "",
         "def attrName : UsageAttribution → String",
-        '  | .verified => "verified"',
-        '  | .unverified => "unverified"',
+        '  | .verifiedRecord => "verifiedRecord"',
+        '  | .unverifiedProse => "unverifiedProse"',
         '  | .contradicted => "contradicted"',
         "",
         "def verdictName : FlowVerdict → String",
@@ -212,6 +219,10 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .duplicateUsageReceipt armNode rid costTag =>',
         '      "{\\"type\\":\\"duplicateUsageReceipt\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
         '      ",\\"receipt\\":" ++ jsonStr rid ++ ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
+        '  | .nonActualUsageQuantity armNode srcNode rid costTag qk =>',
+        '      "{\\"type\\":\\"nonActualUsageQuantity\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
+        '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"receipt\\":" ++ jsonStr rid ++',
+        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ ",\\"quantity_kind\\":" ++ jsonStr (qkindName qk) ++ "}"',
         '  | .unverifiedUsageAttribution armNode srcNode rid costTag status =>',
         '      "{\\"type\\":\\"unverifiedUsageAttribution\\",\\"arm\\":" ++ jsonStr (nodeName armNode) ++',
         '      ",\\"source\\":" ++ jsonStr (nodeName srcNode) ++ ",\\"receipt\\":" ++ jsonStr rid ++',
@@ -306,6 +317,11 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.unboundUsageSource Node.{f['arm']} Node.{f['source']} Tag.{f['cost_tag']}"
     if ft == "duplicateUsageReceipt":
         return f'FlowFinding.duplicateUsageReceipt Node.{f["arm"]} "{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]}'
+    if ft == "nonActualUsageQuantity":
+        return (
+            f'FlowFinding.nonActualUsageQuantity Node.{f["arm"]} Node.{f["source"]} '
+            f'"{escape_lean_str(f["receipt"])}" Tag.{f["cost_tag"]} UsageQuantityKind.{f["quantity_kind"]}'
+        )
     if ft == "unverifiedUsageAttribution":
         return (
             f'FlowFinding.unverifiedUsageAttribution Node.{f["arm"]} Node.{f["source"]} '

@@ -56,16 +56,21 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
     if ft == "duplicateUsageReceipt":
         return f"**[Duplicate Usage Receipt]** arm `{f['arm']}` reuses or omits receipt `{f['receipt']}` for `{f['cost_tag']}`"
+    if ft == "nonActualUsageQuantity":
+        return (
+            f"**[Non-Actual Usage Quantity]** usage item `{f['receipt']}` on `{f['arm']}` "
+            f"(`{f['source']}`, `{f['cost_tag']}`) is `{f.get('quantity_kind', 'unknown')}`, not actual measured spend"
+        )
     if ft == "unverifiedUsageAttribution":
-        status = f.get("status", "unverified")
+        status = f.get("status", "unverifiedProse")
         if status == "contradicted":
             return (
                 f"**[Contradicted Budget Attribution]** usage item `{f['receipt']}` on `{f['arm']}` "
-                f"(`{f['source']}`, `{f['cost_tag']}`) is contradicted by its quote (cites opposite arm or wrong source)"
+                f"(`{f['source']}`, `{f['cost_tag']}`) is contradicted by its quote (wrong arm/source, non-actual quantity, negated spend, or prose restatement)"
             )
         return (
-            f"**[Unverified Budget Attribution]** usage item `{f['receipt']}` on `{f['arm']}` "
-            f"(`{f['source']}`, `{f['cost_tag']}`) cannot be mechanically attributed to that arm from its free-text quote — budget parity unverified"
+            f"**[Unverified Prose Budget]** usage item `{f['receipt']}` on `{f['arm']}` "
+            f"(`{f['source']}`, `{f['cost_tag']}`) lacks a source-grounded structured billing/run receipt or unambiguous arm attribution — actual budget parity unverified"
         )
     if ft == "unmatchedControlBudget":
         return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
@@ -82,6 +87,7 @@ def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "dimension": u.get("dimension"),
                 "unit": u.get("unit"),
                 "amount": u.get("amount"),
+                "quantity_kind": u.get("quantity_kind", "actualSpend"),
             }
             for u in usages
         ],
@@ -92,6 +98,7 @@ def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             str(x["dimension"]),
             str(x["unit"]),
             int(x["amount"] or 0),
+            str(x["quantity_kind"]),
         ),
     )
 
@@ -228,6 +235,16 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         if not c["findings"]:
             lines.append("- **Findings:** None (clean under checked rules).")
         else:
+            if (
+                meta.get("kind") == "effectivenessClaim"
+                and all(
+                    f.get("type") == "unverifiedUsageAttribution" and f.get("status") == "unverifiedProse"
+                    for f in c["findings"]
+                )
+            ):
+                lines.append(
+                    "- **Budget status:** Declared figures sum to equal totals, but actual budget parity is **UNVERIFIED** (plain prose without source-grounded structured billing/run receipt IDs)."
+                )
             lines.append("- **Findings:**")
             for f in c["findings"]:
                 lines.append(f"  - {format_finding_human(f)}")
@@ -539,7 +556,7 @@ CRITICAL RULES:
 5. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`).
 6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
-   - `method_usage` and `control_usage`: lists of `{{"arm": "<arm_node>", "source": "<source_node>", "receipt": "<unique_id>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing full amount + unit and identifying the arm>"}}` (empty `[]` if unquantified in the paper; ambiguous free-text quotes are flagged `unverified` rather than certified `admissible`).
+   - `method_usage` and `control_usage`: lists of `{{"arm": "<arm_node>", "source": "<source_node>", "receipt": "<TXN-.../INV-.../RUN-...>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quantity_kind": "actualSpend|requestedOrAllocated|estimatedOrProjected|unknown", "quote": "<verbatim quote with intact source-doc number + unit + receipt ID>"}}` (empty `[]` if unquantified; plain prose without source-grounded structured billing/run receipt IDs is flagged `unverifiedProse` rather than certified `admissible`).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
 8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
 
