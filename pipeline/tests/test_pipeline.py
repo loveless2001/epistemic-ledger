@@ -495,20 +495,21 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("identical Lean-verified verdicts and full claim signatures", md)
 
     def test_v23_effectiveness_claim_numeric_budgets_forget_proof_and_arm_independence(self) -> None:
-        """Tier 2 (v2.3): end-to-end JSON -> Lean 4 kernel tests fixing all Codex R1 v2.2 counterexamples:
-        (1) 100 vs 1 GPU-hr on same cluster -> unmatchedControlBudget,
-        (2) separate accounts both spending 500 USD with post-hoc metering -> admissible,
-        (3) `forget .shown` CANNOT erase physically spent human hours -> unaccountedCostSource,
-        (4) control derived from method -> dependentControlArm,
-        (5) empty usage lists -> unquantifiedBudget,
-        (6) reviewerStressTest provenance recorded cleanly in report."""
+        """Tier 2 (v2.4 — structural only): end-to-end JSON -> Lean 4 kernel tests:
+        (1) quantitative `derivedComparison` claim -> `outOfScope` (no numeric verification),
+        (2) separate independent accounts with post-hoc metering -> `admissible`,
+        (3) `forget .shown` CANNOT erase physically spent human hours -> `unaccountedCostSource` (`rejected`),
+        (4) control derived from method -> `dependentControlArm` (`rejected`),
+        (5) fake ledger cloned from control -> `unaccountedCostSource` (`rejected`),
+        (6) missing control & ledger -> `missingCostAccounting` + `missingMatchedControl` (`unestablished`),
+        (7) reviewerStressTest provenance recorded cleanly in report & compare."""
         doc = ingest_document(str(SAMPLE_DOC))
         q = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
         q_num = "We investigate whether 3D spatial structure emerges in neural representations trained without 3D prediction targets across two experimental regimes."
         spec = {
-            "schema_version": "epistemic-ledger/v2.3",
+            "schema_version": "epistemic-ledger/v2.4",
             "auditor": "CostAuditorV23",
-            "paper_title": "Tier-2 v2.3 Cost & Control Test",
+            "paper_title": "Tier-2 v2.4 Structural Cost & Control Test",
             "nodes": [
                 "sharedCluster",
                 "accountA",
@@ -528,7 +529,7 @@ class PipelineTests(unittest.TestCase):
                 "evalEqualSep",
                 "evalForgotten",
                 "evalDependent",
-                "evalUnquantified",
+                "evalNoControl",
                 "evalClonedLedger",
             ],
             "tags": ["resourceCost"],
@@ -553,37 +554,39 @@ class PipelineTests(unittest.TestCase):
                 {"name": "e_equal", "inputs": ["methodAccA", "ctrlAccB", "postHocMeter"], "output": "evalEqualSep", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_forgot", "inputs": ["methodForgetHours", "ctrlCluster", "meterCluster"], "output": "evalForgotten", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_dep", "inputs": ["methodCluster", "clonedCtrl", "meterCluster"], "output": "evalDependent", "kind": "transform", "introduces": [], "quote": q},
-                {"name": "e_unq", "inputs": ["methodCluster", "ctrlCluster", "meterCluster"], "output": "evalUnquantified", "kind": "transform", "introduces": [], "quote": q},
+                {"name": "e_nocontrol", "inputs": ["methodCluster"], "output": "evalNoControl", "kind": "transform", "introduces": [], "quote": q},
                 {"name": "e_cloned_l", "inputs": ["methodCluster", "ctrlCluster", "clonedCtrlLedger"], "output": "evalClonedLedger", "kind": "transform", "introduces": [], "quote": q},
             ],
             "claims": [
                 {
-                    "id": "unevenSameCluster",
-                    "statement": "3 vs 2 units on same cluster.",
+                    "id": "derivedRatioOutOfScope",
+                    "statement": "Specific numeric ratio 3/2 on same cluster.",
                     "quote": q_num,
                     "provenance": "reviewerStressTest",
+                    "nature": "quantitative",
+                    "quantitative_kind": "derivedComparison",
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
                     "evaluation_node": "evalUneven",
                     "control_node": "ctrlCluster",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "regimes", "amount": 2, "quote": "purely 2D patch-matching loss objective"}],
                 },
                 {
                     "id": "equalSeparateAccountsPostHoc",
-                    "statement": "Two separate accounts both spending 3 units, post-hoc metered.",
+                    "statement": "Two independent arms metered post-hoc from separate accounts.",
                     "quote": q,
                     "provenance": "authorClaimed",
+                    "nature": "quantitative",
+                    "quantitative_kind": "order",
                     "kind": "effectivenessClaim",
                     "method_node": "methodAccA",
                     "evaluation_node": "evalEqualSep",
                     "control_node": "ctrlAccB",
                     "cost_ledger_node": "postHocMeter",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "accountA", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "accountB", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
+                    "method_measurement_quote": q,
+                    "control_measurement_quote": q,
                 },
                 {
                     "id": "forgetCannotEraseSpentHours",
@@ -595,8 +598,6 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "ctrlCluster",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
                     "id": "dependentControlRejected",
@@ -608,8 +609,6 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "clonedCtrl",
                     "cost_ledger_node": "meterCluster",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
                     "id": "clonedControlLedgerRejected",
@@ -621,34 +620,24 @@ class PipelineTests(unittest.TestCase):
                     "control_node": "ctrlCluster",
                     "cost_ledger_node": "clonedCtrlLedger",
                     "cost_tag": "resourceCost",
-                    "method_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
-                    "control_usage": [{"source": "sharedCluster", "dimension": "resourceCost", "unit": "units", "amount": 3, "quote": q}],
                 },
                 {
-                    "id": "unquantifiedBudgetRejected",
-                    "statement": "Missing usage numbers cannot certify matched budget.",
+                    "id": "noControlNoLedgerUnestablished",
+                    "statement": "Method evaluated with no control arm and no cost ledger.",
                     "quote": q,
                     "kind": "effectivenessClaim",
                     "method_node": "methodCluster",
-                    "evaluation_node": "evalUnquantified",
-                    "control_node": "ctrlCluster",
-                    "cost_ledger_node": "meterCluster",
+                    "evaluation_node": "evalNoControl",
+                    "control_node": None,
+                    "cost_ledger_node": None,
                     "cost_tag": "resourceCost",
-                    "method_usage": [],
-                    "control_usage": [],
                 },
             ],
         }
         self.assertEqual(validate_spec(spec, doc=doc)[0], [])
 
-        # Codex R2 P1-1: fabricated amount 1234567 not in verbatim quote MUST fail grounding!
-        fab = copy.deepcopy(spec)
-        fab["claims"][1]["method_usage"][0]["amount"] = 1234567
-        fab_errs, _ = validate_spec(fab, doc=doc)
-        self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in fab_errs))
-
         with tempfile.TemporaryDirectory() as tmp:
-            sp = Path(tmp) / "v23.json"
+            sp = Path(tmp) / "v24.json"
             out = Path(tmp) / "out"
             sp.write_text(json.dumps(spec), encoding="utf-8")
             rc = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(sp), "--out", str(out)])
@@ -658,8 +647,8 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("`reviewerStressTest`", md)
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
-            self.assertEqual(by_id["unevenSameCluster"]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in by_id["unevenSameCluster"]["findings"]], ["unmatchedControlBudget"])
+            self.assertEqual(by_id["derivedRatioOutOfScope"]["verdict"], "outOfScope")
+            self.assertEqual([f["type"] for f in by_id["derivedRatioOutOfScope"]["findings"]], ["claimOutOfScope"])
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["verdict"], "admissible")
             self.assertEqual(by_id["equalSeparateAccountsPostHoc"]["findings"], [])
             self.assertEqual(by_id["forgetCannotEraseSpentHours"]["verdict"], "rejected")
@@ -668,39 +657,50 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([f["type"] for f in by_id["dependentControlRejected"]["findings"]], ["dependentControlArm"])
             self.assertEqual(by_id["clonedControlLedgerRejected"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["clonedControlLedgerRejected"]["findings"]], ["unaccountedCostSource"])
-            self.assertEqual(by_id["unquantifiedBudgetRejected"]["verdict"], "unestablished")
-            self.assertIn("unquantifiedBudget", [f["type"] for f in by_id["unquantifiedBudgetRejected"]["findings"]])
+            self.assertEqual(by_id["noControlNoLedgerUnestablished"]["verdict"], "unestablished")
+            ftypes = [f["type"] for f in by_id["noControlNoLedgerUnestablished"]["findings"]]
+            self.assertIn("missingCostAccounting", ftypes)
+            self.assertIn("missingMatchedControl", ftypes)
 
-            # Codex R2 P2-3: `compare` must flag provenance & usage differences even when verdicts agree!
+            # `compare` flags provenance & nature differences even when verdicts agree!
             s_cmp_a = copy.deepcopy(spec)
             s_cmp_a["auditor"] = "CmpA"
             s_cmp_a["claims"] = [copy.deepcopy(spec["claims"][1])]
             s_cmp_b = copy.deepcopy(s_cmp_a)
             s_cmp_b["auditor"] = "CmpB"
             s_cmp_b["claims"][0]["provenance"] = "reviewerStressTest"
-            s_cmp_b["claims"][0]["method_usage"][0]["unit"] = "other_units"
-            s_cmp_b["claims"][0]["control_usage"][0]["unit"] = "other_units"
+            s_cmp_b["claims"][0]["quantitative_kind"] = "threshold"
             pa, pb = Path(tmp) / "ca.json", Path(tmp) / "cb.json"
             pa.write_text(json.dumps(s_cmp_a), encoding="utf-8")
             pb.write_text(json.dumps(s_cmp_b), encoding="utf-8")
-            out_cmp = Path(tmp) / "cmp_v23"
+            out_cmp = Path(tmp) / "cmp_v24"
             rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)])
             self.assertEqual(rc_cmp, 0)
             comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
             row = comp["claim_comparison"][0]
             self.assertTrue(row["verdicts_agree"])
+            self.assertEqual(row["strictest_verdict"], "admissible")
             self.assertFalse(row["same_provenance"])
-            self.assertFalse(row["same_usage"])
+            self.assertFalse(row["same_nature"])
             cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("provenance/usage differs", cmp_md)
+            self.assertIn("provenance/nature differs", cmp_md)
 
     def test_numeric_boundary_grounding_and_explicit_out_of_scope_notice(self) -> None:
-        """Clean scope boundary:
-        1. `500` MUST NOT match inside `1,500` (`ungrounded_usage_amount`).
-        2. Slicing `500 GPU-hours...` out of `1,500 GPU-hours...` MUST fail (`truncated_numeric_quote`).
-        3. Bookkeeping/accounting semantics (invoices, periods, prose restatements) are explicitly
-           reported as OUT OF SCOPE in both JSON and Markdown reports rather than guessed via regex.
+        """Clean v2.4 scope boundary (user #27429 + Claude #27430 Part A):
+        1. `schema.py` contains NO numeric parser on the verdict path.
+        2. `nature: "quantitative"` enforces `quantitative_kind` in `{order, threshold, specificValue, derivedComparison}`:
+           - `order` / `threshold` verify structure only (independent arms, shared evaluation, forget-proof ledger).
+           - `specificValue` / `derivedComparison` return `outOfScope` cleanly.
+        3. Legacy `method_usage`, `control_usage`, and `reconciliations` fields on `effectivenessClaim` are
+           recognized, ignored during Lean verification, and explicitly reported under `## Out of Scope`,
+           while unknown keys still fail with `unknown_key`.
+        4. `compare` propagates `out_of_scope` into `comparison.json` & `comparison.md`.
         """
+        import pipeline.schema as schema_mod
+
+        self.assertFalse(hasattr(schema_mod, "extract_quote_integers"))
+        self.assertFalse(hasattr(schema_mod, "extract_doc_bounded_quote_integers"))
+
         doc_text = (
             "Compute Comparison Study.\n"
             "1,500 GPU-hours were charged to the method.\n"
@@ -708,12 +708,28 @@ class PipelineTests(unittest.TestCase):
         )
         q_hdr = "Compute Comparison Study."
         q_m1500 = "1,500 GPU-hours were charged to the method."
-        q_m500_sliced = "500 GPU-hours were charged to the method."
         q_c500 = "The control used 500 GPU-hours."
 
-        def make_spec(m_amt: int, m_quote: str) -> dict:
+        def make_spec(nature: str = "quantitative", qkind: str | None = "order") -> dict:
+            claim: dict = {
+                "id": "budgetCheck",
+                "statement": "Method and control are structurally compared at evaluation.",
+                "quote": q_hdr,
+                "provenance": "authorClaimed",
+                "nature": nature,
+                "kind": "effectivenessClaim",
+                "method_node": "methodRun",
+                "evaluation_node": "evalNode",
+                "control_node": "controlRun",
+                "cost_ledger_node": "ledger",
+                "cost_tag": "resourceCost",
+                "method_measurement_quote": q_m1500,
+                "control_measurement_quote": q_c500,
+            }
+            if qkind is not None:
+                claim["quantitative_kind"] = qkind
             return {
-                "schema_version": "epistemic-ledger/v2.3",
+                "schema_version": "epistemic-ledger/v2.4",
                 "auditor": "ScopeAuditor",
                 "paper_title": "Scope Boundary Check",
                 "nodes": ["accountA", "accountB", "methodRun", "controlRun", "ledger", "evalNode"],
@@ -728,22 +744,7 @@ class PipelineTests(unittest.TestCase):
                     {"name": "meter", "inputs": ["accountA", "accountB"], "output": "ledger", "kind": "transform", "introduces": [], "quote": q_hdr},
                     {"name": "eval", "inputs": ["methodRun", "controlRun", "ledger"], "output": "evalNode", "kind": "transform", "introduces": [], "quote": q_hdr},
                 ],
-                "claims": [
-                    {
-                        "id": "budgetCheck",
-                        "statement": "Method and control have matched GPU-hour budgets.",
-                        "quote": q_hdr,
-                        "provenance": "authorClaimed",
-                        "kind": "effectivenessClaim",
-                        "method_node": "methodRun",
-                        "evaluation_node": "evalNode",
-                        "control_node": "controlRun",
-                        "cost_ledger_node": "ledger",
-                        "cost_tag": "resourceCost",
-                        "method_usage": [{"source": "accountA", "dimension": "resourceCost", "unit": "GPU-hours", "amount": m_amt, "quote": m_quote}],
-                        "control_usage": [{"source": "accountB", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 500, "quote": q_c500}],
-                    }
-                ],
+                "claims": [claim],
             }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -751,54 +752,54 @@ class PipelineTests(unittest.TestCase):
             doc_path.write_text(doc_text, encoding="utf-8")
             doc = ingest_document(str(doc_path))
 
-            # 1. `500` inside `1,500` fails grounding
-            e1, _ = validate_spec(make_spec(500, q_m1500), doc=doc)
-            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in e1))
+            # 1. `nature: "quantitative"` without `quantitative_kind` fails schema; `qualitative` with `quantitative_kind` fails schema
+            e_miss, _ = validate_spec(make_spec("quantitative", None), doc=doc)
+            self.assertTrue(any(e.code == "missing_quantitative_kind" for e in e_miss))
+            e_unexp, _ = validate_spec(make_spec("qualitative", "order"), doc=doc)
+            self.assertTrue(any(e.code == "unexpected_quantitative_kind" for e in e_unexp))
 
-            # 2. Sliced quote `500 GPU-hours...` out of `1,500 GPU-hours...` fails grounding
-            e2, _ = validate_spec(make_spec(500, q_m500_sliced), doc=doc)
-            self.assertTrue(any(e.code == "truncated_numeric_quote" for e in e2))
-
-            # 3. Valid 1500 vs 500 runs cleanly and explicitly reports accounting/bookkeeping as out of scope
-            sp = Path(tmp) / "valid.json"
-            sp.write_text(json.dumps(make_spec(1500, q_m1500)), encoding="utf-8")
+            # 2. Structural `order` claim passes without reading numbers and renders `## Out of Scope`
+            sp = Path(tmp) / "valid_order.json"
+            sp.write_text(json.dumps(make_spec("quantitative", "order")), encoding="utf-8")
             out = Path(tmp) / "out"
             self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)]), 0)
             rep = json.loads((out / "ScopeAuditor_report.json").read_text(encoding="utf-8"))
             md = (out / "ScopeAuditor_report.md").read_text(encoding="utf-8")
-            self.assertEqual(rep["lean_verification"]["claims"][0]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in rep["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
-            self.assertTrue(any("out of scope" in s.lower() and "invoice" in s.lower() for s in rep["out_of_scope"]))
+            self.assertEqual(rep["lean_verification"]["claims"][0]["verdict"], "admissible")
+            self.assertEqual(rep["lean_verification"]["claims"][0]["nature"], "quantitative")
+            self.assertEqual(rep["lean_verification"]["claims"][0]["quantitative_kind"], "order")
+            self.assertTrue(any("out of scope" in s.lower() and "without reading or comparing numbers" in s.lower() for s in rep["out_of_scope"]))
             self.assertIn("## Out of Scope", md)
-            self.assertIn("Out of scope (accounting/bookkeeping)", md)
 
-            # 4. Codex #27331-1: Markdown MUST render `## Out of Scope` even when usage lists are empty AND on failed grounding reports!
-            s_empty_usage = make_spec(1500, q_m1500)
-            s_empty_usage["claims"][0]["method_usage"] = []
-            s_empty_usage["claims"][0]["control_usage"] = []
-            sp_empty = Path(tmp) / "empty_usage.json"
-            sp_empty.write_text(json.dumps(s_empty_usage), encoding="utf-8")
-            out_empty = Path(tmp) / "out_empty"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_empty), "--out", str(out_empty)]), 0)
-            md_empty = (out_empty / "ScopeAuditor_report.md").read_text(encoding="utf-8")
-            self.assertIn("## Out of Scope", md_empty)
-            self.assertIn("invoice reconciliation", md_empty)
+            # 3. `specificValue` and `derivedComparison` return `outOfScope`
+            for oos_qkind in ("specificValue", "derivedComparison"):
+                sp_oos = Path(tmp) / f"{oos_qkind}.json"
+                sp_oos.write_text(json.dumps(make_spec("quantitative", oos_qkind)), encoding="utf-8")
+                out_oos = Path(tmp) / f"out_{oos_qkind}"
+                self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_oos), "--out", str(out_oos)]), 0)
+                rep_oos = json.loads((out_oos / "ScopeAuditor_report.json").read_text(encoding="utf-8"))
+                self.assertEqual(rep_oos["lean_verification"]["claims"][0]["verdict"], "outOfScope")
+                self.assertEqual([f["type"] for f in rep_oos["lean_verification"]["claims"][0]["findings"]], ["claimOutOfScope"])
 
-            sp_fail = Path(tmp) / "fail_sliced.json"
-            sp_fail.write_text(json.dumps(make_spec(500, q_m500_sliced)), encoding="utf-8")
+            # 4. Failed grounding report still renders `## Out of Scope`
+            s_fail = make_spec("quantitative", "order")
+            s_fail["claims"][0]["method_measurement_quote"] = "Hallucinated measurement quote not in document."
+            sp_fail = Path(tmp) / "fail_quote.json"
+            sp_fail.write_text(json.dumps(s_fail), encoding="utf-8")
             out_fail = Path(tmp) / "out_fail"
             self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_fail), "--out", str(out_fail)]), 2)
             md_fail = (out_fail / "ScopeAuditor_report.md").read_text(encoding="utf-8")
             self.assertIn("## Out of Scope", md_fail)
-            self.assertIn("invoice reconciliation", md_fail)
 
-            # 5. Codex #27331-2: Known out-of-scope accounting keys (`reconciliations`, `arm`, `receipt`, `charge_event`, `quantity_kind`)
-            # MUST NOT abort structural Lean verification, and MUST be reported as ignored/out of scope; unknown keys still fail!
-            s_legacy = make_spec(1500, q_m1500)
-            s_legacy["claims"][0]["method_usage"][0].update(
-                {"arm": "methodRun", "receipt": "TXN-M1", "charge_event": "TXN-M1", "quantity_kind": "actualSpend"}
-            )
-            s_legacy["claims"][0]["control_usage"][0].update({"arm": "controlRun", "receipt": "JOB-C1"})
+            # 5. Legacy out-of-scope numeric/accounting keys (`method_usage`, `control_usage`, `reconciliations`)
+            # are accepted, ignored during Lean verification, and reported under `## Out of Scope`; unknown keys still fail!
+            s_legacy = make_spec("quantitative", "order")
+            s_legacy["claims"][0]["method_usage"] = [
+                {"source": "accountA", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 999999, "quote": "ignored"}
+            ]
+            s_legacy["claims"][0]["control_usage"] = [
+                {"source": "accountB", "dimension": "resourceCost", "unit": "GPU-hours", "amount": 1, "quote": "ignored"}
+            ]
             s_legacy["claims"][0]["reconciliations"] = [{"arm": "methodRun", "reconciled_total": 1500}]
             sp_legacy = Path(tmp) / "legacy.json"
             sp_legacy.write_text(json.dumps(s_legacy), encoding="utf-8")
@@ -806,17 +807,23 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_legacy), "--out", str(out_legacy)]), 0)
             rep_legacy = json.loads((out_legacy / "ScopeAuditor_report.json").read_text(encoding="utf-8"))
             md_legacy = (out_legacy / "ScopeAuditor_report.md").read_text(encoding="utf-8")
-            self.assertEqual(rep_legacy["lean_verification"]["claims"][0]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in rep_legacy["lean_verification"]["claims"][0]["findings"]], ["unmatchedControlBudget"])
-            self.assertTrue(any("Ignored out-of-scope accounting/bookkeeping fields" in s and "reconciliations" in s for s in rep_legacy["out_of_scope"]))
-            self.assertIn("Ignored out-of-scope accounting/bookkeeping fields", md_legacy)
+            self.assertEqual(rep_legacy["lean_verification"]["claims"][0]["verdict"], "admissible")
+            self.assertTrue(
+                any(
+                    "Ignored out-of-scope numeric/accounting fields" in s
+                    and "reconciliations" in s
+                    and "method_usage" in s
+                    for s in rep_legacy["out_of_scope"]
+                )
+            )
+            self.assertIn("Ignored out-of-scope numeric/accounting fields", md_legacy)
 
             s_bogus = copy.deepcopy(s_legacy)
             s_bogus["claims"][0]["bogus_extra"] = 123
             e_bogus, _ = validate_spec(s_bogus, doc=doc)
             self.assertTrue(any(e.code == "unknown_key" for e in e_bogus))
 
-            # 6. Codex #27335: `compare` MUST also propagate `out_of_scope` into comparison.json & comparison.md!
+            # 6. `compare` propagates `out_of_scope` into comparison.json & comparison.md
             out_cmp_oos = Path(tmp) / "out_cmp_oos"
             self.assertEqual(
                 cli_main(["compare", "--doc", str(doc_path), "--spec", str(sp), "--spec", str(sp_legacy), "--out", str(out_cmp_oos)]),
@@ -824,10 +831,10 @@ class PipelineTests(unittest.TestCase):
             )
             comp_oos = json.loads((out_cmp_oos / "comparison.json").read_text(encoding="utf-8"))
             comp_oos_md = (out_cmp_oos / "comparison.md").read_text(encoding="utf-8")
-            self.assertTrue(any("invoice reconciliation" in s for s in comp_oos["out_of_scope"]))
-            self.assertTrue(any("Ignored out-of-scope accounting/bookkeeping fields" in s for s in comp_oos["out_of_scope"]))
+            self.assertTrue(any("without reading or comparing numbers" in s for s in comp_oos["out_of_scope"]))
+            self.assertTrue(any("Ignored out-of-scope numeric/accounting fields" in s for s in comp_oos["out_of_scope"]))
             self.assertIn("## Out of Scope", comp_oos_md)
-            self.assertIn("Ignored out-of-scope accounting/bookkeeping fields", comp_oos_md)
+            self.assertIn("Ignored out-of-scope numeric/accounting fields", comp_oos_md)
 
     def test_four_state_verdicts_admissible_unestablished_rejected_out_of_scope(self) -> None:
         """4-state `EpistemicVerdict` end-to-end test:
@@ -1022,7 +1029,7 @@ class PipelineTests(unittest.TestCase):
 
             rep_a = json.loads((out / "SpanA_report.json").read_text(encoding="utf-8"))
             by_id = {c["id"]: c for c in rep_a["lean_verification"]["claims"]}
-            self.assertEqual(by_id["soleNotShown"]["verdict"], "unestablished")
+            self.assertEqual(by_id["soleNotShown"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["soleNotShown"]["findings"]], ["failedForgetOnPath"])
             self.assertEqual(by_id["notShownPlusBypass"]["verdict"], "rejected")
             self.assertIn("smuggledStructure", [f["type"] for f in by_id["notShownPlusBypass"]["findings"]])
@@ -1488,9 +1495,9 @@ class PipelineTests(unittest.TestCase):
             ops.append({"name": "op_eval", "inputs": ["step_10", "step_11", "step_12"], "output": "step_13", "kind": "transform", "introduces": [], "quote": q_21m})
 
             spec = {
-                "schema_version": "epistemic-ledger/v2.3",
+                "schema_version": "epistemic-ledger/v2.4",
                 "auditor": "LargeGraphScale",
-                "paper_title": "Large Graph & Scaled Numbers",
+                "paper_title": "Large Graph & Epistemic v2.4",
                 "nodes": nodes,
                 "tags": ["resourceCost", "hypA"],
                 "sources": sources,
@@ -1498,21 +1505,24 @@ class PipelineTests(unittest.TestCase):
                 "claims": [
                     {
                         "id": "scaledEfficiency",
-                        "statement": "Compare 21.6M vs 900M samples on 25-node graph.",
+                        "statement": "Compare good views vs next-token structurally on 25-node graph.",
                         "quote": q_21m,
+                        "nature": "quantitative",
+                        "quantitative_kind": "order",
                         "kind": "effectivenessClaim",
                         "method_node": "step_10",
                         "evaluation_node": "step_13",
                         "control_node": "step_11",
                         "cost_ledger_node": "step_12",
                         "cost_tag": "resourceCost",
-                        "method_usage": [{"source": "src_0", "dimension": "resourceCost", "unit": "samples", "amount": 21600000, "quote": q_21m}],
-                        "control_usage": [{"source": "src_1", "dimension": "resourceCost", "unit": "samples", "amount": 900000000, "quote": q_21m}],
+                        "method_measurement_quote": q_21m,
+                        "control_measurement_quote": q_21m,
                     },
                     {
                         "id": "deepConditional",
                         "statement": "Conditional on all 11 declared sources across 25-node graph.",
                         "quote": q_aux,
+                        "nature": "qualitative",
                         "kind": "conditionalFlow",
                         "target": "step_13",
                         "declared_sources": [f"src_{i}" for i in range(11)],
@@ -1521,127 +1531,6 @@ class PipelineTests(unittest.TestCase):
             }
             self.assertEqual(validate_spec(spec, doc=doc)[0], [])
 
-            # Also verify 1.5 billion, 4.2K, 100MB (plain 100, NOT scaled by M!),
-            # and unit-scaled `900` with unit `million training samples` matching `900M` (Claude #27398)
-            spec_aux = copy.deepcopy(spec)
-            spec_aux["claims"][0]["method_usage"] = [
-                {"source": "src_0", "dimension": "resourceCost", "unit": "tokens", "amount": 1500000000, "quote": q_aux},
-                {"source": "src_0", "dimension": "resourceCost", "unit": "steps", "amount": 4200, "quote": q_aux},
-                {"source": "src_0", "dimension": "resourceCost", "unit": "MB", "amount": 100, "quote": q_aux},
-            ]
-            spec_aux["claims"][0]["control_usage"] = [
-                {"source": "src_1", "dimension": "resourceCost", "unit": "million training samples", "amount": 900, "quote": q_21m},
-            ]
-            self.assertEqual(validate_spec(spec_aux, doc=doc)[0], [])
-
-            # Wrong unit magnitude (`900` with plain unit `samples` against `900M`) MUST still fail!
-            spec_wrong_scale = copy.deepcopy(spec)
-            spec_wrong_scale["claims"][0]["control_usage"][0]["amount"] = 900
-            spec_wrong_scale["claims"][0]["control_usage"][0]["unit"] = "samples"
-            errs_ws, _ = validate_spec(spec_wrong_scale, doc=doc)
-            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_ws))
-
-            # Codex #27406 negative control: inflating plain `100` (from `100MB`) to `amount=100, unit="million MB"`
-            # MUST fail (`ungrounded_usage_amount`) rather than matching plain `100 in parsed_ints`!
-            spec_inflated = copy.deepcopy(spec_aux)
-            spec_inflated["claims"][0]["method_usage"] = [
-                {"source": "src_0", "dimension": "resourceCost", "unit": "million MB", "amount": 100, "quote": q_aux},
-            ]
-            errs_inf, _ = validate_spec(spec_inflated, doc=doc)
-            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_inf))
-
-            # Codex #27395 / #27416 negative control: clipping `100MB` to `100M` at the end of a quote
-            # MUST fail (`truncated_numeric_quote`) for both `100_000_000 megabytes` and `100 million megabytes`!
-            q_clipped_100m = "Auxiliary run used 1.5 billion tokens and 4.2K steps (100M"
-            for amt, unit in [(100_000_000, "megabytes"), (100, "million megabytes")]:
-                spec_clipped_mb = copy.deepcopy(spec_aux)
-                spec_clipped_mb["claims"][0]["method_usage"] = [
-                    {"source": "src_0", "dimension": "resourceCost", "unit": unit, "amount": amt, "quote": q_clipped_100m},
-                ]
-                errs_cm, _ = validate_spec(spec_clipped_mb, doc=doc)
-                self.assertTrue(
-                    any(e.code == "truncated_numeric_quote" for e in errs_cm),
-                    f"Expected truncated_numeric_quote for clipped 100M ({amt} {unit}), got {errs_cm}",
-                )
-
-            # Also verify other alphanumeric suffix clippings (`100ms` -> `100m`, `100kWh` -> `100k`),
-            # leading decimals (`.109`), and scientific notation (`1e6`, `1e+6`, `1e-6`, `1.5E-6`, `1.e+6`)
-            # — both in full quotes and in quotes sliced starting at the exponent (Codex #27419).
-            edge_doc_path = base / "edge_nums.txt"
-            edge_doc_path.write_text(
-                "Latency stayed at 100ms using 100kWh, score .109 over 1e6 evaluations.\n"
-                "The method stored 1e+6 megabytes and 1e-6 megabytes (plus 1.5E+6 and 1.e-6 in phase-6).\n"
-                "During trial, method stored 1e\u22126 megabytes (offset \u2212500).\n"
-                "The control stored 6 megabytes and 1 megabyte.\n",
-                encoding="utf-8",
-            )
-            edge_doc = ingest_document(str(edge_doc_path))
-            from pipeline.schema import extract_doc_bounded_quote_integers, verify_quote_in_document
-
-            for q_edge, expected_intact, expected_trunc in [
-                ("Latency stayed at 100m", set(), {100_000_000}),
-                ("Latency stayed at 100ms using 100k", {100}, {100_000}),
-                ("score .109 over 1e6 evaluations.", set(), set()),
-                ("The method stored 1e+6 megabytes and 1e-6 megabytes", set(), set()),
-                ("+6 megabytes and 1e-6 megabytes", set(), {6}),
-                ("6 megabytes and 1e-6 megabytes", set(), {6}),
-                ("6 megabytes (plus 1.5E+6 and 1.e-6", set(), {6}),
-                ("+6 and 1.e-6 in phase-6).", {6}, {6}),
-                ("During trial, method stored 1e\u22126 megabytes (offset \u2212500).", set(), set()),
-                ("During trial, method stored 1", set(), {1}),
-                ("6 megabytes (offset \u2212500).", set(), {6}),
-                ("500). The control stored 6 megabytes", {6}, {500}),
-            ]:
-                qm_edge = verify_quote_in_document(edge_doc, q_edge, "test")
-                self.assertTrue(qm_edge.matched, q_edge)
-                intact_e, trunc_e = extract_doc_bounded_quote_integers(q_edge, doc=edge_doc, qm=qm_edge)
-                self.assertEqual({v for v, _, _ in intact_e}, expected_intact, q_edge)
-                self.assertEqual(trunc_e, expected_trunc, q_edge)
-
-            # End-to-end validate_spec check matching Codex #27419 and #27421 (ASCII +/- and Unicode U+2212):
-            for q_sci, amt_sci, expected_code in [
-                ("The method stored 1e+6 megabytes", 6, "ungrounded_usage_amount"),
-                ("+6 megabytes and 1e-6 megabytes", 6, "truncated_numeric_quote"),
-                ("6 megabytes and 1e-6 megabytes", 6, "truncated_numeric_quote"),
-                ("and 1e-6 megabytes (plus 1.5E+6", 6, "ungrounded_usage_amount"),
-                ("6 megabytes (plus 1.5E+6 and 1.e-6", 6, "truncated_numeric_quote"),
-                ("During trial, method stored 1e\u22126 megabytes", 6, "ungrounded_usage_amount"),
-                ("During trial, method stored 1e\u22126 megabytes", 1, "ungrounded_usage_amount"),
-                ("6 megabytes (offset \u2212500).", 6, "truncated_numeric_quote"),
-                ("During trial, method stored 1", 1, "truncated_numeric_quote"),
-            ]:
-                spec_sci = copy.deepcopy(spec_aux)
-                spec_sci["sources"] = [
-                    {**s, "quote": "The control stored 6 megabytes and 1 megabyte."} for s in spec_sci["sources"]
-                ]
-                spec_sci["ops"] = [
-                    {**o, "quote": "The control stored 6 megabytes and 1 megabyte."} for o in spec_sci["ops"]
-                ]
-                spec_sci["claims"] = [
-                    {
-                        **spec_sci["claims"][0],
-                        "quote": "The control stored 6 megabytes and 1 megabyte.",
-                        "method_usage": [
-                            {"source": "src_0", "dimension": "resourceCost", "unit": "megabytes", "amount": amt_sci, "quote": q_sci},
-                        ],
-                        "control_usage": [
-                            {"source": "src_1", "dimension": "resourceCost", "unit": "megabytes", "amount": amt_sci, "quote": "The control stored 6 megabytes and 1 megabyte."},
-                        ],
-                    }
-                ]
-                errs_sci, _ = validate_spec(spec_sci, doc=edge_doc)
-                self.assertTrue(
-                    any(e.code == expected_code for e in errs_sci),
-                    f"Expected {expected_code} for {q_sci!r} (amt={amt_sci}), got {errs_sci}",
-                )
-
-            # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
-            spec_sliced = copy.deepcopy(spec)
-            spec_sliced["claims"][0]["control_usage"][0]["amount"] = 900
-            spec_sliced["claims"][0]["control_usage"][0]["quote"] = q_sliced_900
-            errs_s, _ = validate_spec(spec_sliced, doc=doc)
-            self.assertTrue(any(e.code == "truncated_numeric_quote" for e in errs_s))
-
             sp = base / "large.json"
             sp.write_text(json.dumps(spec), encoding="utf-8")
             out = base / "out"
@@ -1649,9 +1538,219 @@ class PipelineTests(unittest.TestCase):
             rep = json.loads((out / "LargeGraphScale_report.json").read_text(encoding="utf-8"))
             self.assertTrue(rep["lean_verification"]["axioms_ok"])
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
-            self.assertEqual(by_id["scaledEfficiency"]["verdict"], "rejected")
-            self.assertEqual([f["type"] for f in by_id["scaledEfficiency"]["findings"]], ["unmatchedControlBudget"])
+            self.assertEqual(by_id["scaledEfficiency"]["verdict"], "admissible")
+            self.assertEqual(by_id["scaledEfficiency"]["findings"], [])
             self.assertEqual(by_id["deepConditional"]["verdict"], "admissible")
+
+            # Epistemic v2.4 (Claude #27430 + #27432 amendment) on real-sentence patterns:
+            # - Part A (JEPA `"need 42 times fewer"`): separate claims for observed order (`effectivenessClaim`),
+            #   necessity hypothesis `"need"` (`theoremApplication`), and derived ratio `"42 times"` (`outOfScope`)
+            # - Part B (Barontini F2): `emergesWithout` / `emergesWithExclusion` across `.forget ... .notShown` -> `rejected`
+            # - Part C (Spacetime Q6 vs Q7): `hedged: true` + `hedge_quote` is grounded & displayed on the modified clause
+            #   WITHOUT changing Lean verdicts; `"Given a supplied X, Y follows"` stays `conditionalFlow` (`admissible`)
+            # - Part D (Barontini Q4): `compare` emits `strictest_verdict` column (`unestablished` vs `admissible` -> `unestablished`)
+            ep_doc_text = (
+                "The states are ordered using only internal degrees of freedom without laboratory time.\n"
+                "Spacetime geometry can emerge from an agent's predictions alone.\n"
+                "Within this task, spacetime geometry is obtained from an agent's successful predictions and actions, providing a first step toward emergent spacetime.\n"
+                "Given a supplied coordinate grid, the learned map follows directly.\n"
+                "These results establish a controlled experimental setting for entropic time.\n"
+                "Good views need 42 times fewer training samples than next-token prediction; we scored no earlier next-token checkpoint.\n"
+            )
+            q_bar = "The states are ordered using only internal degrees of freedom without laboratory time."
+            q_sp6 = "Spacetime geometry can emerge from an agent's predictions alone."
+            q_sp7 = "Within this task, spacetime geometry is obtained from an agent's successful predictions and actions, providing a first step toward emergent spacetime."
+            q_cond = "Given a supplied coordinate grid, the learned map follows directly."
+            q_bar4 = "These results establish a controlled experimental setting for entropic time."
+            q_jepa_need = "Good views need 42 times fewer training samples than next-token prediction; we scored no earlier next-token checkpoint."
+            ep_doc_path = base / "epistemic_v24.txt"
+            ep_doc_path.write_text(ep_doc_text, encoding="utf-8")
+            ep_doc = ingest_document(str(ep_doc_path))
+
+            # Prompt check: includes v2.4 nature/quantitative_kind/decomposition/hedging rules
+            from pipeline.report import build_extraction_prompt
+
+            prompt_txt = build_extraction_prompt(ep_doc, auditor_name="BlindPromptCheck")
+            for needle in (
+                "epistemic-ledger/v2.4",
+                "quantitative_kind",
+                "specificValue",
+                "derivedComparison",
+                "Decompose compound",
+                "hedged",
+                "hedge_quote",
+                "display-only",
+                "Within this task",
+                "Given a supplied X, Y follows",
+            ):
+                self.assertIn(needle, prompt_txt)
+
+            spec_ep_a = {
+                "schema_version": "epistemic-ledger/v2.4",
+                "auditor": "EpistemicA",
+                "paper_title": "Epistemic v2.4 Regression",
+                "nodes": [
+                    "labTime", "internalOrder", "minkowskiGrid", "cleanObs",
+                    "agentGeom", "cleanGeom", "condMap", "barSetting",
+                ],
+                "tags": ["externalTime", "spacetimeMetric", "noLabTimeOrder", "controlNeedsFullBudget"],
+                "sources": [
+                    {"node": "labTime", "origin": "setByExperimenter", "carries": ["externalTime"], "quote": q_bar},
+                    {"node": "minkowskiGrid", "origin": "setByExperimenter", "carries": ["spacetimeMetric"], "quote": q_sp6},
+                    {"node": "cleanObs", "origin": "measured", "carries": [], "quote": q_sp7},
+                ],
+                "ops": [
+                    {"name": "drop_lab_time", "inputs": ["labTime"], "output": "internalOrder", "kind": "forget", "tag": "externalTime", "evidence": "notShown", "quote": q_bar},
+                    {"name": "train_agent", "inputs": ["minkowskiGrid"], "output": "agentGeom", "kind": "transform", "introduces": [], "quote": q_sp6},
+                    {"name": "clean_step", "inputs": ["cleanObs"], "output": "cleanGeom", "kind": "transform", "introduces": [], "quote": q_sp7},
+                    {"name": "derive_cond", "inputs": ["minkowskiGrid"], "output": "condMap", "kind": "transform", "introduces": [], "quote": q_cond},
+                    {"name": "run_exp", "inputs": ["internalOrder"], "output": "barSetting", "kind": "transform", "introduces": [], "quote": q_bar4},
+                ],
+                "claims": [
+                    {
+                        "id": "barontiniF2UnverifiedForget",
+                        "statement": "States are ordered using only internal degrees of freedom.",
+                        "quote": q_bar,
+                        "nature": "qualitative",
+                        "kind": "emergesWithout",
+                        "target": "internalOrder",
+                        "tag": "externalTime",
+                    },
+                    {
+                        "id": "spacetimeQ6Unhedged",
+                        "statement": "Spacetime geometry can emerge from predictions alone.",
+                        "quote": q_sp6,
+                        "nature": "qualitative",
+                        "kind": "emergesWithExclusion",
+                        "target": "agentGeom",
+                        "excluded_channel": "agentGeom",
+                        "tag": "spacetimeMetric",
+                    },
+                    {
+                        "id": "spacetimeQ7Hedged",
+                        "statement": "Providing a first step toward emergent spacetime (hedged clause — display-only, does not alter verdict).",
+                        "quote": q_sp7,
+                        "nature": "qualitative",
+                        "hedged": True,
+                        "hedge_quote": "providing a first step toward emergent spacetime",
+                        "kind": "emergesWithExclusion",
+                        "target": "agentGeom",
+                        "excluded_channel": "agentGeom",
+                        "tag": "spacetimeMetric",
+                    },
+                    {
+                        "id": "cleanHedgedEmergence",
+                        "statement": "Clean hedged emergence with no upstream metric leak stays admissible.",
+                        "quote": q_sp7,
+                        "nature": "qualitative",
+                        "hedged": True,
+                        "hedge_quote": "Within this task, spacetime geometry",
+                        "kind": "emergesWithout",
+                        "target": "cleanGeom",
+                        "tag": "spacetimeMetric",
+                    },
+                    {
+                        "id": "genuineConditional",
+                        "statement": "Given a supplied coordinate grid, the learned map follows directly.",
+                        "quote": q_cond,
+                        "nature": "qualitative",
+                        "kind": "conditionalFlow",
+                        "target": "condMap",
+                        "declared_sources": ["minkowskiGrid"],
+                    },
+                    {
+                        "id": "barontiniQ4Setting",
+                        "statement": "Controlled experimental setting for entropic time.",
+                        "quote": q_bar4,
+                        "nature": "qualitative",
+                        "kind": "theoremApplication",
+                        "target": "barSetting",
+                        "hypotheses": [{"tag": "noLabTimeOrder", "status": "bet", "quote": q_bar}],
+                        "declared_bets": [],
+                    },
+                    {
+                        "id": "jepaNeedNecessityHyp",
+                        "statement": "Control actually requires the full training budget (necessity proposition of 'need').",
+                        "quote": q_jepa_need,
+                        "nature": "qualitative",
+                        "kind": "theoremApplication",
+                        "target": "barSetting",
+                        "hypotheses": [{"tag": "controlNeedsFullBudget", "status": "bet", "quote": "we scored no earlier next-token checkpoint"}],
+                        "declared_bets": ["controlNeedsFullBudget"],
+                    },
+                    {
+                        "id": "jepaRatio42OutOfScope",
+                        "statement": "Derived ratio '42 times fewer' is out of scope.",
+                        "quote": q_jepa_need,
+                        "nature": "quantitative",
+                        "quantitative_kind": "derivedComparison",
+                        "kind": "outOfScope",
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec_ep_a, doc=ep_doc)[0], [])
+
+            # Hedged schema negative controls
+            bad_h1 = copy.deepcopy(spec_ep_a)
+            del bad_h1["claims"][2]["hedge_quote"]
+            self.assertTrue(any(e.code == "missing_hedge_quote" for e in validate_spec(bad_h1, doc=ep_doc)[0]))
+            bad_h2 = copy.deepcopy(spec_ep_a)
+            bad_h2["claims"][1]["hedge_quote"] = "Within this task, spacetime geometry"
+            self.assertTrue(any(e.code == "unexpected_hedge_quote" for e in validate_spec(bad_h2, doc=ep_doc)[0]))
+            bad_h3 = copy.deepcopy(spec_ep_a)
+            bad_h3["claims"][2]["hedge_quote"] = "Hallucinated hedge phrase not in text"
+            self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_h3, doc=ep_doc)[0]))
+
+            # Auditor B omits the extra unchecked bet on Q4 -> `admissible`, creating DISAGREE (A=unestablished, B=admissible)
+            spec_ep_a_cmp = copy.deepcopy(spec_ep_a)
+            spec_ep_a_cmp["claims"] = [
+                c for c in spec_ep_a["claims"] if c["id"] not in ("cleanHedgedEmergence", "jepaRatio42OutOfScope")
+            ]
+            spec_ep_b = copy.deepcopy(spec_ep_a_cmp)
+            spec_ep_b["auditor"] = "EpistemicB"
+            for cl in spec_ep_b["claims"]:
+                if cl["id"] == "barontiniQ4Setting":
+                    cl["hypotheses"][0]["status"] = "discharged"
+
+            sp_ep_full = base / "ep_full.json"
+            sp_ep_full.write_text(json.dumps(spec_ep_a), encoding="utf-8")
+            out_ep = base / "out_ep"
+            self.assertEqual(cli_main(["run", "--doc", str(ep_doc_path), "--spec", str(sp_ep_full), "--out", str(out_ep)]), 0)
+            rep_ep = json.loads((out_ep / "EpistemicA_report.json").read_text(encoding="utf-8"))
+            md_ep = (out_ep / "EpistemicA_report.md").read_text(encoding="utf-8")
+            ep_by_id = {c["id"]: c for c in rep_ep["lean_verification"]["claims"]}
+            self.assertEqual(ep_by_id["barontiniF2UnverifiedForget"]["verdict"], "rejected")
+            self.assertEqual(ep_by_id["spacetimeQ6Unhedged"]["verdict"], "rejected")
+            # Amended Part C (#27432): hedge marker is display-only and does NOT alter verdict
+            self.assertEqual(ep_by_id["spacetimeQ7Hedged"]["verdict"], "rejected")
+            self.assertTrue(ep_by_id["spacetimeQ7Hedged"]["hedged"])
+            self.assertEqual(ep_by_id["spacetimeQ7Hedged"]["hedge_quote"], "providing a first step toward emergent spacetime")
+            self.assertEqual(ep_by_id["cleanHedgedEmergence"]["verdict"], "admissible")
+            self.assertEqual(ep_by_id["genuineConditional"]["verdict"], "admissible")
+            self.assertEqual(ep_by_id["barontiniQ4Setting"]["verdict"], "unestablished")
+            self.assertEqual(ep_by_id["jepaNeedNecessityHyp"]["verdict"], "admissible")
+            self.assertEqual(ep_by_id["jepaNeedNecessityHyp"]["declared_bet_count"], 1)
+            self.assertEqual(ep_by_id["jepaRatio42OutOfScope"]["verdict"], "outOfScope")
+            self.assertIn("Hedge quote:", md_ep)
+
+            sp_ep_a = base / "ep_a.json"
+            sp_ep_b = base / "ep_b.json"
+            sp_ep_a.write_text(json.dumps(spec_ep_a_cmp), encoding="utf-8")
+            sp_ep_b.write_text(json.dumps(spec_ep_b), encoding="utf-8")
+            out_ep_cmp = base / "out_ep_cmp"
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(ep_doc_path), "--spec", str(sp_ep_a), "--spec", str(sp_ep_b), "--out", str(out_ep_cmp)]),
+                0,
+            )
+            comp_ep = json.loads((out_ep_cmp / "comparison.json").read_text(encoding="utf-8"))
+            comp_ep_md = (out_ep_cmp / "comparison.md").read_text(encoding="utf-8")
+            self.assertIn("| Strictest |", comp_ep_md)
+            rows_by_cid = {r["by_auditor"]["EpistemicA"]["claim_id"]: r for r in comp_ep["claim_comparison"]}
+            self.assertEqual(rows_by_cid["barontiniQ4Setting"]["status"], "DISAGREE")
+            self.assertEqual(rows_by_cid["barontiniQ4Setting"]["strictest_verdict"], "unestablished")
+            self.assertEqual(rows_by_cid["spacetimeQ6Unhedged"]["strictest_verdict"], "rejected")
+            self.assertEqual(rows_by_cid["spacetimeQ7Hedged"]["strictest_verdict"], "rejected")
+            self.assertEqual(rows_by_cid["genuineConditional"]["strictest_verdict"], "admissible")
 
             # Claude #27390: mechanical declaration_locations notes (`in_claim` vs `elsewhere_in_document`)
             # without altering verdicts!

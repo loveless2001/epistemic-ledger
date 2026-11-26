@@ -514,24 +514,9 @@ inductive Tag where
   | resourceCost
   deriving DecidableEq, Repr
 
-/-- Case 1 (Codex P1-1): Same GPU cluster node ID, but 100 GPU-hrs vs 1 GPU-hr -> REJECTED! -/
-def unevenQuantitiesSameCluster : FlowClaim Node Tag where
-  statement := "Same cluster ID, but method spent 100 GPU-hrs while control spent 1 GPU-hr."
-  graph :=
-    ⟨[⟨.sharedGpuCluster, .setByExperimenter, [.resourceCost]⟩],
-     [⟨"run_method", [.sharedGpuCluster], .autonomousSocietyRun, .transform []⟩,
-      ⟨"run_control", [.sharedGpuCluster], .humanPlusAiControlRun, .transform []⟩,
-      ⟨"bill", [.sharedGpuCluster], .postHocBillingMeter, .transform []⟩,
-      ⟨"eval", [.autonomousSocietyRun, .humanPlusAiControlRun, .postHocBillingMeter],
-        .costNormalizedComparison, .transform []⟩]⟩
-  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
-    (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 100⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 1⟩]
-
-/-- Case 2 (Codex P1-1 converse + post-hoc meter): Two separate accounts both spending 500 USD -> ADMISSIBLE! -/
+/-- Case 1 (v2.4 structural): Independent arms + post-hoc cost ledger metering both accounts -> ADMISSIBLE! -/
 def separateAccountsEqualDollars : FlowClaim Node Tag where
-  statement := "Two separate accounts both spending 500 USD, metered post-hoc directly from both accounts."
+  statement := "Two independent arms metered post-hoc directly from both cost accounts."
   graph :=
     ⟨[⟨.accountA, .setByExperimenter, [.resourceCost]⟩,
       ⟨.accountB, .setByExperimenter, [.resourceCost]⟩],
@@ -543,10 +528,8 @@ def separateAccountsEqualDollars : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .postHocBillingMeter) .resourceCost
-    [⟨.accountA, .resourceCost, "USD", 500⟩]
-    [⟨.accountB, .resourceCost, "USD", 500⟩]
 
-/-- Case 3 (Codex P1-2): `forget .resourceCost .shown` CANNOT erase physically spent human hours! -/
+/-- Case 2 (Codex P1-2): `forget .resourceCost .shown` CANNOT erase physically spent human hours! -/
 def forgetShownCannotEraseCost : FlowClaim Node Tag where
   statement := "Human hours passed through forget .shown into method, omitted from ledger."
   graph :=
@@ -560,10 +543,8 @@ def forgetShownCannotEraseCost : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
 
-/-- Case 4 (Codex P1-3): Control arm derived from method output -> REJECTED (`dependentControlArm`)! -/
+/-- Case 3 (Codex P1-3): Control arm derived from method output -> REJECTED (`dependentControlArm`)! -/
 def controlDerivedFromMethod : FlowClaim Node Tag where
   statement := "Control merely copies/transforms method output."
   graph :=
@@ -575,10 +556,8 @@ def controlDerivedFromMethod : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .clonedControlArm) (some .postHocBillingMeter) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
 
-/-- Case 5 (Codex R2 P1-2): Ledger cloned solely from control output (no direct metering path) -> REJECTED! -/
+/-- Case 4 (Codex R2 P1-2): Ledger cloned solely from control output (no direct metering path) -> REJECTED! -/
 def ledgerClonedFromControlOnly : FlowClaim Node Tag where
   statement := "Fake ledger reads only control output rather than metering cost sources directly."
   graph :=
@@ -590,10 +569,8 @@ def ledgerClonedFromControlOnly : FlowClaim Node Tag where
         .costNormalizedComparison, .transform []⟩]⟩
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) (some .partialCostLedger) .resourceCost
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
-    [⟨.sharedGpuCluster, .resourceCost, "gpu_hours", 10⟩]
 
-/-- Case 6 (Society of AI Scientists macro): no control, no ledger, unquantified budget -> REJECTED! -/
+/-- Case 5 (Society of AI Scientists macro): no control, no ledger -> UNESTABLISHED (`epistemicVerdict`)! -/
 def societyNoControlNoCost : FlowClaim Node Tag where
   statement := "936 autonomous agents across 35 labs without control or cost ledger."
   graph :=
@@ -601,13 +578,7 @@ def societyNoControlNoCost : FlowClaim Node Tag where
       ⟨.humanOperatorHours, .setByExperimenter, [.resourceCost]⟩],
      [⟨"run_936_agents", [.sharedGpuCluster, .humanOperatorHours], .autonomousSocietyRun, .transform []⟩,
       ⟨"count_papers", [.autonomousSocietyRun], .rawStudyCountReport, .transform []⟩]⟩
-  kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost [] []
-
-theorem uneven_quantities_rejected :
-    flowVerdict unevenQuantitiesSameCluster = .rejected ∧
-    FlowFinding.unmatchedControlBudget Node.autonomousSocietyRun Node.humanPlusAiControlRun Tag.resourceCost
-      ∈ auditFlow unevenQuantitiesSameCluster := by
-  decide
+  kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost
 
 theorem separate_accounts_equal_dollars_posthoc_meter_admissible :
     flowVerdict separateAccountsEqualDollars = .admissible := by
@@ -657,8 +628,8 @@ theorem society_missing_control_and_cost_epistemic_unestablished :
     epistemicVerdict EffectivenessTests.societyNoControlNoCost = .unestablished := by
   decide
 
-theorem uneven_quantities_epistemic_rejected :
-    epistemicVerdict EffectivenessTests.unevenQuantitiesSameCluster = .rejected := by
+theorem dependent_control_epistemic_rejected :
+    epistemicVerdict EffectivenessTests.controlDerivedFromMethod = .rejected := by
   decide
 
 theorem normative_balancing_epistemic_out_of_scope :
@@ -715,9 +686,11 @@ def unaccessedRecoveryClaim : FlowClaim RNode RTag where
   graph := ⟨[⟨.noise, .measured, []⟩], [⟨"readout", [.noise], .target, .transform []⟩]⟩
   kind := .uniqueRecovery .target .signal
 
-theorem sole_path_notShown_is_unestablished_not_rejected :
+/-- Unhedged emergence across `.forget .signal .notShown` -> `rejected` (Rule 2, Part B: Barontini F2);
+    `uniqueRecovery` across `.forget .signal .notShown` remains `unestablished` (tested below). -/
+theorem sole_path_notShown_emergence_rejected :
     flowVerdict solePathNotShownClaim = .rejected ∧
-    epistemicVerdict solePathNotShownClaim = .unestablished ∧
+    epistemicVerdict solePathNotShownClaim = .rejected ∧
     auditFlow solePathNotShownClaim = [FlowFinding.failedForgetOnPath "unverified_forget" RTag.signal Invariance.notShown] := by
   decide
 

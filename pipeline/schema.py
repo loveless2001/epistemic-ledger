@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize, normalize_whitespace
@@ -86,15 +85,23 @@ VALID_CLAIM_KINDS = frozenset(
     }
 )
 VALID_CLAIM_PROVENANCE = frozenset({"authorClaimed", "reviewerStressTest"})
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3"})
-# Known legacy/accounting fields that are intentionally out of scope for EpistemicLedger
+VALID_CLAIM_NATURES = frozenset({"qualitative", "quantitative"})
+VALID_QUANTITATIVE_KINDS = frozenset({"order", "threshold", "specificValue", "derivedComparison"})
+OUT_OF_SCOPE_QUANTITATIVE_KINDS = frozenset({"specificValue", "derivedComparison"})
+DEFAULT_NUMERIC_OUT_OF_SCOPE_REASON = (
+    "Specific numerical value or derived comparison (ratio/difference from reported numbers): "
+    "an ordinary reviewer can check the reported table directly; out of scope for structural epistemic verification."
+)
+SUPPORTED_SCHEMA_VERSIONS = frozenset(
+    {"epistemic-ledger/v2.1", "epistemic-ledger/v2.2", "epistemic-ledger/v2.3", "epistemic-ledger/v2.4"}
+)
+# Known legacy/accounting/numeric fields that are intentionally out of scope for EpistemicLedger
 # (ignored during structural Lean verification and reported explicitly as out of scope).
-OUT_OF_SCOPE_EFFECTIVENESS_KEYS = frozenset({"reconciliations"})
-OUT_OF_SCOPE_USAGE_KEYS = frozenset({"arm", "receipt", "charge_event", "quantity_kind"})
+OUT_OF_SCOPE_EFFECTIVENESS_KEYS = frozenset({"reconciliations", "method_usage", "control_usage"})
 
 
 def collect_out_of_scope_spec_fields(spec: Any) -> list[str]:
-    """Return sorted names of known out-of-scope accounting/bookkeeping fields present in `spec`."""
+    """Return sorted names of known out-of-scope accounting/numeric fields present in `spec`."""
     found: set[str] = set()
     if not isinstance(spec, dict):
         return []
@@ -107,14 +114,6 @@ def collect_out_of_scope_spec_fields(spec: Any) -> list[str]:
         for k in OUT_OF_SCOPE_EFFECTIVENESS_KEYS:
             if k in cl:
                 found.add(k)
-        for ukey in ("method_usage", "control_usage"):
-            ulist = cl.get(ukey)
-            if isinstance(ulist, list):
-                for entry in ulist:
-                    if isinstance(entry, dict):
-                        for k in OUT_OF_SCOPE_USAGE_KEYS:
-                            if k in entry:
-                                found.add(k)
     return sorted(found)
 
 
@@ -186,151 +185,6 @@ def _check_allowed_keys(
         errors.append(ValidationErrorItem(f"{path}.{k}", "unknown_key", f"Unknown key {k!r}"))
         ok = False
     return ok
-
-
-_MAGNITUDE_SUFFIXES: dict[str, int] = {
-    "k": 1_000,
-    "thousand": 1_000,
-    "m": 1_000_000,
-    "million": 1_000_000,
-    "b": 1_000_000_000,
-    "billion": 1_000_000_000,
-}
-_QUOTE_NUM_RE = re.compile(
-    r"(?P<num>\d+(?:[.,_]\d+)*)(?:(?P<sp>\s*)(?P<word>thousand|million|billion)\b|(?P<abbr>[KMBkmb])(?![A-Za-z0-9_]))?",
-    flags=re.IGNORECASE,
-)
-_TRAILING_WORD_MAG_RE = re.compile(r"\s*(?:thousand|million|billion)\b", flags=re.IGNORECASE)
-_MINUS_SIGNS = "-\u2212"
-_EXP_SIGNS = "+-\u2212"
-_SCI_EXP_RE = re.compile(r"\.?[eE][+\-\u2212]?\d")
-_UNIT_WORD_MAG_RE = re.compile(r"\b(thousand|million|billion)\b", flags=re.IGNORECASE)
-_UNIT_ABBR_MAG_RE = re.compile(r"(?:^|[^A-Za-z0-9])([KMB])(?:$|[^A-Za-z0-9])")
-
-
-def _is_sci_exponent_start(text: str, start: int) -> bool:
-    """Return True iff `text[start:]` begins the exponent of scientific notation
-    (e.g. `6` in `1e6`, `1e+6`, `1e-6`, `1e\u22126`, `1.5E-6`, or `1.e+6`)."""
-    pos = start - 1 if start > 0 and text[start - 1] in _EXP_SIGNS else start
-    if pos >= 2 and text[pos - 1] in "eE":
-        if text[pos - 2].isdigit():
-            return True
-        if pos >= 3 and text[pos - 2] == "." and text[pos - 3].isdigit():
-            return True
-    return False
-
-
-def _unit_magnitude_scale(unit: str) -> int:
-    """Return the exact magnitude multiplier explicitly named in `unit`
-    (e.g. 'million training samples' -> 1_000_000, 'K steps' -> 1_000), or 1 if none."""
-    m_word = _UNIT_WORD_MAG_RE.search(unit)
-    if m_word:
-        return _MAGNITUDE_SUFFIXES[m_word.group(1).lower()]
-    m_abbr = _UNIT_ABBR_MAG_RE.search(unit)
-    if m_abbr:
-        return _MAGNITUDE_SUFFIXES[m_abbr.group(1).lower()]
-    return 1
-
-
-def extract_quote_integers(qtext: str) -> list[tuple[int, int, int]]:
-    """Parse complete non-negative integer tokens from `qtext`, returning `(value, start, end)`.
-
-    Supports plain integers (`500`), thousands-grouped integers (`1,500`), and exact scaled
-    quantities with `K`/`M`/`B` or `thousand`/`million`/`billion` suffixes (e.g. `21.6M` ->
-    `21600000`, `900M` -> `900000000`, `1.5 billion` -> `1500000000`) when the scaled result
-    is an exact integer. Never matches a substring inside a larger grouped number (`500` inside
-    `1,500`) or an unscaled decimal (`99` inside `99.4`)."""
-    results: list[tuple[int, int, int]] = []
-    for m in _QUOTE_NUM_RE.finditer(qtext):
-        start, end = m.start(), m.end()
-        if start > 0 and qtext[start - 1].isalpha():
-            continue
-        if start > 0 and qtext[start - 1] in _MINUS_SIGNS and (start == 1 or not qtext[start - 2].isalnum()):
-            continue
-        if start > 0 and qtext[start - 1] == "." and (start == 1 or not qtext[start - 2].isalpha()):
-            continue
-        if _is_sci_exponent_start(qtext, start):
-            continue
-        num_tok = m.group("num")
-        suffix = (m.group("word") or m.group("abbr") or "").lower()
-        if not suffix and end < len(qtext) and _SCI_EXP_RE.match(qtext[end:]):
-            continue
-        if suffix:
-            mult = _MAGNITUDE_SUFFIXES[suffix]
-            if re.fullmatch(r"\d+(?:\.\d+)?", num_tok):
-                clean = num_tok
-            elif re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", num_tok):
-                clean = num_tok.replace(",", "")
-            else:
-                continue
-            try:
-                scaled = Decimal(clean) * mult
-            except InvalidOperation:
-                continue
-            if scaled == int(scaled):
-                results.append((int(scaled), start, end))
-        else:
-            if re.fullmatch(r"\d+", num_tok):
-                results.append((int(num_tok), start, end))
-            elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", num_tok):
-                results.append((int(num_tok.replace(",", "")), start, end))
-    return results
-
-
-def _has_intact_doc_numeric_boundary(doc_text: str, abs_start: int, abs_end: int) -> bool:
-    """Return True iff `doc_text[abs_start:abs_end]` is NOT sliced out of a larger numeric
-    or alphanumeric token in the full source document (e.g. `500` sliced from `1,500`, `1500`,
-    `-500`, `500.5`, `500,000`, `900M`, or `900 million`)."""
-    if abs_start > 0:
-        prev = doc_text[abs_start - 1]
-        if prev.isdigit() or prev.isalpha():
-            return False
-        if prev in ",._" and abs_start >= 2 and doc_text[abs_start - 2].isdigit():
-            return False
-        if prev in _MINUS_SIGNS and (abs_start == 1 or not doc_text[abs_start - 2].isalnum()):
-            return False
-        if prev == "." and (abs_start == 1 or not doc_text[abs_start - 2].isalpha()):
-            return False
-        if _is_sci_exponent_start(doc_text, abs_start):
-            return False
-    if abs_end < len(doc_text):
-        nxt = doc_text[abs_end]
-        if nxt.isdigit():
-            return False
-        if nxt in ",._" and abs_end + 1 < len(doc_text) and doc_text[abs_end + 1].isdigit():
-            return False
-        if abs_end > abs_start and doc_text[abs_end - 1].isalpha() and (nxt.isalnum() or nxt == "_"):
-            return False
-        if abs_end > abs_start and doc_text[abs_end - 1].isdigit():
-            if _SCI_EXP_RE.match(doc_text[abs_end:]):
-                return False
-            if nxt in "KMBkmb" and (
-                abs_end + 1 == len(doc_text) or not (doc_text[abs_end + 1].isalnum() or doc_text[abs_end + 1] == "_")
-            ):
-                return False
-            if _TRAILING_WORD_MAG_RE.match(doc_text[abs_end:]):
-                return False
-    return True
-
-
-def extract_doc_bounded_quote_integers(
-    qtext: str,
-    doc: IngestedDocument | None = None,
-    qm: QuoteMatch | None = None,
-) -> tuple[list[tuple[int, int, int]], set[int]]:
-    """Return `(intact_integers, truncated_values)` for `qtext`, checking token boundaries
-    against the full source document at the matched offset when `doc` and `qm` are available."""
-    if doc is not None and qm is not None and qm.matched and qm.char_offset is not None:
-        doc_text = doc.normalized_text if qm.mode == "exact_ws" else doc.dehyphenated_text
-        intact: list[tuple[int, int, int]] = []
-        truncated: set[int] = set()
-        for val, rel_s, rel_e in extract_quote_integers(qm.normalized_quote):
-            if _has_intact_doc_numeric_boundary(doc_text, qm.char_offset + rel_s, qm.char_offset + rel_e):
-                intact.append((val, rel_s, rel_e))
-            else:
-                truncated.add(val)
-        return intact, truncated
-    return extract_quote_integers(qtext), set()
 
 
 def verify_quote_in_document(doc: IngestedDocument, quote: str, path: str) -> QuoteMatch:
@@ -562,7 +416,11 @@ def validate_spec(
                 )
                 continue
             base_req = {"id", "statement", "quote", "kind"}
-            base_opt = {"notes", "provenance"}
+            base_opt = {"notes", "provenance", "nature", "quantitative_kind", "hedged", "hedge_quote"}
+            is_oos_quant = (
+                cl.get("nature") == "quantitative"
+                and cl.get("quantitative_kind") in OUT_OF_SCOPE_QUANTITATIVE_KINDS
+            )
             if kind == "emergesWithout":
                 extra = {"target", "tag"}
             elif kind == "emergesWithExclusion":
@@ -578,14 +436,20 @@ def validate_spec(
                     "control_node",
                     "cost_ledger_node",
                     "cost_tag",
-                    "method_usage",
-                    "control_usage",
                 }
-                base_opt = base_opt | OUT_OF_SCOPE_EFFECTIVENESS_KEYS
+                base_opt = (
+                    base_opt
+                    | {"method_measurement_quote", "control_measurement_quote"}
+                    | OUT_OF_SCOPE_EFFECTIVENESS_KEYS
+                )
             elif kind == "theoremApplication":
                 extra = {"target", "hypotheses", "declared_bets"}
             elif kind == "outOfScope":
-                extra = {"reason"}
+                if is_oos_quant:
+                    extra = set()
+                    base_opt = base_opt | {"reason"}
+                else:
+                    extra = {"reason"}
             else:  # conditionalFlow
                 extra = {"target", "declared_sources"}
             if not _check_allowed_keys(cl, base_req | base_opt | extra, base_req | extra, p, errors):
@@ -608,67 +472,62 @@ def validate_spec(
                         f"provenance must be in {sorted(VALID_CLAIM_PROVENANCE)}",
                     )
                 )
-
-            def check_usage_list(val: Any, upath: str) -> None:
-                if not isinstance(val, list):
-                    errors.append(ValidationErrorItem(upath, "type_error", "Expected list of usage entries"))
-                    return
-                for j, entry in enumerate(val):
-                    ep = f"{upath}[{j}]"
-                    if not _check_allowed_keys(
-                        entry,
-                        {"source", "dimension", "unit", "amount", "quote"} | OUT_OF_SCOPE_USAGE_KEYS,
-                        {"source", "dimension", "unit", "amount", "quote"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    check_node_ref(entry["source"], f"{ep}.source")
-                    if isinstance(entry["source"], str) and entry["source"] in node_set and entry["source"] not in source_node_set:
-                        errors.append(
-                            ValidationErrorItem(
-                                f"{ep}.source",
-                                "unknown_source",
-                                f"Usage source {entry['source']!r} must be a declared SourceNode",
-                            )
+            if "nature" in cl and cl["nature"] not in VALID_CLAIM_NATURES:
+                errors.append(
+                    ValidationErrorItem(
+                        f"{p}.nature",
+                        "invalid_enum",
+                        f"nature must be in {sorted(VALID_CLAIM_NATURES)}",
+                    )
+                )
+            if cl.get("nature") == "quantitative":
+                if "quantitative_kind" not in cl:
+                    errors.append(
+                        ValidationErrorItem(
+                            f"{p}.quantitative_kind",
+                            "missing_quantitative_kind",
+                            f"quantitative claim must declare quantitative_kind in {sorted(VALID_QUANTITATIVE_KINDS)}",
                         )
-                    if entry["dimension"] not in tag_set:
-                        errors.append(
-                            ValidationErrorItem(f"{ep}.dimension", "unknown_tag", f"Unknown tag {entry['dimension']!r}")
+                    )
+                elif cl["quantitative_kind"] not in VALID_QUANTITATIVE_KINDS:
+                    errors.append(
+                        ValidationErrorItem(
+                            f"{p}.quantitative_kind",
+                            "invalid_enum",
+                            f"quantitative_kind must be in {sorted(VALID_QUANTITATIVE_KINDS)}",
                         )
-                    _check_nonempty_str(entry["unit"], f"{ep}.unit", errors)
-                    valid_amt = isinstance(entry["amount"], int) and not isinstance(entry["amount"], bool) and entry["amount"] >= 0
-                    if not valid_amt:
-                        errors.append(
-                            ValidationErrorItem(f"{ep}.amount", "invalid_amount", "amount must be a non-negative integer")
+                    )
+            elif "quantitative_kind" in cl:
+                errors.append(
+                    ValidationErrorItem(
+                        f"{p}.quantitative_kind",
+                        "unexpected_quantitative_kind",
+                        "quantitative_kind is only allowed when nature is 'quantitative'",
+                    )
+                )
+            if "hedged" in cl and not isinstance(cl["hedged"], bool):
+                errors.append(
+                    ValidationErrorItem(f"{p}.hedged", "type_error", "hedged must be a boolean")
+                )
+            if cl.get("hedged") is True:
+                if "hedge_quote" not in cl:
+                    errors.append(
+                        ValidationErrorItem(
+                            f"{p}.hedge_quote",
+                            "missing_hedge_quote",
+                            "hedged: true requires a verbatim hedge_quote from the document",
                         )
-                    before_q_len = len(quotes)
-                    check_quote(entry["quote"], f"{ep}.quote")
-                    qm = quotes[-1] if len(quotes) > before_q_len else None
-                    if valid_amt and isinstance(entry["quote"], str):
-                        intact_ints, truncated_vals = extract_doc_bounded_quote_integers(
-                            entry["quote"], doc=doc, qm=qm
-                        )
-                        parsed_ints = {v for v, _, _ in intact_ints}
-                        unit_scale = _unit_magnitude_scale(entry["unit"]) if isinstance(entry.get("unit"), str) else 1
-                        effective_amt = entry["amount"] * unit_scale
-                        if effective_amt not in parsed_ints:
-                            if entry["amount"] in truncated_vals or effective_amt in truncated_vals:
-                                errors.append(
-                                    ValidationErrorItem(
-                                        f"{ep}.amount",
-                                        "truncated_numeric_quote",
-                                        f"Amount {entry['amount']} in quote is sliced from a larger numeric token in the source document: {entry['quote'][:120]!r}",
-                                    )
-                                )
-                            else:
-                                errors.append(
-                                    ValidationErrorItem(
-                                        f"{ep}.amount",
-                                        "ungrounded_usage_amount",
-                                        f"Scaled amount {effective_amt} ({entry['amount']} with unit {entry['unit']!r}) does not appear in its verbatim quote: {entry['quote'][:120]!r}",
-                                    )
-                                )
+                    )
+                else:
+                    check_quote(cl["hedge_quote"], f"{p}.hedge_quote")
+            elif "hedge_quote" in cl:
+                errors.append(
+                    ValidationErrorItem(
+                        f"{p}.hedge_quote",
+                        "unexpected_hedge_quote",
+                        "hedge_quote requires hedged: true",
+                    )
+                )
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
@@ -695,8 +554,10 @@ def validate_spec(
                     errors.append(
                         ValidationErrorItem(f"{p}.cost_tag", "unknown_tag", f"Unknown tag {cl['cost_tag']!r}")
                     )
-                check_usage_list(cl["method_usage"], f"{p}.method_usage")
-                check_usage_list(cl["control_usage"], f"{p}.control_usage")
+                if "method_measurement_quote" in cl:
+                    check_quote(cl["method_measurement_quote"], f"{p}.method_measurement_quote")
+                if "control_measurement_quote" in cl and cl["control_measurement_quote"] is not None:
+                    check_quote(cl["control_measurement_quote"], f"{p}.control_measurement_quote")
             elif kind == "theoremApplication":
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 hyps = cl["hypotheses"]
@@ -757,7 +618,8 @@ def validate_spec(
                 if not isinstance(hyps, list) or len(hyps) == 0:
                     check_tag_list(cl["declared_bets"], f"{p}.declared_bets")
             elif kind == "outOfScope":
-                _check_nonempty_str(cl["reason"], f"{p}.reason", errors)
+                if "reason" in cl:
+                    _check_nonempty_str(cl["reason"], f"{p}.reason", errors)
             else:  # conditionalFlow
                 check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):

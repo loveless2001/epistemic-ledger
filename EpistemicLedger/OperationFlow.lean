@@ -64,16 +64,6 @@ structure FlowGraph (ν σ : Type) where
   ops : List (Op ν σ)
   deriving DecidableEq, Repr
 
-/-- Quantitative resource expenditure for one arm of an effectiveness comparison (v2.3.1).
-Binds each exact natural-number quantity (`unit`, `amount`) to the specific `source` node
-carrying `dimension` so numbers cannot float free of their measured cost source. -/
-structure ResourceUsage (ν σ : Type) where
-  source : ν
-  dimension : σ
-  unit : String
-  amount : Nat
-  deriving DecidableEq, Repr
-
 /-- What a claim asserts about structural flow in the graph. -/
 inductive FlowClaimKind (ν σ : Type) where
   /-- "Structure `tag` emerges at `target` without `tag` being injected upstream." -/
@@ -93,25 +83,22 @@ inductive FlowClaimKind (ν σ : Type) where
   /-- "Given `declaredSources`, `target` holds (all upstream sources reaching `target`
       are declared)." -/
   | conditionalFlow (target : ν) (declaredSources : List ν)
-  /-- Tier 2 (v2.3): "Method `methodNode` demonstrates effectiveness/efficiency at
-      `evaluationNode` under cost dimension `costTag`, compared against independent control
-      `controlNode` and metered via `costLedgerNode` with explicit resource expenditures
-      `methodUsage` and `controlUsage`."
-      Fixes all Codex R1 v2.2 counterexamples:
+  /-- Tier 2 (v2.4 — structural only): "Method `methodNode` is compared against independent
+      control `controlNode` at `evaluationNode` with cost dimension `costTag` metered via
+      `costLedgerNode`."
+      Checks structural epistemology only (no numeric parsing or arithmetic):
       - Physical cost uses raw `ancestors` (a `.forget .shown` step CANNOT erase spent cost).
-      - `methodNode` and `controlNode` must be mutually independent (no directed path either way).
-      - Post-hoc metering (`methodNode → billMeter`) is allowed; `ledger` simply cannot equal
-        `methodNode` or `controlNode` and must cover every raw cost source spent by either arm.
-      - Budget parity is checked numerically on `(dimension, unit, amount)` (catches 1 vs 100
-        GPU-hours on the same cluster, while allowing equal $500 across two separate accounts). -/
+      - `methodNode` and `controlNode` must be mutually independent (no directed path either way)
+        and both must feed `evaluationNode`.
+      - `costLedgerNode` must be distinct from both arms, feed `evaluationNode`, and meter every
+        raw `costTag` source of either arm directly.
+      Specific numerical values and derived ratios/differences are out of scope (`outOfScope`). -/
   | effectivenessClaim
       (methodNode : ν)
       (evaluationNode : ν)
       (controlNode : Option ν)
       (costLedgerNode : Option ν)
       (costTag : σ)
-      (methodUsage : List (ResourceUsage ν σ))
-      (controlUsage : List (ResourceUsage ν σ))
   /-- Rule 3 (Theorem Hypothesis / Domain Precondition Verification):
       A theorem or formal model applied at `target` requires each precondition in `hypotheses`
       to hold for the target object:
@@ -125,7 +112,8 @@ inductive FlowClaimKind (ν σ : Type) where
       (hypotheses : List (Hypothesis σ))
       (declaredBets : List σ)
   /-- Claim explicitly lies outside structural operation-flow verification
-      (e.g., normative legal balancing, value judgments, policy weighing, or financial bookkeeping). -/
+      (e.g., normative legal balancing, value judgments, financial bookkeeping, or specific
+      numerical values / derived comparisons checkable directly from tables). -/
   | outOfScope (reason : String)
   deriving DecidableEq, Repr
 
@@ -188,13 +176,6 @@ inductive FlowFinding (ν σ : Type) where
   | dependentControlArm (methodNode : ν) (controlNode : ν)
   /-- Tier 2: `controlNode` is declared in the graph but does not feed `evaluationNode`. -/
   | unusedControlNode (controlNode : ν) (evaluationNode : ν)
-  /-- Tier 2: quantitative resource budgets (`methodUsage` / `controlUsage`) for `costTag` are missing (unquantified). -/
-  | unquantifiedBudget (methodNode : ν) (costTag : σ)
-  /-- Tier 2: a `ResourceUsage` entry cites `source` that does not belong to that arm's raw `costTag` origins,
-      or a raw `costTag` source of an arm has no positive `ResourceUsage` entry. -/
-  | unboundUsageSource (armNode : ν) (sourceNode : ν) (costTag : σ)
-  /-- Tier 2: quantitative `costTag` budgets differ between `methodNode` and `controlNode` (e.g. 1 vs 100 GPU-hrs). -/
-  | unmatchedControlBudget (methodNode : ν) (controlNode : ν) (costTag : σ)
   /-- Rule 3: a hypothesis of the applied theorem is known not to hold for `target`. -/
   | hypothesisKnownFalse (target : ν) (hyp : σ)
   /-- Rule 3: an unchecked hypothesis (`.bet`) of the applied theorem is omitted from `declaredBets`. -/
@@ -405,39 +386,6 @@ resources physically spent during a run. -/
 def rawSourceOrigins (g : FlowGraph ν σ) (tag : σ) (target : ν) : List ν :=
   let reach := ancestors g target
   (g.sources.filter (fun s => s.node ∈ reach && tag ∈ s.carries)).map (·.node)
-
-/-- Total positive quantity recorded for `(costTag, unit)` in a usage list. -/
-def usageAmountFor (us : List (ResourceUsage ν σ)) (costTag : σ) (unit : String) : Nat :=
-  (us.filter (fun u => u.dimension = costTag && u.unit = unit)).foldl (fun acc u => acc + u.amount) 0
-
-/-- Distinct units recorded for `costTag` in a usage list. -/
-def usageUnitsFor (us : List (ResourceUsage ν σ)) (costTag : σ) : List String :=
-  ((us.filter (fun u => u.dimension = costTag)).map (·.unit)).eraseDups
-
-/-- Do two resource-usage lists declare identical positive totals on every `(costTag, unit)`? -/
-def budgetsMatchNumerically
-    (methodUsage controlUsage : List (ResourceUsage ν σ)) (costTag : σ) : Bool :=
-  let mUnits := usageUnitsFor methodUsage costTag
-  let cUnits := usageUnitsFor controlUsage costTag
-  let allUnits := (mUnits ++ cUnits).eraseDups
-  !allUnits.isEmpty &&
-    allUnits.all fun u =>
-      let ma := usageAmountFor methodUsage costTag u
-      let ca := usageAmountFor controlUsage costTag u
-      ma > 0 && ma = ca
-
-/-- Check that every `ResourceUsage` entry for `costTag` binds to a real raw cost source of `armNode`,
-and every raw cost source of `armNode` has at least one positive usage entry. -/
-def usageBindingFindings
-    (armNode : ν) (armRawCosts : List ν) (us : List (ResourceUsage ν σ)) (costTag : σ) :
-    List (FlowFinding ν σ) :=
-  let relevant := us.filter (fun u => u.dimension = costTag && u.amount > 0)
-  let stray := relevant.filterMap fun u =>
-    if u.source ∉ armRawCosts then some (.unboundUsageSource armNode u.source costTag) else none
-  let coveredSources := relevant.map (·.source)
-  let missing := armRawCosts.filterMap fun src =>
-    if src ∉ coveredSources then some (.unboundUsageSource armNode src costTag) else none
-  stray ++ missing
 
 /-- Every upstream `SourceNode` carrying `tag` that can flow unblocked into `target`
 (excludes tags fabricated solely by intermediate operations). -/
@@ -736,7 +684,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         some (.undeclaredUpstreamSource s.node)
       else none
     undeclared ++ danglingInputsUpstream c.graph target
-  | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage =>
+  | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag =>
     let methodRawCosts := rawSourceOrigins c.graph costTag methodNode
     let evalAnc := ancestors c.graph evaluationNode
     let costMissing : List (FlowFinding ν σ) :=
@@ -779,20 +727,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
           else []
         let unusedErr : List (FlowFinding ν σ) :=
           if ctrl ∉ evalAnc then [.unusedControlNode ctrl evaluationNode] else []
-        let ctrlRawCosts := rawSourceOrigins c.graph costTag ctrl
-        let mUnits := usageUnitsFor methodUsage costTag
-        let cUnits := usageUnitsFor controlUsage costTag
-        let budgetErr : List (FlowFinding ν σ) :=
-          if mUnits.isEmpty || cUnits.isEmpty then
-            [.unquantifiedBudget methodNode costTag]
-          else if budgetsMatchNumerically methodUsage controlUsage costTag then
-            []
-          else
-            [.unmatchedControlBudget methodNode ctrl costTag]
-        let bindErr :=
-          usageBindingFindings methodNode methodRawCosts methodUsage costTag
-            ++ usageBindingFindings ctrl ctrlRawCosts controlUsage costTag
-        selfErr ++ depErr ++ unusedErr ++ budgetErr ++ bindErr ++ danglingInputsUpstream c.graph ctrl
+        selfErr ++ depErr ++ unusedErr ++ danglingInputsUpstream c.graph ctrl
     costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
@@ -843,13 +778,26 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .trivialSelfControl _                 => true
   | .dependentControlArm _ _              => true
   | .unusedControlNode _ _                => false
-  | .unquantifiedBudget _ _               => false
-  | .unboundUsageSource _ _ _             => false
-  | .unmatchedControlBudget _ _ _         => true
   | .hypothesisKnownFalse _ _             => true
   | .undeclaredHypothesisBet _ _          => false
   | .orphanDeclaredBet _ _                => false
   | .claimOutOfScope _                    => false
+
+/-- Is `kind` an emergence / exclusion claim (`emergesWithout` or `emergesWithExclusion`)?
+    Under Rule 2, claiming emergence/exclusion across an unverified `.forget ... .notShown`
+    step directly fails the claim (`rejected` when unhedged; `unestablished` when `hedged = true`). -/
+def FlowClaimKind.isEmergence : FlowClaimKind ν σ → Bool
+  | .emergesWithout _ _         => true
+  | .emergesWithExclusion _ _ _ => true
+  | _                           => false
+
+/-- Claim-kind-aware contradiction classification:
+    On emergence claims (`emergesWithout`, `emergesWithExclusion`), `.failedForgetOnPath _ _ .notShown`
+    is a contradiction (`true`); on all other claim kinds (e.g. `uniqueRecovery`), it remains
+    `unestablished` (`false`). -/
+def FlowFinding.isContradictionFor (kind : FlowClaimKind ν σ) : FlowFinding ν σ → Bool
+  | .failedForgetOnPath _ _ .notShown => kind.isEmergence
+  | f => f.isContradiction
 
 /-- Four-state epistemic verdict for a flow claim.
     Preserves legacy `flowVerdict` untouched for full backwards compatibility. -/
@@ -859,7 +807,7 @@ def epistemicVerdict (c : FlowClaim ν σ) : EpistemicVerdict :=
   | _ =>
     let findings := auditFlow c
     if findings.isEmpty then .admissible
-    else if findings.any FlowFinding.isContradiction then .rejected
+    else if findings.any (FlowFinding.isContradictionFor c.kind) then .rejected
     else .unestablished
 
 /-! ### General Soundness & Anti-Degeneration Theorems (no Classical.choice) -/
@@ -1475,7 +1423,7 @@ theorem admissible_policy3_clean_both_alarms
   · cases hadm
 
 /--
-Theorem 6 (Soundness of Tier 2 v2.3 — `effectivenessClaim`):
+Theorem 6 (Soundness of Tier 2 v2.4 — structural `effectivenessClaim`):
 If an `effectivenessClaim` is `admissible`, then:
   (1) `methodNode` has at least one raw upstream `costTag` source (ignoring `.forget`),
   (2) `methodNode ∈ ancestors c.graph evaluationNode`,
@@ -1484,14 +1432,12 @@ If an `effectivenessClaim` is `admissible`, then:
       `ledger` without passing through `methodNode` or `controlNode`
       (`src ∈ rawSourceOriginsExcluding c.graph costTag (ledgerExcludedArms methodNode controlNode) ledger`),
   (4) `controlNode = some ctrl` with `ctrl ≠ methodNode`, `methodNode ∉ ancestors ctrl`,
-      `ctrl ∉ ancestors methodNode`, `ctrl ∈ ancestors evaluationNode`, and
-      `budgetsMatchNumerically methodUsage controlUsage costTag = true`.
+      `ctrl ∉ ancestors methodNode`, and `ctrl ∈ ancestors evaluationNode`.
 -/
 theorem admissible_effectiveness_has_control_and_charged_cost
     (c : FlowClaim ν σ) (methodNode evaluationNode : ν)
     (controlNode costLedgerNode : Option ν) (costTag : σ)
-    (methodUsage controlUsage : List (ResourceUsage ν σ))
-    (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag methodUsage controlUsage)
+    (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag)
     (hadm : flowVerdict c = .admissible) :
     (rawSourceOrigins c.graph costTag methodNode ≠ []) ∧
     (methodNode ∈ ancestors c.graph evaluationNode) ∧
@@ -1507,8 +1453,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       ctrl ≠ methodNode ∧
       methodNode ∉ ancestors c.graph ctrl ∧
       ctrl ∉ ancestors c.graph methodNode ∧
-      ctrl ∈ ancestors c.graph evaluationNode ∧
-      budgetsMatchNumerically methodUsage controlUsage costTag = true) := by
+      ctrl ∈ ancestors c.graph evaluationNode) := by
   unfold flowVerdict at hadm
   split at hadm
   · rename_i hempty
@@ -1583,8 +1528,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
         ctrl ≠ methodNode ∧
         methodNode ∉ ancestors c.graph ctrl ∧
         ctrl ∉ ancestors c.graph methodNode ∧
-        ctrl ∈ ancestors c.graph evaluationNode ∧
-        budgetsMatchNumerically methodUsage controlUsage costTag = true := by
+        ctrl ∈ ancestors c.graph evaluationNode := by
       cases hc : controlNode with
       | none =>
         rw [hc] at hctrl
@@ -1592,14 +1536,11 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       | some ctrl =>
         rw [hc] at hctrl
         dsimp only at hctrl
-        have hc0 := (List.append_eq_nil_iff.mp hctrl).1
-        have hc1 := (List.append_eq_nil_iff.mp hc0).1
+        have hc1 := (List.append_eq_nil_iff.mp hctrl).1
         have hc2 := (List.append_eq_nil_iff.mp hc1).1
-        have hc3 := (List.append_eq_nil_iff.mp hc2).1
-        have hself := (List.append_eq_nil_iff.mp hc3).1
-        have hdep := (List.append_eq_nil_iff.mp hc3).2
-        have hunused := (List.append_eq_nil_iff.mp hc2).2
-        have hbud := (List.append_eq_nil_iff.mp hc1).2
+        have hself := (List.append_eq_nil_iff.mp hc2).1
+        have hdep := (List.append_eq_nil_iff.mp hc2).2
+        have hunused := (List.append_eq_nil_iff.mp hc1).2
         have hne : ctrl ≠ methodNode := by
           split at hself
           · simp at hself
@@ -1622,13 +1563,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
           · simp at hunused
           · rename_i hnot
             exact Decidable.byContradiction hnot
-        have hmatch : budgetsMatchNumerically methodUsage controlUsage costTag = true := by
-          split at hbud
-          · simp at hbud
-          · split at hbud
-            · assumption
-            · simp at hbud
-        exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval, hmatch⟩
+        exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval⟩
     exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
   · cases hadm
 
@@ -1647,7 +1582,7 @@ theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν
   | independentConvergence _ _ _
   | uniqueRecovery _ _
   | conditionalFlow _ _
-  | effectivenessClaim _ _ _ _ _ _ _
+  | effectivenessClaim _ _ _ _ _
   | theoremApplication _ _ _ =>
     unfold epistemicVerdict flowVerdict
     rw [hk]
@@ -1656,7 +1591,7 @@ theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν
     | true => simp
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte]
-      cases (auditFlow c).any FlowFinding.isContradiction <;> simp
+      split <;> simp
 
 /--
 Theorem 7b (Characterization of `EpistemicVerdict.outOfScope`):
@@ -1673,7 +1608,7 @@ theorem epistemicVerdict_outOfScope_iff (c : FlowClaim ν σ) :
     | independentConvergence _ _ _
     | uniqueRecovery _ _
     | conditionalFlow _ _
-    | effectivenessClaim _ _ _ _ _ _ _
+    | effectivenessClaim _ _ _ _ _
     | theoremApplication _ _ _ =>
       unfold epistemicVerdict at h
       rw [hk] at h
@@ -1687,11 +1622,12 @@ theorem epistemicVerdict_outOfScope_iff (c : FlowClaim ν σ) :
 /--
 Theorem 7c (Characterization of `EpistemicVerdict.rejected`):
 `epistemicVerdict c = .rejected` if and only if `c` is not `outOfScope` and `auditFlow c`
-contains a direct structural/empirical contradiction finding (`f.isContradiction = true`).
+contains a claim-kind-aware contradiction finding (`f.isContradictionFor c.kind = true`).
 -/
 theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
     epistemicVerdict c = .rejected ↔
-    (∀ r, c.kind ≠ .outOfScope r) ∧ ∃ f ∈ auditFlow c, f.isContradiction = true := by
+    (∀ r, c.kind ≠ .outOfScope r) ∧
+    ∃ f ∈ auditFlow c, f.isContradictionFor c.kind = true := by
   cases hk : c.kind with
   | outOfScope r =>
     constructor
@@ -1704,7 +1640,7 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
   | independentConvergence _ _ _
   | uniqueRecovery _ _
   | conditionalFlow _ _
-  | effectivenessClaim _ _ _ _ _ _ _
+  | effectivenessClaim _ _ _ _ _
   | theoremApplication _ _ _ =>
     unfold epistemicVerdict
     rw [hk]
@@ -1716,16 +1652,16 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
       | true => simp [hempty] at h
       | false =>
         simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
-        cases hany : (auditFlow c).any FlowFinding.isContradiction with
-        | false => simp [hany] at h
-        | true => exact List.any_eq_true.mp hany
+        split at h
+        · rename_i hany
+          exact List.any_eq_true.mp hany
+        · cases h
     · rintro ⟨_, f, hf, hcontra⟩
       have hne : (auditFlow c).isEmpty = false := by
         cases hl : auditFlow c with
         | nil => rw [hl] at hf; cases hf
         | cons _ _ => rfl
-      have hany : (auditFlow c).any FlowFinding.isContradiction = true :=
-        List.any_eq_true.mpr ⟨f, hf, hcontra⟩
+      have hany := List.any_eq_true.mpr ⟨f, hf, hcontra⟩
       simp [hne, hany]
 
 /--

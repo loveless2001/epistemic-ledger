@@ -80,12 +80,6 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Dependent Control Arm]** `{f['method']}` and `{f['control']}` are causally dependent (not independent arms)"
     if ft == "unusedControlNode":
         return f"**[Unused Control]** control `{f['control']}` does not feed evaluation `{f['evaluation']}`"
-    if ft == "unquantifiedBudget":
-        return f"**[Unquantified Budget]** `{f['method']}` lacks numeric `{f['cost_tag']}` resource usage quantities for both arms"
-    if ft == "unboundUsageSource":
-        return f"**[Unbound Usage Source]** usage entry for `{f['arm']}` fails to match raw `{f['cost_tag']}` source `{f['source']}`"
-    if ft == "unmatchedControlBudget":
-        return f"**[Unmatched Control Budget]** numeric `{f['cost_tag']}` budgets differ between `{f['method']}` and `{f['control']}`"
     if ft == "hypothesisKnownFalse":
         return f"**[Rule 3 — Hypothesis Known False]** applied theorem at `{f['target']}` requires `{f['hypothesis']}`, which is known false in the declared setting"
     if ft == "undeclaredHypothesisBet":
@@ -131,19 +125,20 @@ def _format_verdict_heading(verdict: str, declared_bet_count: int = 0) -> str:
     return verdict.upper()
 
 
-def _norm_usage_key(usages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(
-        [
-            {
-                "source": u.get("source"),
-                "dimension": u.get("dimension"),
-                "unit": u.get("unit"),
-                "amount": u.get("amount"),
-            }
-            for u in usages
-        ],
-        key=lambda x: (str(x["source"]), str(x["dimension"]), str(x["unit"]), int(x["amount"] or 0)),
-    )
+VERDICT_STRICTNESS_RANK: dict[str, int] = {
+    "rejected": 0,
+    "unestablished": 1,
+    "admissible": 2,
+    "outOfScope": 3,
+}
+
+
+def strictest_verdict_of(verdicts: set[str]) -> str | None:
+    """Return the strictest Lean epistemic verdict among `verdicts`
+    (`rejected` > `unestablished` > `admissible` > `outOfScope`), or `None` if empty."""
+    if not verdicts:
+        return None
+    return min(verdicts, key=lambda v: (VERDICT_STRICTNESS_RANK.get(v, 99), v))
 
 
 def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
@@ -151,7 +146,11 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
     sig: dict[str, Any] = {
         "kind": kind,
         "provenance": meta.get("provenance", "authorClaimed"),
+        "nature": meta.get("nature", "qualitative"),
+        "hedged": bool(meta.get("hedged", False)),
     }
+    if "quantitative_kind" in meta:
+        sig["quantitative_kind"] = meta["quantitative_kind"]
     for k in (
         "target",
         "excluded_channel",
@@ -174,10 +173,6 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
             [{"tag": h.get("tag"), "status": h.get("status")} for h in meta["hypotheses"]],
             key=lambda x: (str(x["tag"]), str(x["status"])),
         )
-    if "method_usage" in meta:
-        sig["method_usage"] = _norm_usage_key(meta["method_usage"])
-    if "control_usage" in meta:
-        sig["control_usage"] = _norm_usage_key(meta["control_usage"])
     return sig
 
 
@@ -186,10 +181,9 @@ OUT_OF_SCOPE_CORE = (
     "is out of scope for Lean verification and requires auditor/human review."
 )
 OUT_OF_SCOPE_ACCOUNTING = (
-    "Financial/bookkeeping verification (invoice reconciliation, billing-period completeness, "
-    "actual-vs-requested prose semantics, and cross-document deduplication) is out of scope for "
-    "EpistemicLedger; Lean checks structural control independence, forget-proof cost-source coverage, "
-    "and arithmetic parity of declared (source, unit, amount) entries."
+    "Numeric arithmetic, specific reported values, derived ratios/differences, and financial/bookkeeping "
+    "reconciliation are out of scope for EpistemicLedger; Lean checks structural control presence, arm "
+    "independence, evaluation wiring, and forget-proof cost-source coverage without reading or comparing numbers."
 )
 OUT_OF_SCOPE_SOURCE_SUPPORT = (
     "Unmodeled joint support constraints across disconnected SourceNodes (e.g., an external coupling "
@@ -273,7 +267,15 @@ def build_single_report_dict(
     oos_claim_ids = [
         str(c.get("id"))
         for c in (spec.get("claims", []) if isinstance(spec, dict) else [])
-        if isinstance(c, dict) and c.get("kind") == "outOfScope" and c.get("id")
+        if isinstance(c, dict)
+        and c.get("id")
+        and (
+            c.get("kind") == "outOfScope"
+            or (
+                c.get("nature") == "quantitative"
+                and c.get("quantitative_kind") in ("specificValue", "derivedComparison")
+            )
+        )
     ]
     out_of_scope = [OUT_OF_SCOPE_CORE]
     if doc.resolved_path.suffix.lower() == ".pdf":
@@ -285,13 +287,13 @@ def build_single_report_dict(
     if oos_claim_ids:
         out_of_scope.append(
             f"Explicitly out-of-scope claim(s) ({', '.join(oos_claim_ids)}): "
-            "declared outside structural operation-flow verification (e.g., normative, legal-policy, or value-balancing disputes)."
+            "declared outside structural operation-flow verification (e.g., specific numerical values, derived comparisons, or normative/value-balancing disputes)."
         )
     ignored_fields = collect_out_of_scope_spec_fields(spec)
     if ignored_fields:
         out_of_scope.append(
-            f"Ignored out-of-scope accounting/bookkeeping fields in spec ({', '.join(ignored_fields)}): "
-            "not evaluated by Lean; financial/bookkeeping checks require human review."
+            f"Ignored out-of-scope numeric/accounting fields in spec ({', '.join(ignored_fields)}): "
+            "not evaluated by Lean; numerical tables and financial/bookkeeping checks require human review."
         )
     return {
         "schema_version": "epistemic-ledger-report/v2.1",
@@ -330,6 +332,24 @@ def build_single_report_dict(
                     "findings": c.findings,
                     "axioms": c.axioms,
                     "kernel_verified": c.kernel_verified,
+                    "nature": next(
+                        (m.get("nature", "qualitative") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        "qualitative",
+                    ),
+                    "quantitative_kind": next(
+                        (m.get("quantitative_kind") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        None,
+                    ),
+                    "hedged": bool(
+                        next(
+                            (m.get("hedged", False) for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                            False,
+                        )
+                    ),
+                    "hedge_quote": next(
+                        (m.get("hedge_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        None,
+                    ),
                     "declared_bet_count": _count_declared_bets(
                         next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {})
                     ),
@@ -400,13 +420,24 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         meta = claim_by_id[c["id"]]
         prov = meta.get("provenance", "authorClaimed")
         bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
+        nature_label = meta.get("nature", "qualitative")
+        if nature_label == "quantitative" and meta.get("quantitative_kind"):
+            nature_label = f"quantitative/{meta['quantitative_kind']}"
+        hedged_suffix = ", hedged" if meta.get("hedged") else ""
         lines += [
-            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count)}** (`{prov}`)",
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count)}** (`{prov}`, `{nature_label}`{hedged_suffix})",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
-        if meta.get("kind") == "effectivenessClaim" and (meta.get("method_usage") or meta.get("control_usage")):
-            lines.append(f"- **Out of scope (accounting/bookkeeping):** {OUT_OF_SCOPE_ACCOUNTING}")
+        if meta.get("hedged") and meta.get("hedge_quote"):
+            lines.append(f"- **Hedge quote:** > {meta['hedge_quote']}")
+        if meta.get("kind") == "effectivenessClaim":
+            if meta.get("method_measurement_quote"):
+                lines.append(f"- **Method measurement quote:** > {meta['method_measurement_quote']}")
+            if meta.get("control_measurement_quote"):
+                lines.append(f"- **Control measurement quote:** > {meta['control_measurement_quote']}")
+            if meta.get("method_usage") or meta.get("control_usage"):
+                lines.append(f"- **Out of scope (numeric/accounting):** {OUT_OF_SCOPE_ACCOUNTING}")
         decl_locs = c.get("declaration_locations") or []
         if decl_locs:
             lines.append("- **Declared assumptions / sources locations:**")
@@ -420,7 +451,13 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                         f"  - `{dl['item']}` (`{dl['kind']}`): declared in document body (offset @{dl['char_offset']}, outside claim quote)"
                     )
         if not c["findings"]:
-            lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
+            if meta.get("kind") == "effectivenessClaim":
+                lines.append(
+                    "- **Findings:** None (structural comparison checks passed: independent control, evaluation wiring, "
+                    "and forget-proof cost-source coverage; does NOT certify numerical ratios/values or necessity claims such as 'need')."
+                )
+            else:
+                lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
         else:
             lines.append("- **Findings:**")
             hyp_quotes = {h["tag"]: h["quote"] for h in meta.get("hypotheses", [])}
@@ -580,7 +617,8 @@ def build_comparison_report(
         declared_source_sets: set[tuple[str, ...]] = set()
         effectiveness_controls: set[tuple[str, str]] = set()
         provenances: set[str] = set()
-        usage_signatures: set[str] = set()
+        hedged_flags: set[bool] = set()
+        nature_signatures: set[tuple[str, str]] = set()
         hypothesis_signatures: set[str] = set()
         declared_bet_sets: set[tuple[str, ...]] = set()
         missing_or_unverified = False
@@ -607,31 +645,24 @@ def build_comparison_report(
                     sig = info["signature"]
                     kinds.add(str(sig.get("kind")))
                     provenances.add(str(sig.get("provenance", "authorClaimed")))
+                    hedged_flags.add(bool(sig.get("hedged", False)))
+                    nature_signatures.add((str(sig.get("nature", "qualitative")), str(sig.get("quantitative_kind", ""))))
                     if sig.get("kind") == "effectivenessClaim":
                         tgt = f"{sig.get('method_node')}->{sig.get('evaluation_node')}"
                         tags.add(str(sig.get("cost_tag", "")))
                         effectiveness_controls.add((str(sig.get("control_node")), str(sig.get("cost_ledger_node"))))
-                        usage_signatures.add(
-                            json.dumps(
-                                {"m": sig.get("method_usage", []), "c": sig.get("control_usage", [])},
-                                sort_keys=True,
-                            )
-                        )
                     elif sig.get("kind") == "theoremApplication":
                         tgt = str(sig.get("target"))
                         tags.add("")
                         effectiveness_controls.add(("", ""))
-                        usage_signatures.add("")
                     elif sig.get("kind") == "outOfScope":
                         tgt = "out-of-scope"
                         tags.add("")
                         effectiveness_controls.add(("", ""))
-                        usage_signatures.add("")
                     else:
                         tgt = str(sig.get("target") or f"{sig.get('branch_a')}/{sig.get('branch_b')}")
                         tags.add(str(sig.get("tag", "")))
                         effectiveness_controls.add(("", ""))
-                        usage_signatures.add("")
                     targets.add(tgt)
                     excluded_channels.add(str(sig.get("excluded_channel", "")))
                     declared_source_sets.add(tuple(sorted(set(sig.get("declared_sources", [])))))
@@ -652,6 +683,7 @@ def build_comparison_report(
             verdicts_agree = False
 
         complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim) and is_clique
+        strictest = strictest_verdict_of(verdicts)
         rows.append(
             {
                 "anchor_index": idx,
@@ -661,6 +693,7 @@ def build_comparison_report(
                 "quote_match_mode": quote_match_mode,
                 "min_span_iou": min_span_iou,
                 "status": status,
+                "strictest_verdict": strictest,
                 "verdicts_agree": verdicts_agree,
                 "same_claim_kind": complete_1to1 and len(kinds) == 1,
                 "same_target_name": complete_1to1 and len(targets) == 1,
@@ -669,7 +702,8 @@ def build_comparison_report(
                 "same_declared_sources": complete_1to1 and len(declared_source_sets) == 1,
                 "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
                 "same_provenance": complete_1to1 and len(provenances) == 1,
-                "same_usage": complete_1to1 and len(usage_signatures) == 1,
+                "same_hedged": complete_1to1 and len(hedged_flags) == 1,
+                "same_nature": complete_1to1 and len(nature_signatures) == 1,
                 "same_hypotheses": complete_1to1 and len(hypothesis_signatures) == 1,
                 "same_declared_bets": complete_1to1 and len(declared_bet_sets) == 1,
                 "by_auditor": by_aud,
@@ -733,8 +767,8 @@ def build_comparison_report(
     md += [
         "## Claim Verdict Reconciliation",
         "",
-        "| # | Quote Anchor (offset) | Status | " + " | ".join(f"`{a}`" for a in auditors) + " |",
-        "|---|---|---|" + "|".join("---" for _ in auditors) + "|",
+        "| # | Quote Anchor (offset) | Status | Strictest | " + " | ".join(f"`{a}`" for a in auditors) + " |",
+        "|---|---|---|---|" + "|".join("---" for _ in auditors) + "|",
     ]
 
     def _fmt_claim_cell(info: dict[str, Any]) -> str:
@@ -788,14 +822,17 @@ def build_comparison_report(
                 diffs.append("control/ledger")
             if not row["same_provenance"]:
                 diffs.append("provenance")
-            if not row["same_usage"]:
-                diffs.append("usage")
+            if not row.get("same_hedged", True):
+                diffs.append("hedged")
+            if not row.get("same_nature", True):
+                diffs.append("nature")
             if not row.get("same_hypotheses", True):
                 diffs.append("hypotheses")
             if not row.get("same_declared_bets", True):
                 diffs.append("declared_bets")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
+        strictest_cell = f"**{row['strictest_verdict']}**" if row.get("strictest_verdict") else "*—*"
         cells = []
         for a in auditors:
             entry = row["by_auditor"][a]
@@ -809,7 +846,7 @@ def build_comparison_report(
         elif row.get("quote_match_mode") == "ambiguous_span_chain":
             anchor_label += f" *(ambiguous span chain, pairwise min IoU={row['min_span_iou']:.2f})*"
         md.append(
-            f"| {row['anchor_index']} | {anchor_label} | {status_cell} | "
+            f"| {row['anchor_index']} | {anchor_label} | {status_cell} | {strictest_cell} | "
             + " | ".join(cells)
             + " |"
         )
@@ -829,7 +866,8 @@ def build_comparison_report(
             or not r["same_declared_sources"]
             or not r["same_control_and_ledger"]
             or not r["same_provenance"]
-            or not r["same_usage"]
+            or not r.get("same_hedged", True)
+            or not r.get("same_nature", True)
             or not r.get("same_hypotheses", True)
             or not r.get("same_declared_bets", True)
         ]
@@ -858,21 +896,29 @@ def build_comparison_report(
 def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA") -> str:
     """Build a strict extraction prompt for any LLM/agent to produce a quote-grounded AuditSpec JSON."""
     return f"""You are an independent epistemological auditor.
-Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.3`.
+Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.4`.
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, and `ResourceUsage` entry MUST include a `quote` copied VERBATIM from the document (>= 12 non-space characters). For `ResourceUsage`, the exact numeric `amount` must appear inside its `quote`. Do NOT paraphrase or invent numbers.
+1. Every `source`, `op`, `claim`, optional `hedge_quote`, and optional `method_measurement_quote`/`control_measurement_quote` MUST be copied VERBATIM from the document (>= 12 non-space characters). Do NOT paraphrase or invent quotes.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
-4. Set `"provenance"` on every claim: `"authorClaimed"` if explicitly claimed by the authors, or `"reviewerStressTest"` if testing a reviewer-posed counterfactual question.
-5. For emergence claims under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`).
-6. For effectiveness / efficiency / productivity claims (Tier 2, v2.3), use `kind: "effectivenessClaim"` with:
+4. Set `"provenance"` on every claim (`"authorClaimed"` or `"reviewerStressTest"`), AND declare `"nature"`: `"qualitative"` or `"quantitative"`.
+   - When `"nature": "quantitative"`, you MUST also set `"quantitative_kind"` to one of:
+     - `"order"` (A outperforms or uses fewer resources than B) or `"threshold"` (meets/exceeds threshold T): model structurally using `effectivenessClaim` (with optional `method_measurement_quote` / `control_measurement_quote`). Lean checks structural control presence, arm independence, evaluation wiring, and forget-proof cost-source coverage — **do NOT emit numeric `method_usage`/`control_usage`; the machine does not read or compare numbers.**
+     - `"specificValue"` (a concrete numerical figure) or `"derivedComparison"` (ratios/differences computed from reported numbers, e.g. `"42 times fewer"`): emit `kind: "outOfScope"` (an ordinary reviewer checks reported tables directly).
+   - **Decompose compound quantitative/necessity sentences (e.g. `"Good views need 42 times fewer samples ..."`):** record SEPARATE claims for (i) the observed order between the two scored checkpoints (`effectivenessClaim`, `quantitative_kind: "order"`), (ii) the necessity assertion (`"need"` — whether the control actually *requires* that budget rather than merely being the only scored checkpoint) as `theoremApplication` with an explicit hypothesis (`discharged` / `bet` / `knownFalse`), and (iii) the derived numerical figure (`"42 times"`) as `outOfScope` (`quantitative_kind: "derivedComparison"`).
+5. **Classify each clause by what it asserts, NOT by hedging phrases:**
+   - Split multi-clause sentences into separate claims when one clause makes a direct claim and another adds a hedged generalization (e.g., `"Within this task, spacetime geometry is obtained ..."` vs `"providing a first step toward showing that spacetime concepts emerge ..."`).
+   - For emergence / `"only X"` clauses under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`) or `kind: "emergesWithout"` (`target`, `tag`).
+   - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a hedge such as `"Within this task"` or `"a first step toward"`. Attach `"hedged": true` with verbatim `"hedge_quote"` (>= 12 non-space chars) ONLY to the specific clause that the hedge modifies (display-only metadata; does not alter Lean verdicts).
+   - Contrast: genuine conditional statements such as `"Given a supplied X, Y follows"` remain `kind: "conditionalFlow"`.
+6. For structural effectiveness / comparison claims (`nature: "quantitative"` with `quantitative_kind: "order"` or `"threshold"`, or qualitative structural comparisons), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
-   - `method_usage` and `control_usage`: lists of `{{"source": "<node>", "dimension": "<cost_tag>", "unit": "<str>", "amount": <int>, "quote": "<verbatim quote containing amount>"}}` (empty `[]` if unquantified in the paper).
+   - Optional verbatim `method_measurement_quote` and `control_measurement_quote` pointing to where each arm is evaluated/measured (no numeric parsing).
 7. Tag `origin` carefully: `"setByExperimenter"` for simulators, pretrained external backbones, manual barriers/cuts, engineered objectives; `"measured"` for raw sensor observations.
-8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`.
-9. If a claim is a normative value judgment, legal-policy balancing dispute, or financial/bookkeeping question rather than a structural causal/experimental flow claim, do NOT force it into an emergence or effectiveness claim; instead emit `kind: "outOfScope"` with a concise `"reason"` string explaining why it lies outside structural operation-flow verification.
-10. When a claim applies a mathematical theorem or formal model to a target object (Rule 3), use `kind: "theoremApplication"` with:
+8. Only mark a `"forget"` op with `evidence: "shown"` if the paper actually runs an ablation/invariance check demonstrating the conclusion survives removing that dependency; otherwise use `"notShown"` or `"contradicted"`. On unhedged `emergesWithout` and `emergesWithExclusion` claims, `"notShown"` rejects the claim (Rule 2: removing a dependency requires evidence).
+9. If a claim is a normative value judgment, legal-policy balancing dispute, financial/bookkeeping question, specific numerical value, or derived numerical comparison rather than a structural causal/experimental flow claim, emit `kind: "outOfScope"` with a concise `"reason"` string explaining why it lies outside structural verification.
+10. When a claim applies a mathematical theorem, formal model, or necessity condition (e.g., asserting a control *requires* a certain budget when only one checkpoint was scored) to a target object (Rule 3), use `kind: "theoremApplication"` with:
     - `target`: node receiving the theorem application
     - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
     - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
@@ -880,7 +926,7 @@ CRITICAL RULES:
 
 JSON TEMPLATE:
 {{
-  "schema_version": "epistemic-ledger/v2.3",
+  "schema_version": "epistemic-ledger/v2.4",
   "auditor": "{auditor_name}",
   "paper_title": "...",
   "nodes": ["nodeA", "nodeB"],
@@ -897,6 +943,7 @@ JSON TEMPLATE:
       "statement": "concise statement of claim",
       "quote": "verbatim claim quote from text",
       "provenance": "authorClaimed",
+      "nature": "qualitative",
       "kind": "emergesWithExclusion",
       "target": "nodeB",
       "excluded_channel": "nodeB",
