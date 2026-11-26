@@ -1541,6 +1541,15 @@ class PipelineTests(unittest.TestCase):
             errs_ws, _ = validate_spec(spec_wrong_scale, doc=doc)
             self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_ws))
 
+            # Codex #27406 negative control: inflating plain `100` (from `100MB`) to `amount=100, unit="million MB"`
+            # MUST fail (`ungrounded_usage_amount`) rather than matching plain `100 in parsed_ints`!
+            spec_inflated = copy.deepcopy(spec_aux)
+            spec_inflated["claims"][0]["method_usage"] = [
+                {"source": "src_0", "dimension": "resourceCost", "unit": "million MB", "amount": 100, "quote": q_aux},
+            ]
+            errs_inf, _ = validate_spec(spec_inflated, doc=doc)
+            self.assertTrue(any(e.code == "ungrounded_usage_amount" for e in errs_inf))
+
             # Slicing `900` out of `900M` MUST fail with `truncated_numeric_quote`
             spec_sliced = copy.deepcopy(spec)
             spec_sliced["claims"][0]["control_usage"][0]["amount"] = 900

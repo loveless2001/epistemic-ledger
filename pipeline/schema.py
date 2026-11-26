@@ -623,8 +623,8 @@ def validate_spec(
                         parsed_ints = {v for v, _, _ in intact_ints}
                         unit_scale = _unit_magnitude_scale(entry["unit"]) if isinstance(entry.get("unit"), str) else 1
                         effective_amt = entry["amount"] * unit_scale
-                        if entry["amount"] not in parsed_ints and not (unit_scale > 1 and effective_amt in parsed_ints):
-                            if entry["amount"] in truncated_vals or (unit_scale > 1 and effective_amt in truncated_vals):
+                        if effective_amt not in parsed_ints:
+                            if entry["amount"] in truncated_vals or effective_amt in truncated_vals:
                                 errors.append(
                                     ValidationErrorItem(
                                         f"{ep}.amount",
@@ -637,7 +637,7 @@ def validate_spec(
                                     ValidationErrorItem(
                                         f"{ep}.amount",
                                         "ungrounded_usage_amount",
-                                        f"Complete integer amount {entry['amount']} does not appear in its verbatim quote: {entry['quote'][:120]!r}",
+                                        f"Scaled amount {effective_amt} ({entry['amount']} with unit {entry['unit']!r}) does not appear in its verbatim quote: {entry['quote'][:120]!r}",
                                     )
                                 )
 
