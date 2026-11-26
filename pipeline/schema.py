@@ -10,6 +10,7 @@ from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize, normali
 
 IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 MIN_QUOTE_NONSPACE_CHARS = 12
+DISALLOWED_UNICODE_SEPARATORS = frozenset({"\u0085", "\u2028", "\u2029"})
 
 # Lean 4 reserved words & core type names that must not be used as bare constructors/defs.
 LEAN_RESERVED = frozenset(
@@ -95,6 +96,11 @@ class QuoteMatch:
     matched: bool
     char_offset: int | None
     mode: str | None  # "exact_ws" or "dehyphenated"
+    normalized_quote: str
+
+
+def is_valid_ident(value: Any) -> bool:
+    return isinstance(value, str) and bool(IDENT_RE.match(value)) and value not in LEAN_RESERVED
 
 
 def _check_ident(value: Any, path: str, errors: list[ValidationErrorItem]) -> str | None:
@@ -117,9 +123,11 @@ def _check_nonempty_str(value: Any, path: str, errors: list[ValidationErrorItem]
     if not isinstance(value, str) or not value.strip():
         errors.append(ValidationErrorItem(path, "invalid_string", "Expected non-empty string"))
         return None
-    if any(ord(ch) < 32 and ch not in ("\n", "\r", "\t") for ch in value):
+    if any((ord(ch) < 32 and ch not in ("\n", "\r", "\t")) or ch in DISALLOWED_UNICODE_SEPARATORS for ch in value):
         errors.append(
-            ValidationErrorItem(path, "control_char", "String contains disallowed ASCII control characters")
+            ValidationErrorItem(
+                path, "control_char", "String contains disallowed ASCII control or Unicode line-separator characters"
+            )
         )
         return None
     return value
@@ -148,24 +156,33 @@ def verify_quote_in_document(doc: IngestedDocument, quote: str, path: str) -> Qu
     norm_q = normalize_whitespace(quote)
     nonspace_len = len(re.sub(r"\s+", "", norm_q))
     if nonspace_len < MIN_QUOTE_NONSPACE_CHARS:
-        return QuoteMatch(path=path, quote=quote, matched=False, char_offset=None, mode=None)
+        return QuoteMatch(path=path, quote=quote, matched=False, char_offset=None, mode=None, normalized_quote=norm_q)
 
     idx = doc.normalized_text.find(norm_q)
     if idx != -1:
-        return QuoteMatch(path=path, quote=quote, matched=True, char_offset=idx, mode="exact_ws")
+        return QuoteMatch(
+            path=path, quote=quote, matched=True, char_offset=idx, mode="exact_ws", normalized_quote=norm_q
+        )
 
     dehy_q = dehyphenate_and_normalize(quote)
     idx2 = doc.dehyphenated_text.find(dehy_q)
     if idx2 != -1:
-        return QuoteMatch(path=path, quote=quote, matched=True, char_offset=idx2, mode="dehyphenated")
+        return QuoteMatch(
+            path=path, quote=quote, matched=True, char_offset=idx2, mode="dehyphenated", normalized_quote=dehy_q
+        )
 
-    return QuoteMatch(path=path, quote=quote, matched=False, char_offset=None, mode=None)
+    return QuoteMatch(path=path, quote=quote, matched=False, char_offset=None, mode=None, normalized_quote=norm_q)
 
 
 def validate_spec(
     spec: Any, doc: IngestedDocument | None = None
 ) -> tuple[list[ValidationErrorItem], list[QuoteMatch]]:
-    """Validate an AuditSpec JSON object and optionally verify all quotes against `doc`."""
+    """Validate an AuditSpec JSON object and optionally verify all quotes against `doc`.
+
+    Note on quote grounding: verbatim matching proves that each cited sentence appears
+    in the source snapshot (anti-hallucination). Whether a quote semantically justifies a
+    particular `carries` tag or causal edge remains a separate auditor judgment.
+    """
     errors: list[ValidationErrorItem] = []
     quotes: list[QuoteMatch] = []
 
@@ -249,21 +266,29 @@ def validate_spec(
                 errors.append(ValidationErrorItem(f"{path}[{j}]", "unknown_tag", f"Unknown tag {t!r}"))
 
     # Sources
+    source_node_set: set[str] = set()
     if not isinstance(spec["sources"], list):
         errors.append(ValidationErrorItem("$.sources", "type_error", "Expected list"))
     else:
-        seen_source_nodes: set[str] = set()
         for i, src in enumerate(spec["sources"]):
             p = f"$.sources[{i}]"
-            if not _check_allowed_keys(src, {"node", "origin", "carries", "quote", "rationale"}, {"node", "origin", "carries", "quote"}, p, errors):
+            if not _check_allowed_keys(
+                src,
+                {"node", "origin", "carries", "quote", "rationale"},
+                {"node", "origin", "carries", "quote"},
+                p,
+                errors,
+            ):
                 continue
             check_node_ref(src["node"], f"{p}.node")
-            if isinstance(src["node"], str):
-                if src["node"] in seen_source_nodes:
+            if isinstance(src["node"], str) and src["node"] in node_set:
+                if src["node"] in source_node_set:
                     errors.append(
-                        ValidationErrorItem(f"{p}.node", "duplicate_source", f"Duplicate SourceNode for {src['node']!r}")
+                        ValidationErrorItem(
+                            f"{p}.node", "duplicate_source", f"Duplicate SourceNode for {src['node']!r}"
+                        )
                     )
-                seen_source_nodes.add(src["node"])
+                source_node_set.add(src["node"])
             if src["origin"] not in VALID_ORIGINS:
                 errors.append(
                     ValidationErrorItem(f"{p}.origin", "invalid_enum", f"origin must be in {sorted(VALID_ORIGINS)}")
@@ -274,6 +299,7 @@ def validate_spec(
                 _check_nonempty_str(src["rationale"], f"{p}.rationale", errors)
 
     # Ops
+    op_output_set: set[str] = set()
     if not isinstance(spec["ops"], list):
         errors.append(ValidationErrorItem("$.ops", "type_error", "Expected list"))
     else:
@@ -303,6 +329,8 @@ def validate_spec(
                 for j, inp in enumerate(op["inputs"]):
                     check_node_ref(inp, f"{p}.inputs[{j}]")
             check_node_ref(op["output"], f"{p}.output")
+            if isinstance(op["output"], str) and op["output"] in node_set:
+                op_output_set.add(op["output"])
             if kind == "forget":
                 if not isinstance(op["tag"], str) or op["tag"] not in tag_set:
                     errors.append(ValidationErrorItem(f"{p}.tag", "unknown_tag", f"Unknown tag {op['tag']!r}"))
@@ -317,6 +345,19 @@ def validate_spec(
             check_quote(op["quote"], f"{p}.quote")
             if "rationale" in op:
                 _check_nonempty_str(op["rationale"], f"{p}.rationale", errors)
+
+    defined_graph_nodes = source_node_set | op_output_set
+
+    def check_defined_endpoint(val: Any, path: str) -> None:
+        check_node_ref(val, path)
+        if isinstance(val, str) and val in node_set and val not in defined_graph_nodes:
+            errors.append(
+                ValidationErrorItem(
+                    path,
+                    "undefined_claim_endpoint",
+                    f"Claim endpoint {val!r} is neither a SourceNode nor the output of any Op in the graph",
+                )
+            )
 
     # Claims
     if not isinstance(spec["claims"], list) or len(spec["claims"]) == 0:
@@ -360,21 +401,21 @@ def validate_spec(
                 _check_nonempty_str(cl["notes"], f"{p}.notes", errors)
 
             if kind in ("emergesWithout", "uniqueRecovery"):
-                check_node_ref(cl["target"], f"{p}.target")
+                check_defined_endpoint(cl["target"], f"{p}.target")
                 if cl["tag"] not in tag_set:
                     errors.append(ValidationErrorItem(f"{p}.tag", "unknown_tag", f"Unknown tag {cl['tag']!r}"))
             elif kind == "emergesWithExclusion":
-                check_node_ref(cl["target"], f"{p}.target")
-                check_node_ref(cl["excluded_channel"], f"{p}.excluded_channel")
+                check_defined_endpoint(cl["target"], f"{p}.target")
+                check_defined_endpoint(cl["excluded_channel"], f"{p}.excluded_channel")
                 if cl["tag"] not in tag_set:
                     errors.append(ValidationErrorItem(f"{p}.tag", "unknown_tag", f"Unknown tag {cl['tag']!r}"))
             elif kind == "independentConvergence":
-                check_node_ref(cl["branch_a"], f"{p}.branch_a")
-                check_node_ref(cl["branch_b"], f"{p}.branch_b")
+                check_defined_endpoint(cl["branch_a"], f"{p}.branch_a")
+                check_defined_endpoint(cl["branch_b"], f"{p}.branch_b")
                 if cl["tag"] not in tag_set:
                     errors.append(ValidationErrorItem(f"{p}.tag", "unknown_tag", f"Unknown tag {cl['tag']!r}"))
             else:  # conditionalFlow
-                check_node_ref(cl["target"], f"{p}.target")
+                check_defined_endpoint(cl["target"], f"{p}.target")
                 if not isinstance(cl["declared_sources"], list):
                     errors.append(ValidationErrorItem(f"{p}.declared_sources", "type_error", "Expected list of nodes"))
                 else:

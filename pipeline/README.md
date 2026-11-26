@@ -11,15 +11,24 @@ Lean 4.34.0 `EpistemicLedger.OperationFlow` (v2.1 / Policy 3) verifier kernel.
    (`epistemic-ledger/v2.1`), Lean identifier/keyword hygiene, and verifies that **every**
    source, operation, and claim quote appears verbatim (whitespace-normalized / dehyphenated,
    ≥ 12 non-space chars) in the ingested document.
-3. **Lean 4 Kernel Verification (`pipeline/lean_runner.py`)** — Two-pass compilation against
-   `EpistemicLedger.OperationFlow`:
+3. **Lean 4 Kernel Verification (`pipeline/lean_runner.py`)** — Automatically ensures
+   `EpistemicLedger.OperationFlow` is built and up to date (works on a fresh clean clone),
+   then runs two-pass verification:
    - Pass 1 evaluates `flowVerdict` and `auditFlow` inside `lake env lean`.
-   - Pass 2 synthesizes a standalone `.lean` proof file with `by decide` theorems certifying
-     every verdict and finding list, compiles it with the Lean kernel, and verifies `#print axioms`
-     contains only `{propext, Quot.sound}` (rejecting `Classical.choice` or `sorryAx`).
-4. **Report & Multi-Auditor Reconciliation (`pipeline/report.py`)** — Writes `*_report.json`,
-   `*_report.md` (with verbatim evidence quotes), and `comparison.md` / `comparison.json` when
-   2+ auditors inspect the same document.
+   - Pass 2 synthesizes a standalone `.lean` proof file (with disjoint `Claims`, `Verdicts`,
+     and `Findings` sub-namespaces), compiles it with the Lean kernel, verifies `#print axioms`
+     contains only `{propext, Quot.sound}`, and publishes `*_Verified.lean` atomically only
+     after all checks succeed.
+4. **Report & Quote-Anchored Multi-Auditor Reconciliation (`pipeline/report.py`)** — Writes
+   `*_report.json`, `*_report.md`, and `comparison.md` / `comparison.json`. Claims across
+   auditors are matched strictly by verbatim quote location `(char_offset, normalized_quote)`
+   in the single ingested snapshot (never by arbitrary `claim.id`), displaying claim kind,
+   target, and excluded channel per auditor.
+
+> **Scope note:** Verbatim quote checks prove textual existence in the snapshot
+> (anti-hallucination); whether a quote semantically justifies a `carries` tag or causal edge
+> remains an auditor/human judgment. `extract` runs `--extractor-cmd` via `shlex.split` with
+> `shell=False` and feeds the document prompt on stdin.
 
 ## Usage
 

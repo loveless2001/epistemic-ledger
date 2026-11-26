@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -73,6 +74,8 @@ def _lean_claim_kind(cl: dict[str, Any]) -> str:
 
 
 def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
+    """Render Lean definitions with separate `Claims` and `Proofs` sub-namespaces so
+    claim IDs can never collide with generated helper or theorem names."""
     lines: list[str] = [
         "import EpistemicLedger.OperationFlow",
         "",
@@ -90,7 +93,6 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         lines.append(f"  | {t}")
     lines += ["  deriving DecidableEq, Repr", ""]
 
-    # Node/Tag JSON helpers for deterministic Stage-1 extraction
     lines += ["def nodeName : Node → String"]
     for n in spec["nodes"]:
         lines.append(f'  | .{n} => "{n}"')
@@ -177,17 +179,18 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
                 f'{prefix}⟨"{name_esc}", {_lean_node_list(op["inputs"])}, .{op["output"]}, {_lean_op_kind(op)}⟩'
             )
         lines.append("    ]")
-    lines.append("")
+    lines += ["", "namespace Claims", ""]
 
     for cl in spec["claims"]:
         stmt_esc = escape_lean_str(cl["statement"])
         lines += [
-            f"def claim_{cl['id']} : FlowClaim Node Tag where",
+            f"def {cl['id']} : FlowClaim Node Tag where",
             f'  statement := "{stmt_esc}"',
             "  graph := graph",
             f"  kind := {_lean_claim_kind(cl)}",
             "",
         ]
+    lines += ["end Claims", ""]
     return "\n".join(lines)
 
 
@@ -216,6 +219,20 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
     raise ValueError(f"Unknown finding type from Lean output: {ft!r}")
 
 
+def ensure_operation_flow_built(repo_root: Path) -> None:
+    """Ensure `EpistemicLedger.OperationFlow` is compiled and up to date with its source."""
+    proc = subprocess.run(
+        ["lake", "build", "EpistemicLedger.OperationFlow"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Failed to build EpistemicLedger.OperationFlow (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+        )
+
+
 def _run_lean(repo_root: Path, lean_source: str) -> str:
     proc = subprocess.run(
         ["lake", "env", "lean", "--stdin"],
@@ -231,10 +248,9 @@ def _run_lean(repo_root: Path, lean_source: str) -> str:
 
 def _parse_axioms(stdout: str) -> dict[str, list[str]]:
     axioms_map: dict[str, list[str]] = {}
-    # Join wrapped axiom lines if Lean wraps long outputs across lines
     joined_lines: list[str] = []
-    for raw_line in stdout.splitlines():
-        line = raw_line.rstrip()
+    for raw_line in stdout.split("\n"):
+        line = raw_line.rstrip("\r")
         if line.startswith(" ") and joined_lines:
             joined_lines[-1] = joined_lines[-1] + " " + line.strip()
         else:
@@ -257,27 +273,32 @@ def run_lean_verification(
     spec: dict[str, Any], repo_root: Path, out_lean_path: Path, namespace: str | None = None
 ) -> LeanVerificationResult:
     """Two-pass Lean 4 kernel verification:
-    Pass 1: Evaluate `flowVerdict` and `auditFlow` inside `lake env lean`.
-    Pass 2: Synthesize standalone `decide` proof file certifying exact verdicts & finding lists,
-            compile it with `lake env lean`, and enforce axiom whitelist `{propext, Quot.sound}`.
+    0. Ensure `EpistemicLedger.OperationFlow` `.olean` is built & fresh (works on clean clones).
+    1. Evaluate `flowVerdict` and `auditFlow` inside `lake env lean`.
+    2. Synthesize standalone `decide` proof file in separate `Claims`/`Verdicts`/`Findings`
+       sub-namespaces, verify with Lean kernel + axiom whitelist `{propext, Quot.sound}`,
+       and atomically publish `out_lean_path` ONLY after all checks succeed.
     """
+    ensure_operation_flow_built(repo_root)
+
     ns = namespace or f"EpistemicLedger.Generated.{spec['auditor']}"
     base = _render_base_module(spec, ns)
 
-    # Pass 1: evaluate verdicts & findings as JSON lines
+    # Pass 1: evaluate verdicts & findings as JSON lines (strict `\n` splitting)
     eval_lines = [base]
     for cl in spec["claims"]:
         cid = cl["id"]
         eval_lines.append(
             f'#eval IO.println ("EPISTEMIC_JSON:" ++ "{{\\"id\\":\\"{cid}\\",\\"verdict\\":" ++ '
-            f'jsonStr (verdictName (flowVerdict claim_{cid})) ++ ",\\"findings\\":" ++ '
-            f'findingsToJson (auditFlow claim_{cid}) ++ "}}")'
+            f'jsonStr (verdictName (flowVerdict Claims.{cid})) ++ ",\\"findings\\":" ++ '
+            f'findingsToJson (auditFlow Claims.{cid}) ++ "}}")'
         )
     eval_lines.append(f"end {ns}")
     pass1_out = _run_lean(repo_root, "\n".join(eval_lines) + "\n")
 
     parsed_by_id: dict[str, dict[str, Any]] = {}
-    for line in pass1_out.splitlines():
+    for line in pass1_out.split("\n"):
+        line = line.rstrip("\r")
         if line.startswith("EPISTEMIC_JSON:"):
             payload = json.loads(line[len("EPISTEMIC_JSON:") :])
             parsed_by_id[payload["id"]] = payload
@@ -286,46 +307,41 @@ def run_lean_verification(
     if missing_ids:
         raise RuntimeError(f"Lean pass 1 did not return results for claim(s): {missing_ids}")
 
-    # Pass 2: synthesize standalone kernel-checked `decide` proof file + #print axioms
-    proof_lines = [base]
+    # Pass 2: synthesize standalone kernel-checked `decide` proof file in disjoint namespaces
+    proof_lines = [base, "namespace Verdicts", ""]
     for cl in spec["claims"]:
         cid = cl["id"]
         verdict = parsed_by_id[cid]["verdict"]
+        proof_lines.append(f"theorem {cid} : flowVerdict Claims.{cid} = .{verdict} := by decide")
+    proof_lines += ["", "end Verdicts", "", "namespace Findings", ""]
+    for cl in spec["claims"]:
+        cid = cl["id"]
         findings = parsed_by_id[cid]["findings"]
         findings_lean = "[" + ", ".join(_finding_to_lean_expr(f) for f in findings) + "]"
-        proof_lines += [
-            f"theorem claim_{cid}_verdict : flowVerdict claim_{cid} = .{verdict} := by decide",
-            f"theorem claim_{cid}_findings : auditFlow claim_{cid} = {findings_lean} := by decide",
-            "",
-        ]
-    proof_lines.append(f"end {ns}")
+        proof_lines.append(f"theorem {cid} : auditFlow Claims.{cid} = {findings_lean} := by decide")
+    proof_lines += ["", "end Findings", "", f"end {ns}"]
     proof_source = "\n".join(proof_lines) + "\n"
 
-    out_lean_path.parent.mkdir(parents=True, exist_ok=True)
-    out_lean_path.write_text(proof_source, encoding="utf-8")
-
-    # Verify the written proof file + print axioms for every theorem
+    # Verify with Lean kernel + print axioms BEFORE publishing `out_lean_path`
     axiom_check_lines = [proof_source]
     for cl in spec["claims"]:
         cid = cl["id"]
-        axiom_check_lines.append(f"#print axioms {ns}.claim_{cid}_verdict")
-        axiom_check_lines.append(f"#print axioms {ns}.claim_{cid}_findings")
+        axiom_check_lines.append(f"#print axioms {ns}.Verdicts.{cid}")
+        axiom_check_lines.append(f"#print axioms {ns}.Findings.{cid}")
 
     pass2_out = _run_lean(repo_root, "\n".join(axiom_check_lines) + "\n")
     axioms_map = _parse_axioms(pass2_out)
 
     claim_results: list[LeanClaimResult] = []
-    all_axioms_ok = True
     for cl in spec["claims"]:
         cid = cl["id"]
-        v_thm = f"{ns}.claim_{cid}_verdict"
-        f_thm = f"{ns}.claim_{cid}_findings"
+        v_thm = f"{ns}.Verdicts.{cid}"
+        f_thm = f"{ns}.Findings.{cid}"
         if v_thm not in axioms_map or f_thm not in axioms_map:
             raise RuntimeError(f"Missing axiom report for claim {cid!r}; got keys {sorted(axioms_map)}")
         used_axioms = sorted(set(axioms_map[v_thm]) | set(axioms_map[f_thm]))
         disallowed = [a for a in used_axioms if a not in ALLOWED_AXIOMS]
         if disallowed:
-            all_axioms_ok = False
             raise RuntimeError(
                 f"Disallowed axioms detected for claim {cid!r}: {disallowed} (allowed: {sorted(ALLOWED_AXIOMS)})"
             )
@@ -339,4 +355,10 @@ def run_lean_verification(
             )
         )
 
-    return LeanVerificationResult(lean_file=out_lean_path, claims=claim_results, raw_axioms_ok=all_axioms_ok)
+    # Atomic publication only after Pass 2 + axiom check succeed
+    out_lean_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_lean_path.with_suffix(".lean.tmp")
+    tmp_path.write_text(proof_source, encoding="utf-8")
+    os.replace(tmp_path, out_lean_path)
+
+    return LeanVerificationResult(lean_file=out_lean_path, claims=claim_results, raw_axioms_ok=True)
