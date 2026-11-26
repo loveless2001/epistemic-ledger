@@ -1,0 +1,134 @@
+{
+  "schema_version": "epistemic-ledger/v2.1",
+  "auditor": "AuditorB",
+  "paper_title": "Spatial Emergence Framework (Synthetic Benchmark Document)",
+  "nodes": [
+    "trueSceneState",
+    "measuredRgbFrames",
+    "lidarDepthMaps",
+    "pretrained3DBackbone",
+    "monocularProjection",
+    "loss2DTarget",
+    "lossWithDepth",
+    "modelRegimeA",
+    "modelRegimeB",
+    "modelRegimeC"
+  ],
+  "tags": [
+    "geometry3D",
+    "worldState"
+  ],
+  "sources": [
+    {
+      "node": "trueSceneState",
+      "origin": "measured",
+      "carries": ["worldState"],
+      "quote": "the projection from scene state to image pixels is many-to-one"
+    },
+    {
+      "node": "measuredRgbFrames",
+      "origin": "measured",
+      "carries": [],
+      "quote": "we record raw RGB camera frames from real indoor rooms using a calibrated monocular camera"
+    },
+    {
+      "node": "lidarDepthMaps",
+      "origin": "measured",
+      "carries": ["geometry3D"],
+      "quote": "a separate LiDAR sensor measuring ground-truth depth maps"
+    },
+    {
+      "node": "pretrained3DBackbone",
+      "origin": "setByExperimenter",
+      "carries": ["geometry3D"],
+      "quote": "a frozen external vision backbone that was previously pretrained on synthetic 3D point-tracking datasets"
+    }
+  ],
+  "ops": [
+    {
+      "name": "monocular_camera_projection",
+      "inputs": ["trueSceneState", "measuredRgbFrames"],
+      "output": "monocularProjection",
+      "kind": "lossy",
+      "introduces": [],
+      "quote": "collapses multiple combinations of surface reflectance and ambient lighting into identical pixel values"
+    },
+    {
+      "name": "pure_2d_loss",
+      "inputs": [],
+      "output": "loss2DTarget",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "optimizes a purely 2D patch-matching loss objective with no depth supervision"
+    },
+    {
+      "name": "train_regime_a",
+      "inputs": ["monocularProjection", "loss2DTarget"],
+      "output": "modelRegimeA",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "the encoder ingests only the raw RGB camera frames and optimizes a purely 2D patch-matching loss objective"
+    },
+    {
+      "name": "train_regime_b",
+      "inputs": ["monocularProjection", "pretrained3DBackbone", "loss2DTarget"],
+      "output": "modelRegimeB",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "we attach a frozen external vision backbone that was previously pretrained on synthetic 3D point-tracking datasets"
+    },
+    {
+      "name": "loss_with_lidar_depth",
+      "inputs": ["lidarDepthMaps"],
+      "output": "lossWithDepth",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "we feed the LiDAR ground-truth depth maps directly into the training loss as auxiliary supervision"
+    },
+    {
+      "name": "train_regime_c",
+      "inputs": ["monocularProjection", "lossWithDepth"],
+      "output": "modelRegimeC",
+      "kind": "transform",
+      "introduces": [],
+      "quote": "we feed the LiDAR ground-truth depth maps directly into the training loss as auxiliary supervision"
+    }
+  ],
+  "claims": [
+    {
+      "id": "claimA_clean_measured",
+      "statement": "Under Regime A, 3D geometry arises without 3D prediction targets in the training loss.",
+      "quote": "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss.",
+      "kind": "emergesWithExclusion",
+      "target": "modelRegimeA",
+      "excluded_channel": "loss2DTarget",
+      "tag": "geometry3D"
+    },
+    {
+      "id": "claimB_pretrained_backbone",
+      "statement": "Under Regime B, 3D geometry emerges purely from 2D relational learning without 3D prediction targets.",
+      "quote": "Under Regime B, 3D geometry emerges purely from 2D relational learning without 3D prediction targets.",
+      "kind": "emergesWithExclusion",
+      "target": "modelRegimeB",
+      "excluded_channel": "loss2DTarget",
+      "tag": "geometry3D"
+    },
+    {
+      "id": "claimC_depth_in_loss",
+      "statement": "Under Regime C, 3D geometry emerges without 3D prediction targets.",
+      "quote": "Under Regime C, 3D geometry emerges without 3D prediction targets.",
+      "kind": "emergesWithExclusion",
+      "target": "modelRegimeC",
+      "excluded_channel": "lossWithDepth",
+      "tag": "geometry3D"
+    },
+    {
+      "id": "claimD_unique_recovery",
+      "statement": "The encoder uniquely recovers the true underlying 3D world state from a single monocular photograph.",
+      "quote": "The encoder uniquely recovers the true underlying 3D world state from a single monocular photograph.",
+      "kind": "uniqueRecovery",
+      "target": "modelRegimeA",
+      "tag": "worldState"
+    }
+  ]
+}
