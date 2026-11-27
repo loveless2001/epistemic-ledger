@@ -953,6 +953,7 @@ def validate_spec(
                 )
                 continue
             base_req = {"id", "statement", "quote", "kind"}
+            # Legacy display-only hedge keys (`hedged`, `hedge_quote`) are accepted and ignored so older records still run.
             base_opt = {"notes", "provenance", "nature", "quantitative_kind", "hedged", "hedge_quote", "ask_back"}
             is_oos_quant = (
                 cl.get("nature") == "quantitative"
@@ -1071,48 +1072,6 @@ def validate_spec(
                         f"{p}.quantitative_kind",
                         "unexpected_quantitative_kind",
                         "quantitative_kind is only allowed when nature is 'quantitative'",
-                    )
-                )
-            if "hedged" in cl and not isinstance(cl["hedged"], bool):
-                errors.append(
-                    ValidationErrorItem(f"{p}.hedged", "type_error", "hedged must be a boolean")
-                )
-            if cl.get("hedged") is True:
-                if "hedge_quote" not in cl:
-                    errors.append(
-                        ValidationErrorItem(
-                            f"{p}.hedge_quote",
-                            "missing_hedge_quote",
-                            "hedged: true requires a verbatim hedge_quote from the document",
-                        )
-                    )
-                else:
-                    before_hq = len(quotes)
-                    check_quote(cl["hedge_quote"], f"{p}.hedge_quote")
-                    hedge_qm = quotes[-1] if len(quotes) > before_hq else None
-                    if isinstance(cl["hedge_quote"], str) and isinstance(cl["quote"], str):
-                        norm_hq = normalize_whitespace(cl["hedge_quote"])
-                        norm_cq = normalize_whitespace(cl["quote"])
-                        dehy_hq = dehyphenate_and_normalize(cl["hedge_quote"])
-                        dehy_cq = dehyphenate_and_normalize(cl["quote"])
-                        if norm_hq and norm_cq and (norm_hq not in norm_cq and dehy_hq not in dehy_cq):
-                            errors.append(
-                                ValidationErrorItem(
-                                    f"{p}.hedge_quote",
-                                    "hedge_quote_outside_claim",
-                                    "hedge_quote must appear verbatim inside the claim's own quote (attach hedges only to the clause they modify)",
-                                )
-                            )
-                        elif hedge_qm is not None and hedge_qm.matched:
-                            anchored = anchor_subquote_match(claim_qm, cl["quote"], cl["hedge_quote"], f"{p}.hedge_quote")
-                            if anchored is not None:
-                                quotes[-1] = anchored
-            elif "hedge_quote" in cl:
-                errors.append(
-                    ValidationErrorItem(
-                        f"{p}.hedge_quote",
-                        "unexpected_hedge_quote",
-                        "hedge_quote requires hedged: true",
                     )
                 )
 

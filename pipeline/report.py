@@ -282,10 +282,7 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "kind": kind,
         "provenance": meta.get("provenance", "authorClaimed"),
         "nature": meta.get("nature", "qualitative"),
-        "hedged": bool(meta.get("hedged", False)),
     }
-    if meta.get("hedged") and isinstance(meta.get("hedge_quote"), str):
-        sig["hedge_quote"] = normalize_whitespace(meta["hedge_quote"])
     if isinstance(meta.get("exclusion_wording_quote"), str):
         sig["exclusion_wording_quote"] = normalize_whitespace(meta["exclusion_wording_quote"])
     if isinstance(meta.get("excluded_object"), str):
@@ -454,8 +451,6 @@ def build_single_report_dict(
                     "kernel_verified": c.kernel_verified,
                     "nature": meta.get("nature", "qualitative"),
                     "quantitative_kind": meta.get("quantitative_kind"),
-                    "hedged": bool(meta.get("hedged", False)),
-                    "hedge_quote": meta.get("hedge_quote"),
                     "declared_bet_count": bet_count,
                     "declaration_locations": _compute_declaration_locations(doc, spec, meta),
                 }
@@ -715,9 +710,8 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         nature_label = meta.get("nature", "qualitative")
         if nature_label == "quantitative" and meta.get("quantitative_kind"):
             nature_label = f"quantitative/{meta['quantitative_kind']}"
-        hedged_suffix = ", hedged" if meta.get("hedged") else ""
         lines.append(
-            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`{hedged_suffix})"
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`)"
         )
         # D3: Reader stop answers directly under the claim heading (before findings)
         rab_claim = rab_by_claim.get(c["id"], {})
@@ -744,8 +738,6 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
-        if meta.get("hedged") and meta.get("hedge_quote"):
-            lines.append(f"- **Hedge quote:** > {meta['hedge_quote']}")
         ka_entry = meta.get("ask_back", {}).get("kind_anchor") if isinstance(meta.get("ask_back"), dict) else None
         if isinstance(ka_entry, dict) and ka_entry.get("status") == "not_found" and not meta.get("exclusion_wording_quote"):
             cand_obj = f" (candidate excluded object: {meta['excluded_object']})" if meta.get("excluded_object") else ""
@@ -1012,8 +1004,6 @@ def build_comparison_report(
         declared_source_sets: set[tuple[str, ...]] = set()
         effectiveness_controls: set[tuple[str, str]] = set()
         provenances: set[str] = set()
-        hedged_flags: set[bool] = set()
-        hedge_quotes: set[str] = set()
         nature_signatures: set[tuple[str, str]] = set()
         hypothesis_signatures: set[str] = set()
         declared_bet_sets: set[tuple[str, ...]] = set()
@@ -1042,8 +1032,6 @@ def build_comparison_report(
                     sig = info["signature"]
                     kinds.add(str(sig.get("kind")))
                     provenances.add(str(sig.get("provenance", "authorClaimed")))
-                    hedged_flags.add(bool(sig.get("hedged", False)))
-                    hedge_quotes.add(str(sig.get("hedge_quote", "")))
                     nature_signatures.add((str(sig.get("nature", "qualitative")), str(sig.get("quantitative_kind", ""))))
                     if sig.get("kind") == "effectivenessClaim":
                         tgt = f"{sig.get('method_node')}->{sig.get('evaluation_node')}"
@@ -1102,8 +1090,6 @@ def build_comparison_report(
                 "same_declared_sources": complete_1to1 and len(declared_source_sets) == 1,
                 "same_control_and_ledger": complete_1to1 and len(effectiveness_controls) == 1,
                 "same_provenance": complete_1to1 and len(provenances) == 1,
-                "same_hedged": complete_1to1 and len(hedged_flags) == 1,
-                "same_hedge_quote": complete_1to1 and len(hedge_quotes) == 1,
                 "same_nature": complete_1to1 and len(nature_signatures) == 1,
                 "same_hypotheses": complete_1to1 and len(hypothesis_signatures) == 1,
                 "same_declared_bets": complete_1to1 and len(declared_bet_sets) == 1,
@@ -1214,9 +1200,6 @@ def build_comparison_report(
                 extras.append(f"excl={sig['excluded_channel']}")
             if "declared_sources" in sig:
                 extras.append(f"declared={sorted(set(sig['declared_sources']))}")
-        if sig.get("hedged") and sig.get("hedge_quote"):
-            hq_short = sig["hedge_quote"].replace("|", "\\|")
-            extras.append(f'hedged="{hq_short}"')
         extra_str = (", " + ", ".join(extras)) if extras else ""
         ftypes = ", ".join(info["finding_types"]) or "clean"
         bet_count = _count_declared_bets(sig)
@@ -1244,10 +1227,6 @@ def build_comparison_report(
                 diffs.append("control/ledger")
             if not row["same_provenance"]:
                 diffs.append("provenance")
-            if not row.get("same_hedged", True):
-                diffs.append("hedged")
-            if not row.get("same_hedge_quote", True):
-                diffs.append("hedge_quote")
             if not row.get("same_nature", True):
                 diffs.append("nature")
             if not row.get("same_hypotheses", True):
@@ -1290,8 +1269,6 @@ def build_comparison_report(
             or not r["same_declared_sources"]
             or not r["same_control_and_ledger"]
             or not r["same_provenance"]
-            or not r.get("same_hedged", True)
-            or not r.get("same_hedge_quote", True)
             or not r.get("same_nature", True)
             or not r.get("same_hypotheses", True)
             or not r.get("same_declared_bets", True)
@@ -1331,7 +1308,7 @@ WORKFLOW (PROPOSE -> ASK -> ANSWER -> ASK AGAIN):
 4. Reader ask-back answers are quote-checked evidence displayed separately in the report; they are NOT labelled "Lean verified" (Lean proves only the structural flow verdict).
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, `hedge_quote`, `method_measurement_quote`/`control_measurement_quote`, and `ask_back` quote MUST be copied VERBATIM from the document (>= 12 non-space characters; `exclusion_wording_quote` may be a shorter verbatim substring >= 3 non-space characters inside the claim's own quote). Do NOT paraphrase or invent quotes.
+1. Every `source`, `op`, `claim`, `method_measurement_quote`/`control_measurement_quote`, and `ask_back` quote MUST be copied VERBATIM from the document (>= 12 non-space characters; `exclusion_wording_quote` may be a shorter verbatim substring >= 3 non-space characters inside the claim's own quote). Do NOT paraphrase or invent quotes.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
 4. Set `"provenance"` on every claim (`"authorClaimed"` or `"reviewerStressTest"`), AND declare `"nature"`: `"qualitative"` or `"quantitative"`.
@@ -1343,7 +1320,7 @@ CRITICAL RULES:
    - Split multi-clause sentences into separate claims when one clause makes a direct claim and another adds a hedged generalization (e.g., `"In this setting, property P is recovered from raw signal S"` vs `"offering an initial indication that P arises spontaneously"`).
    - For emergence / `"only X"` clauses under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`) or `kind: "emergesWithout"` (`target`, `tag`).
    - **E7 Kind Anchor (required by `ask` for `emergesWithout` / `emergesWithExclusion`):** supply `"exclusion_wording_quote"` (exact verbatim substring inside the claim's own `quote` saying a source is absent, excluded, not needed, or arises on its own, e.g. `"without external calibration"`) AND `"excluded_object"` (naming specifically what is excluded, e.g. `"external calibration inputs during inference, not during sensor manufacturing"`). If no exclusion wording exists in the claim, either reconsider the claim's `kind` or record `ask_back.kind_anchor: {{"status": "not_found", "searched_where": "..."}}` so the reading is kept and explicitly marked as having no supporting exclusion quote.
-   - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`). Attach `"hedged": true` with verbatim `"hedge_quote"` (>= 12 non-space chars, inside the claim's own `quote`) ONLY to the specific clause that the hedge modifies (display-only metadata; does not alter Lean verdicts).
+   - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`).
    - Contrast: genuine conditional statements such as `"Given a supplied X, Y follows"` remain `kind: "conditionalFlow"`.
 6. For structural effectiveness / comparison claims (`nature: "quantitative"` with `quantitative_kind: "order"` or `"threshold"`, or qualitative structural comparisons), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`

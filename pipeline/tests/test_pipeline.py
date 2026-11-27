@@ -1631,9 +1631,6 @@ class PipelineTests(unittest.TestCase):
                 "specificValue",
                 "derivedComparison",
                 "Decompose compound",
-                "hedged",
-                "hedge_quote",
-                "display-only",
                 "Given a supplied X, Y follows",
             ):
                 self.assertIn(needle, prompt_header)
@@ -1761,66 +1758,8 @@ class PipelineTests(unittest.TestCase):
             }
             self.assertEqual(validate_spec(spec_ep_a, doc=ep_doc)[0], [])
 
-            # Hedged schema negative controls
-            bad_h1 = copy.deepcopy(spec_ep_a)
-            del bad_h1["claims"][2]["hedge_quote"]
-            self.assertTrue(any(e.code == "missing_hedge_quote" for e in validate_spec(bad_h1, doc=ep_doc)[0]))
-            bad_h2 = copy.deepcopy(spec_ep_a)
-            bad_h2["claims"][1]["hedge_quote"] = "Within this task, spacetime geometry"
-            self.assertTrue(any(e.code == "unexpected_hedge_quote" for e in validate_spec(bad_h2, doc=ep_doc)[0]))
-            bad_h3 = copy.deepcopy(spec_ep_a)
-            bad_h3["claims"][2]["hedge_quote"] = "Hallucinated hedge phrase not in text"
-            self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_h3, doc=ep_doc)[0]))
-            # Codex #27436 Part C: hedge_quote from clause 2 attached to clause 1 MUST fail (`hedge_quote_outside_claim`)!
-            bad_h4 = copy.deepcopy(spec_ep_a)
-            bad_h4["claims"][2]["quote"] = "Within this task, spacetime geometry is obtained from an agent's successful predictions and actions"
-            bad_h4["claims"][2]["hedge_quote"] = "providing a first step toward emergent spacetime"
-            self.assertTrue(any(e.code == "hedge_quote_outside_claim" for e in validate_spec(bad_h4, doc=ep_doc)[0]))
-
-            # Codex #27441 Part C: repeated hedge phrase earlier in document MUST anchor `hedge_quote`'s
-            # verified offset INSIDE the matched claim span, NOT to the unrelated earlier occurrence!
-            rep_doc_path = base / "repeated_hedge.txt"
-            rep_doc_text = (
-                "Background memory capacity is consistent with standard limits.\n"
-                "Thus, all plots are consistent with and support the narrative that the agent learned the structure.\n"
-            )
-            rep_doc_path.write_text(rep_doc_text, encoding="utf-8")
-            rep_doc = ingest_document(str(rep_doc_path))
-            q_rep_claim = "Thus, all plots are consistent with and support the narrative that the agent learned the structure."
-            spec_rep_h = {
-                "schema_version": "epistemic-ledger/v2.4",
-                "auditor": "RepeatedHedgeCheck",
-                "paper_title": "Repeated Hedge Offset Check",
-                "nodes": ["srcA", "outA"],
-                "tags": ["tA"],
-                "sources": [{"node": "srcA", "origin": "measured", "carries": [], "quote": q_rep_claim}],
-                "ops": [{"name": "step", "inputs": ["srcA"], "output": "outA", "kind": "transform", "introduces": [], "quote": q_rep_claim}],
-                "claims": [
-                    {
-                        "id": "cRepeated",
-                        "statement": "Plots are consistent with learned structure.",
-                        "quote": q_rep_claim,
-                        "nature": "qualitative",
-                        "hedged": True,
-                        "hedge_quote": "consistent with",
-                        "kind": "emergesWithout",
-                        "target": "outA",
-                        "tag": "tA",
-                    }
-                ],
-            }
-            rep_errs, rep_quotes = validate_spec(spec_rep_h, doc=rep_doc)
-            self.assertEqual(rep_errs, [])
-            q_by_path = {qm.path: qm for qm in rep_quotes}
-            claim_off = q_by_path["$.claims[0].quote"].char_offset
-            hedge_off = q_by_path["$.claims[0].hedge_quote"].char_offset
-            self.assertIsNotNone(claim_off)
-            self.assertEqual(hedge_off, claim_off + q_rep_claim.find("consistent with"))
-            self.assertGreater(hedge_off, rep_doc.normalized_text.find("consistent with"))
-
             # Auditor B:
             # - omits extra unchecked bet on Q4 -> `admissible` (DISAGREE: A=unestablished, B=admissible -> Strictest=unestablished)
-            # - picks a DIFFERENT `hedge_quote` on Q7 -> `compare` flags `hedge_quote differs` and renders both quotes!
             # - omits `jepaNeedNecessityHyp` (only Auditor A reports it -> UNVERIFIED_OR_UNMATCHED -> Strictest MUST be None / `*—*`)!
             spec_ep_a_cmp = copy.deepcopy(spec_ep_a)
             spec_ep_a_cmp["claims"] = [
@@ -1832,8 +1771,6 @@ class PipelineTests(unittest.TestCase):
             for cl in spec_ep_b["claims"]:
                 if cl["id"] == "barontiniQ4Setting":
                     cl["hypotheses"][0]["status"] = "discharged"
-                if cl["id"] == "spacetimeQ7Hedged":
-                    cl["hedge_quote"] = "Within this task, spacetime geometry"
 
             sp_ep_full = base / "ep_full.json"
             sp_ep_full.write_text(json.dumps(spec_ep_a), encoding="utf-8")
@@ -1844,17 +1781,17 @@ class PipelineTests(unittest.TestCase):
             ep_by_id = {c["id"]: c for c in rep_ep["lean_verification"]["claims"]}
             self.assertEqual(ep_by_id["barontiniF2UnverifiedForget"]["verdict"], "rejected")
             self.assertEqual(ep_by_id["spacetimeQ6Unhedged"]["verdict"], "rejected")
-            # Amended Part C (#27432): hedge marker is display-only and does NOT alter verdict
+            # Legacy hedge fields are ignored and never alter verdict or render in Markdown
             self.assertEqual(ep_by_id["spacetimeQ7Hedged"]["verdict"], "rejected")
-            self.assertTrue(ep_by_id["spacetimeQ7Hedged"]["hedged"])
-            self.assertEqual(ep_by_id["spacetimeQ7Hedged"]["hedge_quote"], "providing a first step toward emergent spacetime")
+            self.assertNotIn("hedged", ep_by_id["spacetimeQ7Hedged"])
+            self.assertNotIn("hedge_quote", ep_by_id["spacetimeQ7Hedged"])
+            self.assertNotIn("Hedge quote:", md_ep)
             self.assertEqual(ep_by_id["cleanHedgedEmergence"]["verdict"], "admissible")
             self.assertEqual(ep_by_id["genuineConditional"]["verdict"], "admissible")
             self.assertEqual(ep_by_id["barontiniQ4Setting"]["verdict"], "unestablished")
             self.assertEqual(ep_by_id["jepaNeedNecessityHyp"]["verdict"], "admissible")
             self.assertEqual(ep_by_id["jepaNeedNecessityHyp"]["declared_bet_count"], 1)
             self.assertEqual(ep_by_id["jepaRatio42OutOfScope"]["verdict"], "outOfScope")
-            self.assertIn("Hedge quote:", md_ep)
 
             sp_ep_a = base / "ep_a.json"
             sp_ep_b = base / "ep_b.json"
@@ -1873,10 +1810,6 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rows_by_cid["barontiniQ4Setting"]["strictest_verdict"], "unestablished")
             self.assertEqual(rows_by_cid["spacetimeQ6Unhedged"]["strictest_verdict"], "rejected")
             self.assertEqual(rows_by_cid["spacetimeQ7Hedged"]["strictest_verdict"], "rejected")
-            self.assertFalse(rows_by_cid["spacetimeQ7Hedged"]["same_hedge_quote"])
-            self.assertIn("hedge_quote differs", comp_ep_md)
-            self.assertIn('hedged="providing a first step toward emergent spacetime"', comp_ep_md)
-            self.assertIn('hedged="Within this task, spacetime geometry"', comp_ep_md)
             self.assertEqual(rows_by_cid["genuineConditional"]["strictest_verdict"], "admissible")
             # Codex #27436 Part D: unmatched single-auditor claim MUST leave `strictest_verdict` empty (`None` / `*—*`)!
             self.assertEqual(rows_by_cid["jepaNeedNecessityHyp"]["status"], "UNVERIFIED_OR_UNMATCHED")
