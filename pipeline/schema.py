@@ -248,6 +248,125 @@ def _check_allowed_keys(
     return ok
 
 
+_ABBREV_RE = re.compile(
+    r"(?:^|[\s(])(?:Eq|Fig|Figs|Sec|Secs|Tab|No|Ref|Refs|Vol|Prop|Thm|Lem|Def|App|vs|al|e\.g|i\.e|cf|etc|Dr|Mr|Ms|Prof|v|U\.S)\.$",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_sentence_end_at(text: str, idx: int) -> bool:
+    ch = text[idx]
+    if ch not in ".!?":
+        return False
+    if ch == "." and idx > 0 and idx + 1 < len(text) and text[idx - 1].isdigit() and text[idx + 1].isdigit():
+        return False
+    j = idx + 1
+    while j < len(text) and text[j] in "\"')]}”’":
+        j += 1
+    if j < len(text) and not text[j].isspace():
+        return False
+    if ch == "." and _ABBREV_RE.search(text[max(0, idx - 12) : idx + 1]):
+        return False
+    return True
+
+
+def _enclosing_sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Expand `[start, end)` to its enclosing punctuation-delimited sentence in `text`."""
+    s = start
+    while s > 0:
+        if _is_sentence_end_at(text, s - 1):
+            break
+        s -= 1
+    while s < start and (text[s].isspace() or text[s] in "\"')]}”’"):
+        s += 1
+    e = end
+    n = len(text)
+    k = end - 1
+    while k >= start and text[k] in "\"')]}”’":
+        k -= 1
+    if not (k >= start and _is_sentence_end_at(text, k)):
+        while e < n:
+            if _is_sentence_end_at(text, e):
+                e += 1
+                while e < n and text[e] in "\"')]}”’":
+                    e += 1
+                break
+            e += 1
+    return (s, e)
+
+
+def _has_nonempty_str(val: Any) -> bool:
+    return isinstance(val, str) and bool(val.strip())
+
+
+def _has_quote_or_quotes(entry: dict[str, Any]) -> bool:
+    if _has_nonempty_str(entry.get("quote")):
+        return True
+    qs = entry.get("quotes")
+    return isinstance(qs, list) and len(qs) > 0 and all(_has_nonempty_str(q) for q in qs)
+
+
+def _ask_back_entry_missing_fields(qkey: str, entry: dict[str, Any]) -> list[str]:
+    """Return missing required sub-fields for a partial ask-back answer (treated as incomplete
+    rather than a fatal structural error so `ask` reports what is missing and `run` still emits Lean proofs)."""
+    missing: list[str] = []
+    st = entry.get("status")
+    valid_st = (
+        {"not_found"}
+        if qkey == "kind_anchor"
+        else ({"answered", "not_applicable"} if qkey == "rests_on" else VALID_ASK_BACK_STATUS)
+    )
+    if st not in valid_st:
+        return ["status"]
+    if st == "not_found":
+        if not _has_nonempty_str(entry.get("searched_where")):
+            missing.append("searched_where")
+        return missing
+    if st == "not_applicable":
+        if not _has_nonempty_str(entry.get("reason")):
+            missing.append("reason")
+        return missing
+    # st == "answered"
+    if qkey == "causal":
+        if not _has_quote_or_quotes(entry):
+            missing.append("quote/quotes")
+        if not _has_nonempty_str(entry.get("rules_out")):
+            missing.append("rules_out")
+    elif qkey == "own_wording":
+        if not _has_nonempty_str(entry.get("quote")):
+            missing.append("quote")
+        if not _has_nonempty_str(entry.get("same_proposition_reason")):
+            missing.append("same_proposition_reason")
+        if entry.get("reading") not in VALID_OWN_WORDING_READINGS:
+            missing.append("reading")
+    elif qkey == "slice":
+        if not _has_quote_or_quotes(entry):
+            missing.append("quote/quotes")
+        if entry.get("reading") not in VALID_SLICE_READINGS:
+            missing.append("reading")
+        if not _has_nonempty_str(entry.get("reason")):
+            missing.append("reason")
+    elif qkey == "test_inputs":
+        if not _has_quote_or_quotes(entry):
+            missing.append("quote/quotes")
+        if not _has_nonempty_str(entry.get("fitted_inputs")):
+            missing.append("fitted_inputs")
+        if not _has_nonempty_str(entry.get("compared_output")):
+            missing.append("compared_output")
+        if not isinstance(entry.get("claims_independent_test"), bool):
+            missing.append("claims_independent_test")
+        if entry.get("reading") not in VALID_TEST_INPUTS_READINGS:
+            missing.append("reading")
+        if not _has_nonempty_str(entry.get("reason")):
+            missing.append("reason")
+    elif qkey == "rests_on":
+        if not isinstance(entry.get("claim_ids"), list):
+            missing.append("claim_ids")
+        if not _has_nonempty_str(entry.get("reason")):
+            missing.append("reason")
+    return missing
+
+
 def verify_quote_in_document(doc: IngestedDocument, quote: str, path: str) -> QuoteMatch:
     norm_q = normalize_whitespace(quote)
     nonspace_len = len(re.sub(r"\s+", "", norm_q))
@@ -470,7 +589,7 @@ def validate_spec(
         seen_claim_ids: set[str] = set()
         pending_rests_on: list[tuple[str, str, list[str]]] = []
 
-        def check_quote_or_quotes(obj: dict[str, Any], opath: str) -> None:
+        def check_quote_or_quotes(obj: dict[str, Any], opath: str, required: bool = True) -> None:
             has_q = "quote" in obj
             has_qs = "quotes" in obj
             if has_q and has_qs:
@@ -481,14 +600,18 @@ def validate_spec(
                 check_quote(obj["quote"], f"{opath}.quote")
             elif has_qs:
                 qs = obj["quotes"]
-                if not isinstance(qs, list) or len(qs) == 0:
+                if not isinstance(qs, list):
+                    errors.append(
+                        ValidationErrorItem(f"{opath}.quotes", "type_error", "Expected list of verbatim quotes")
+                    )
+                elif len(qs) == 0 and required:
                     errors.append(
                         ValidationErrorItem(f"{opath}.quotes", "empty_list", "Expected non-empty list of verbatim quotes")
                     )
                 else:
                     for k_idx, qitem in enumerate(qs):
                         check_quote(qitem, f"{opath}.quotes[{k_idx}]")
-            else:
+            elif required:
                 errors.append(
                     ValidationErrorItem(opath, "missing_quote", "Expected verbatim 'quote' or non-empty 'quotes' list")
                 )
@@ -550,6 +673,9 @@ def validate_spec(
                     needle = dehy_oq
                     mode_used = "dehyphenated"
                 if c_start != -1 and needle:
+                    # Expand claim span to its enclosing punctuation-delimited sentence so quoting
+                    # another clause from the SAME sentence is caught (Codex #27467 Case 2).
+                    sent_start, sent_end = _enclosing_sentence_span(search_text, c_start, c_end)
                     found_outside: int | None = None
                     pos = 0
                     while True:
@@ -557,7 +683,7 @@ def validate_spec(
                         if idx == -1:
                             break
                         o_end = idx + len(needle)
-                        if o_end <= c_start or idx >= c_end:
+                        if o_end <= sent_start or idx >= sent_end:
                             found_outside = idx
                             break
                         pos = idx + 1
@@ -566,7 +692,7 @@ def validate_spec(
                             ValidationErrorItem(
                                 own_path,
                                 "own_wording_inside_claim",
-                                "own_wording.quote must appear outside the claim's own sentence",
+                                "own_wording.quote must appear outside the claim's enclosing sentence",
                             )
                         )
                     else:
@@ -583,12 +709,18 @@ def validate_spec(
                     ValidationErrorItem(
                         own_path,
                         "own_wording_inside_claim",
-                        "own_wording.quote must appear outside the claim's own sentence",
+                        "own_wording.quote must appear outside the claim's enclosing sentence",
                     )
                 )
 
         def check_ask_back_entry(
-            ab: Any, ab_path: str, claim_id_ref: str | None, claim_kind_ref: str, claim_qm_ref: QuoteMatch | None, claim_q: Any
+            ab: Any,
+            ab_path: str,
+            claim_id_ref: str | None,
+            claim_kind_ref: str,
+            claim_qm_ref: QuoteMatch | None,
+            claim_q: Any,
+            has_exclusion_wording_quote: bool,
         ) -> None:
             if not isinstance(ab, dict):
                 errors.append(ValidationErrorItem(ab_path, "type_error", "ask_back must be an object"))
@@ -609,22 +741,29 @@ def validate_spec(
                     )
                 elif not isinstance(ka_entry, dict):
                     errors.append(ValidationErrorItem(ka_ep, "type_error", "kind_anchor must be an object"))
-                elif ka_entry.get("status") != "not_found":
-                    errors.append(
-                        ValidationErrorItem(
-                            f"{ka_ep}.status",
-                            "invalid_enum",
-                            "ask_back.kind_anchor.status must be 'not_found' (for anchored claims, supply exclusion_wording_quote and excluded_object on the claim)",
+                else:
+                    for extra_k in sorted(set(ka_entry.keys()) - {"status", "searched_where", "reason", "notes"}):
+                        errors.append(
+                            ValidationErrorItem(f"{ka_ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}")
                         )
-                    )
-                elif _check_allowed_keys(
-                    ka_entry,
-                    {"status", "searched_where", "reason", "notes"},
-                    {"status", "searched_where"},
-                    ka_ep,
-                    errors,
-                ):
-                    _check_nonempty_str(ka_entry["searched_where"], f"{ka_ep}.searched_where", errors)
+                    if "status" in ka_entry and ka_entry["status"] != "not_found":
+                        errors.append(
+                            ValidationErrorItem(
+                                f"{ka_ep}.status",
+                                "invalid_enum",
+                                "ask_back.kind_anchor.status must be 'not_found' (for anchored claims, supply exclusion_wording_quote and excluded_object on the claim)",
+                            )
+                        )
+                    elif ka_entry.get("status") == "not_found" and has_exclusion_wording_quote:
+                        errors.append(
+                            ValidationErrorItem(
+                                ka_ep,
+                                "conflicting_kind_anchor",
+                                "Cannot supply both exclusion_wording_quote and ask_back.kind_anchor status='not_found'",
+                            )
+                        )
+                    if "searched_where" in ka_entry:
+                        _check_nonempty_str(ka_entry["searched_where"], f"{ka_ep}.searched_where", errors)
                     if "reason" in ka_entry:
                         _check_nonempty_str(ka_entry["reason"], f"{ka_ep}.reason", errors)
                     if "notes" in ka_entry:
@@ -639,40 +778,44 @@ def validate_spec(
                     continue
                 st = entry.get("status")
                 valid_st = {"answered", "not_applicable"} if qkey == "rests_on" else VALID_ASK_BACK_STATUS
-                if st not in valid_st:
+                if "status" in entry and st not in valid_st:
                     errors.append(
                         ValidationErrorItem(
                             f"{ep}.status", "invalid_enum", f"status must be in {sorted(valid_st)}"
                         )
                     )
                     continue
+                if st is None:
+                    # Partial draft missing status -> reported as incomplete by `evaluate_ask_back`, not fatal error
+                    continue
                 if st == "not_found":
-                    if _check_allowed_keys(entry, {"status", "searched_where", "reason", "notes"}, {"status", "searched_where"}, ep, errors):
+                    for extra_k in sorted(set(entry.keys()) - {"status", "searched_where", "reason", "notes"}):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    if "searched_where" in entry:
                         _check_nonempty_str(entry["searched_where"], f"{ep}.searched_where", errors)
-                        if "reason" in entry:
-                            _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
-                        if "notes" in entry:
-                            _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
+                    if "reason" in entry:
+                        _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
+                    if "notes" in entry:
+                        _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                     continue
                 if st == "not_applicable":
-                    if _check_allowed_keys(entry, {"status", "reason", "notes"}, {"status", "reason"}, ep, errors):
+                    for extra_k in sorted(set(entry.keys()) - {"status", "reason", "notes"}):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    if "reason" in entry:
                         _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
-                        if "notes" in entry:
-                            _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
+                    if "notes" in entry:
+                        _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                     continue
 
-                # st == "answered"
+                # st == "answered": validate all PRESENT fields strictly (bad quotes/types/enums fail hard),
+                # while missing sub-fields are flagged as incomplete by `evaluate_ask_back` (Codex #27467 Case 1).
                 if qkey == "causal":
-                    if not _check_allowed_keys(
-                        entry,
-                        {"status", "quote", "quotes", "rules_out", "supporting_ops", "supporting_nodes", "reason", "notes"},
-                        {"status", "rules_out"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    check_quote_or_quotes(entry, ep)
-                    _check_nonempty_str(entry["rules_out"], f"{ep}.rules_out", errors)
+                    allowed_k = {"status", "quote", "quotes", "rules_out", "supporting_ops", "supporting_nodes", "reason", "notes"}
+                    for extra_k in sorted(set(entry.keys()) - allowed_k):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    check_quote_or_quotes(entry, ep, required=False)
+                    if "rules_out" in entry:
+                        _check_nonempty_str(entry["rules_out"], f"{ep}.rules_out", errors)
                     if "supporting_ops" in entry:
                         if not isinstance(entry["supporting_ops"], list):
                             errors.append(ValidationErrorItem(f"{ep}.supporting_ops", "type_error", "Expected list of op names"))
@@ -693,21 +836,18 @@ def validate_spec(
                     if "notes" in entry:
                         _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                 elif qkey == "own_wording":
-                    if not _check_allowed_keys(
-                        entry,
-                        {"status", "quote", "same_proposition_reason", "reading", "notes"},
-                        {"status", "quote", "same_proposition_reason", "reading"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    before_ow = len(quotes)
-                    check_quote(entry["quote"], f"{ep}.quote")
-                    own_qm = quotes[-1] if len(quotes) > before_ow else None
-                    if isinstance(entry["quote"], str) and isinstance(claim_q, str):
-                        check_own_wording_outside_claim(claim_qm_ref, claim_q, entry["quote"], own_qm, f"{ep}.quote")
-                    _check_nonempty_str(entry["same_proposition_reason"], f"{ep}.same_proposition_reason", errors)
-                    if entry["reading"] not in VALID_OWN_WORDING_READINGS:
+                    allowed_k = {"status", "quote", "same_proposition_reason", "reading", "notes"}
+                    for extra_k in sorted(set(entry.keys()) - allowed_k):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    if "quote" in entry:
+                        before_ow = len(quotes)
+                        check_quote(entry["quote"], f"{ep}.quote")
+                        own_qm = quotes[-1] if len(quotes) > before_ow else None
+                        if isinstance(entry["quote"], str) and isinstance(claim_q, str):
+                            check_own_wording_outside_claim(claim_qm_ref, claim_q, entry["quote"], own_qm, f"{ep}.quote")
+                    if "same_proposition_reason" in entry:
+                        _check_nonempty_str(entry["same_proposition_reason"], f"{ep}.same_proposition_reason", errors)
+                    if "reading" in entry and entry["reading"] not in VALID_OWN_WORDING_READINGS:
                         errors.append(
                             ValidationErrorItem(
                                 f"{ep}.reading",
@@ -718,60 +858,46 @@ def validate_spec(
                     if "notes" in entry:
                         _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                 elif qkey == "slice":
-                    if not _check_allowed_keys(
-                        entry,
-                        {"status", "quote", "quotes", "reading", "reason", "notes"},
-                        {"status", "reading", "reason"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    check_quote_or_quotes(entry, ep)
-                    if entry["reading"] not in VALID_SLICE_READINGS:
+                    allowed_k = {"status", "quote", "quotes", "reading", "reason", "notes"}
+                    for extra_k in sorted(set(entry.keys()) - allowed_k):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    check_quote_or_quotes(entry, ep, required=False)
+                    if "reading" in entry and entry["reading"] not in VALID_SLICE_READINGS:
                         errors.append(
                             ValidationErrorItem(
                                 f"{ep}.reading", "invalid_enum", f"reading must be in {sorted(VALID_SLICE_READINGS)}"
                             )
                         )
-                    _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
+                    if "reason" in entry:
+                        _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
                     if "notes" in entry:
                         _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                 elif qkey == "test_inputs":
-                    if not _check_allowed_keys(
-                        entry,
-                        {
-                            "status",
-                            "quote",
-                            "quotes",
-                            "fitted_inputs",
-                            "compared_output",
-                            "claims_independent_test",
-                            "reading",
-                            "reason",
-                            "notes",
-                        },
-                        {
-                            "status",
-                            "fitted_inputs",
-                            "compared_output",
-                            "claims_independent_test",
-                            "reading",
-                            "reason",
-                        },
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    check_quote_or_quotes(entry, ep)
-                    _check_nonempty_str(entry["fitted_inputs"], f"{ep}.fitted_inputs", errors)
-                    _check_nonempty_str(entry["compared_output"], f"{ep}.compared_output", errors)
-                    if not isinstance(entry["claims_independent_test"], bool):
+                    allowed_k = {
+                        "status",
+                        "quote",
+                        "quotes",
+                        "fitted_inputs",
+                        "compared_output",
+                        "claims_independent_test",
+                        "reading",
+                        "reason",
+                        "notes",
+                    }
+                    for extra_k in sorted(set(entry.keys()) - allowed_k):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    check_quote_or_quotes(entry, ep, required=False)
+                    if "fitted_inputs" in entry:
+                        _check_nonempty_str(entry["fitted_inputs"], f"{ep}.fitted_inputs", errors)
+                    if "compared_output" in entry:
+                        _check_nonempty_str(entry["compared_output"], f"{ep}.compared_output", errors)
+                    if "claims_independent_test" in entry and not isinstance(entry["claims_independent_test"], bool):
                         errors.append(
                             ValidationErrorItem(
                                 f"{ep}.claims_independent_test", "type_error", "claims_independent_test must be a boolean"
                             )
                         )
-                    if entry["reading"] not in VALID_TEST_INPUTS_READINGS:
+                    if "reading" in entry and entry["reading"] not in VALID_TEST_INPUTS_READINGS:
                         errors.append(
                             ValidationErrorItem(
                                 f"{ep}.reading",
@@ -779,37 +905,35 @@ def validate_spec(
                                 f"reading must be in {sorted(VALID_TEST_INPUTS_READINGS)}",
                             )
                         )
-                    _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
+                    if "reason" in entry:
+                        _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
                     if "notes" in entry:
                         _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
                 elif qkey == "rests_on":
-                    if not _check_allowed_keys(
-                        entry,
-                        {"status", "claim_ids", "reason", "quote", "notes"},
-                        {"status", "claim_ids", "reason"},
-                        ep,
-                        errors,
-                    ):
-                        continue
-                    _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
+                    allowed_k = {"status", "claim_ids", "reason", "quote", "notes"}
+                    for extra_k in sorted(set(entry.keys()) - allowed_k):
+                        errors.append(ValidationErrorItem(f"{ep}.{extra_k}", "unknown_key", f"Unknown key {extra_k!r}"))
+                    if "reason" in entry:
+                        _check_nonempty_str(entry["reason"], f"{ep}.reason", errors)
                     if "quote" in entry:
                         check_quote(entry["quote"], f"{ep}.quote")
                     if "notes" in entry:
                         _check_nonempty_str(entry["notes"], f"{ep}.notes", errors)
-                    cids = entry["claim_ids"]
-                    if not isinstance(cids, list):
-                        errors.append(ValidationErrorItem(f"{ep}.claim_ids", "type_error", "Expected list of claim IDs"))
-                    else:
-                        valid_refs: list[str] = []
-                        for ci, ref_id in enumerate(cids):
-                            if not isinstance(ref_id, str) or not ref_id.strip():
-                                errors.append(
-                                    ValidationErrorItem(f"{ep}.claim_ids[{ci}]", "invalid_string", "Expected claim ID string")
-                                )
-                            else:
-                                valid_refs.append(ref_id)
-                        if claim_id_ref is not None:
-                            pending_rests_on.append((claim_id_ref, f"{ep}.claim_ids", valid_refs))
+                    if "claim_ids" in entry:
+                        cids = entry["claim_ids"]
+                        if not isinstance(cids, list):
+                            errors.append(ValidationErrorItem(f"{ep}.claim_ids", "type_error", "Expected list of claim IDs"))
+                        else:
+                            valid_refs: list[str] = []
+                            for ci, ref_id in enumerate(cids):
+                                if not isinstance(ref_id, str) or not ref_id.strip():
+                                    errors.append(
+                                        ValidationErrorItem(f"{ep}.claim_ids[{ci}]", "invalid_string", "Expected claim ID string")
+                                    )
+                                else:
+                                    valid_refs.append(ref_id)
+                            if claim_id_ref is not None:
+                                pending_rests_on.append((claim_id_ref, f"{ep}.claim_ids", valid_refs))
 
         for i, cl in enumerate(spec["claims"]):
             p = f"$.claims[{i}]"
@@ -1019,7 +1143,15 @@ def validate_spec(
                 _check_nonempty_str(cl["excluded_object"], f"{p}.excluded_object", errors)
 
             if "ask_back" in cl:
-                check_ask_back_entry(cl["ask_back"], f"{p}.ask_back", cid, kind, claim_qm, cl["quote"])
+                check_ask_back_entry(
+                    cl["ask_back"],
+                    f"{p}.ask_back",
+                    cid,
+                    kind,
+                    claim_qm,
+                    cl["quote"],
+                    has_exclusion_wording_quote="exclusion_wording_quote" in cl,
+                )
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
@@ -1199,26 +1331,66 @@ def evaluate_ask_back(spec: Any) -> dict[str, Any]:
         if ab or "exclusion_wording_quote" in cl or "excluded_object" in cl:
             any_ask_back_present = True
 
+        is_oos_claim = kind == "outOfScope" or (
+            cl.get("nature") == "quantitative" and cl.get("quantitative_kind") in OUT_OF_SCOPE_QUANTITATIVE_KINDS
+        )
+        if is_oos_claim:
+            claims_summary.append(
+                {
+                    "claim_id": cid,
+                    "kind": kind,
+                    "quote": quote,
+                    "complete": True,
+                    "skipped_out_of_scope": True,
+                    "answered_states": {},
+                    "unanswered": [],
+                }
+            )
+            continue
+
         answered_states: dict[str, str] = {}
-        unanswered: list[dict[str, str]] = []
+        unanswered: list[dict[str, Any]] = []
         for code, key, qtext in ASK_BACK_QUESTIONS:
             entry = ab.get(key)
-            valid_st = {"answered", "not_applicable"} if key == "rests_on" else VALID_ASK_BACK_STATUS
-            if isinstance(entry, dict) and entry.get("status") in valid_st:
-                answered_states[key] = str(entry["status"])
-            else:
+            if not isinstance(entry, dict):
                 answered_states[key] = "unanswered"
                 unanswered.append({"code": code, "field": f"ask_back.{key}", "question": qtext})
+            else:
+                missing_sub = _ask_back_entry_missing_fields(key, entry)
+                if missing_sub:
+                    answered_states[key] = "incomplete"
+                    missing_paths = ", ".join(f"ask_back.{key}.{m}" for m in missing_sub)
+                    unanswered.append(
+                        {
+                            "code": code,
+                            "field": missing_paths,
+                            "missing_fields": missing_sub,
+                            "question": f"Incomplete `{key}` answer — missing required field(s): {', '.join(missing_sub)}. {qtext}",
+                        }
+                    )
+                else:
+                    answered_states[key] = str(entry["status"])
 
         if kind in ("emergesWithout", "emergesWithExclusion"):
-            has_ewq = isinstance(cl.get("exclusion_wording_quote"), str) and bool(cl["exclusion_wording_quote"].strip())
-            has_obj = isinstance(cl.get("excluded_object"), str) and bool(cl["excluded_object"].strip())
+            has_ewq = _has_nonempty_str(cl.get("exclusion_wording_quote"))
+            has_obj = _has_nonempty_str(cl.get("excluded_object"))
             ka = ab.get("kind_anchor")
-            ka_not_found = isinstance(ka, dict) and ka.get("status") == "not_found"
-            if has_ewq and has_obj:
+            if has_ewq and has_obj and not (isinstance(ka, dict) and ka.get("status") == "not_found"):
                 answered_states["kind_anchor"] = "answered"
-            elif ka_not_found:
-                answered_states["kind_anchor"] = "not_found"
+            elif isinstance(ka, dict) and ka.get("status") == "not_found" and not has_ewq:
+                missing_ka = _ask_back_entry_missing_fields("kind_anchor", ka)
+                if missing_ka:
+                    answered_states["kind_anchor"] = "incomplete"
+                    unanswered.append(
+                        {
+                            "code": KIND_ANCHOR_QUESTION[0],
+                            "field": ", ".join(f"ask_back.kind_anchor.{m}" for m in missing_ka),
+                            "missing_fields": missing_ka,
+                            "question": f"Incomplete `kind_anchor` answer — missing required field(s): {', '.join(missing_ka)}. {KIND_ANCHOR_QUESTION[2]}",
+                        }
+                    )
+                else:
+                    answered_states["kind_anchor"] = "not_found"
             else:
                 answered_states["kind_anchor"] = "unanswered"
                 missing_parts = []
@@ -1229,7 +1401,7 @@ def evaluate_ask_back(spec: Any) -> dict[str, Any]:
                 unanswered.append(
                     {
                         "code": KIND_ANCHOR_QUESTION[0],
-                        "field": ", ".join(missing_parts),
+                        "field": ", ".join(missing_parts) or "kind_anchor",
                         "question": KIND_ANCHOR_QUESTION[2],
                     }
                 )
@@ -1241,6 +1413,7 @@ def evaluate_ask_back(spec: Any) -> dict[str, Any]:
                 "kind": kind,
                 "quote": quote,
                 "complete": len(unanswered) == 0,
+                "skipped_out_of_scope": False,
                 "answered_states": answered_states,
                 "unanswered": unanswered,
             }

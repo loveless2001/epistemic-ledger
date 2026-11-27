@@ -2225,6 +2225,126 @@ class PipelineTests(unittest.TestCase):
             md_unanch = (out_unanch / "AskBackAuditor_report.md").read_text(encoding="utf-8")
             self.assertIn("Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading)", md_unanch)
 
+            # Codex #27467 Case 1: partial ask-back answer missing a sub-field (`reason` on E5 test_inputs):
+            # - `ask --json` MUST exit 4 (EXIT_ASK_INCOMPLETE) with `complete=False`, `unanswered_count=1`, naming `ask_back.test_inputs.reason`!
+            # - `run` MUST exit 0 and STILL produce Lean structural proof (`lean_verification` populated, `admissible`), marking ask-back INCOMPLETE!
+            partial_e5_spec = copy.deepcopy(complete_spec)
+            del partial_e5_spec["claims"][0]["ask_back"]["test_inputs"]["reason"]
+            sp_partial = base / "partial_e5.json"
+            sp_partial.write_text(json.dumps(partial_e5_spec), encoding="utf-8")
+            buf_p = io.StringIO()
+            with contextlib.redirect_stdout(buf_p):
+                rc_p = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_partial), "--json"])
+            self.assertEqual(rc_p, EXIT_ASK_INCOMPLETE)
+            p_json = json.loads(buf_p.getvalue())
+            self.assertFalse(p_json["ask_back"]["complete"])
+            self.assertEqual(p_json["ask_back"]["unanswered_count"], 1)
+            self.assertIn("ask_back.test_inputs.reason", p_json["ask_back"]["claims"][0]["unanswered"][0]["field"])
+
+            out_partial = base / "out_partial"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_partial), "--out", str(out_partial)]), 0)
+            rep_partial = json.loads((out_partial / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
+            self.assertIsNotNone(rep_partial["lean_verification"])
+            self.assertEqual(rep_partial["lean_verification"]["claims"][0]["verdict"], "admissible")
+            self.assertFalse(rep_partial["ask_back_summary"]["complete"])
+            # Codex #27467 JSON separation: reader ask-back sits in top-level `reader_ask_back` (`verified_by_lean=False`), NOT inside `lean_verification.claims[]`!
+            self.assertFalse(rep_partial["reader_ask_back"]["verified_by_lean"])
+            self.assertNotIn("ask_back", rep_partial["lean_verification"]["claims"][0])
+            self.assertIn("c1", rep_partial["reader_ask_back"]["by_claim"])
+
+            # Still fail hard (exit 2) when a quote in partial ask-back is hallucinated/ungrounded!
+            bad_quote_partial = copy.deepcopy(partial_e5_spec)
+            bad_quote_partial["claims"][0]["ask_back"]["test_inputs"]["quotes"] = ["Totally fabricated sentence not in document."]
+            self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_quote_partial, doc=doc)[0]))
+
+            # Codex #27467 Case 2: E3 `own_wording.quote` taken from an earlier clause of the SAME sentence MUST fail (`own_wording_inside_claim`)!
+            same_sent_doc_path = base / "same_sent.txt"
+            same_sent_doc_path.write_text(
+                "Abstract: First, we build a model, parts of a single dataset, which explains why alignment scales only via width.\n"
+                "Section 4: Our results only suggest why alignment scales partly via width.\n",
+                encoding="utf-8",
+            )
+            same_sent_doc = ingest_document(str(same_sent_doc_path))
+            ss_spec = copy.deepcopy(complete_spec)
+            ss_spec["sources"][0]["quote"] = "which explains why alignment scales only via width."
+            ss_spec["ops"][0]["quote"] = "which explains why alignment scales only via width."
+            ss_spec["ops"][1]["quote"] = "Our results only suggest why alignment scales partly via width."
+            ss_spec["claims"] = [
+                {
+                    "id": "ss1",
+                    "statement": "Explains why alignment scales only via width.",
+                    "quote": "which explains why alignment scales only via width.",
+                    "nature": "qualitative",
+                    "kind": "conditionalFlow",
+                    "target": "deviceOut",
+                    "declared_sources": ["rawSensor"],
+                    "ask_back": {
+                        "own_wording": {
+                            "status": "answered",
+                            "quote": "First, we build a model, parts of a single dataset",
+                            "same_proposition_reason": "Earlier clause of the exact same sentence.",
+                            "reading": "sentence_stronger",
+                        }
+                    },
+                }
+            ]
+            self.assertTrue(
+                any(e.code == "own_wording_inside_claim" for e in validate_spec(ss_spec, doc=same_sent_doc)[0])
+            )
+            # Genuine restatement in Section 4 (different sentence) passes cleanly!
+            ss_spec["claims"][0]["ask_back"]["own_wording"]["quote"] = (
+                "Our results only suggest why alignment scales partly via width."
+            )
+            self.assertEqual(validate_spec(ss_spec, doc=same_sent_doc)[0], [])
+
+            # Codex #27467 Case 3: E7 `not_found` + kept `excluded_object` prints `not_found` warning & `searched_where`
+            # AND conflicting `exclusion_wording_quote` + `kind_anchor.status == 'not_found'` fails (`conflicting_kind_anchor`)!
+            kept_obj_spec = copy.deepcopy(unanchored_e7_spec)
+            kept_obj_spec["claims"][0]["excluded_object"] = "paired calibration examples"
+            self.assertEqual(validate_spec(kept_obj_spec, doc=doc)[0], [])
+            sp_kept = base / "kept_obj.json"
+            sp_kept.write_text(json.dumps(kept_obj_spec), encoding="utf-8")
+            out_kept = base / "out_kept"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_kept), "--out", str(out_kept)]), 0)
+            md_kept = (out_kept / "AskBackAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading)", md_kept)
+            self.assertIn("Checked claim quote; no explicit exclusion wording found.", md_kept)
+            self.assertIn("candidate excluded object: paired calibration examples", md_kept)
+
+            conflict_e7 = copy.deepcopy(kept_obj_spec)
+            conflict_e7["claims"][0]["exclusion_wording_quote"] = "needs no pair"
+            self.assertTrue(any(e.code == "conflicting_kind_anchor" for e in validate_spec(conflict_e7, doc=doc)[0]))
+
+            # Claude #27468 Notes:
+            # (1) `ask` on legacy v2.4 spec exits 0 with "does not apply" message;
+            # (2) `outOfScope` claims in v2.5 are skipped cleanly by `ask` (0 unanswered).
+            v24_spec = copy.deepcopy(draft_spec)
+            v24_spec["schema_version"] = "epistemic-ledger/v2.4"
+            sp_v24 = base / "legacy_v24.json"
+            sp_v24.write_text(json.dumps(v24_spec), encoding="utf-8")
+            buf_v24 = io.StringIO()
+            with contextlib.redirect_stdout(buf_v24):
+                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_v24)]), 0)
+            self.assertIn("does not apply", buf_v24.getvalue())
+
+            oos_v25_spec = copy.deepcopy(draft_spec)
+            oos_v25_spec["claims"] = [
+                {
+                    "id": "oos1",
+                    "statement": "Derived ratio out of scope.",
+                    "quote": q_c1,
+                    "nature": "quantitative",
+                    "quantitative_kind": "derivedComparison",
+                    "kind": "outOfScope",
+                }
+            ]
+            sp_oos25 = base / "oos_v25.json"
+            sp_oos25.write_text(json.dumps(oos_v25_spec), encoding="utf-8")
+            buf_oos25 = io.StringIO()
+            with contextlib.redirect_stdout(buf_oos25):
+                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_oos25)]), 0)
+            self.assertIn("Ask-back complete: 0 unanswered question(s)", buf_oos25.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

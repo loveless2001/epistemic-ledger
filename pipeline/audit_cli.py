@@ -175,6 +175,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         if errors:
             return 2
+        if not ask_summary["applicable_v25"]:
+            return 0
         return 0 if ask_summary["complete"] else EXIT_ASK_INCOMPLETE
 
     if errors:
@@ -182,6 +184,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
         for err in errors:
             print(f"  - {err.path} ({err.code}): {err.message}", file=sys.stderr)
         return 2
+
+    if not ask_summary["applicable_v25"]:
+        print(
+            f"Ask-back loop does not apply to schema_version {ask_summary['schema_version']!r} "
+            f"(v2.5+ only; no questions asked, no verdict printed)."
+        )
+        return 0
 
     if ask_summary["complete"]:
         print(

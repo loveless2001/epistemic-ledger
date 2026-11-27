@@ -308,6 +308,22 @@ def build_single_report_dict(
         )
     ask_back_summary = evaluate_ask_back(spec)
     ask_by_cid = {c["claim_id"]: c for c in ask_back_summary.get("claims", [])}
+    reader_ask_back_by_claim: dict[str, Any] = {}
+    if isinstance(spec, dict) and isinstance(spec.get("claims"), list):
+        for cl in spec["claims"]:
+            if not isinstance(cl, dict) or not cl.get("id"):
+                continue
+            cid = str(cl["id"])
+            cinfo = ask_by_cid.get(cid, {})
+            reader_ask_back_by_claim[cid] = {
+                "complete": bool(cinfo.get("complete", True)),
+                "skipped_out_of_scope": bool(cinfo.get("skipped_out_of_scope", False)),
+                "unanswered": [u["code"] for u in cinfo.get("unanswered", [])],
+                "unanswered_details": cinfo.get("unanswered", []),
+                "exclusion_wording_quote": cl.get("exclusion_wording_quote"),
+                "excluded_object": cl.get("excluded_object"),
+                "ask_back": cl.get("ask_back"),
+            }
     return {
         "schema_version": "epistemic-ledger-report/v2.2",
         "document": {
@@ -320,6 +336,15 @@ def build_single_report_dict(
         "paper_title": spec.get("paper_title", "") if isinstance(spec, dict) else "",
         "grounding_and_schema_ok": len(errors) == 0,
         "ask_back_summary": ask_back_summary,
+        "reader_ask_back": {
+            "verified_by_lean": False,
+            "scope_note": (
+                "Reader's quote-checked ask-back answers (E2–E7) and kind anchors. "
+                "NOT verified by the Lean 4 kernel (Lean proves structural flow verdicts in `lean_verification` only)."
+            ),
+            "summary": ask_back_summary,
+            "by_claim": reader_ask_back_by_claim,
+        },
         "out_of_scope": out_of_scope,
         "validation_errors": [
             {"path": e.path, "code": e.code, "message": e.message} for e in errors
@@ -339,6 +364,7 @@ def build_single_report_dict(
         else {
             "lean_file": str(lean_result.lean_file),
             "axioms_ok": lean_result.raw_axioms_ok,
+            "scope_note": "Lean 4 kernel proofs cover structural flow verdicts and findings only (not reader ask-back answers).",
             "claims": [
                 {
                     "id": c.claim_id,
@@ -364,22 +390,6 @@ def build_single_report_dict(
                         (m.get("hedge_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
                         None,
                     ),
-                    "exclusion_wording_quote": next(
-                        (m.get("exclusion_wording_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        None,
-                    ),
-                    "excluded_object": next(
-                        (m.get("excluded_object") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        None,
-                    ),
-                    "ask_back": next(
-                        (m.get("ask_back") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        None,
-                    ),
-                    "ask_back_complete": bool(ask_by_cid.get(c.claim_id, {}).get("complete", True)),
-                    "ask_back_unanswered": [
-                        u["code"] for u in ask_by_cid.get(c.claim_id, {}).get("unanswered", [])
-                    ],
                     "declared_bet_count": _count_declared_bets(
                         next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {})
                     ),
@@ -470,19 +480,19 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         ]
         if meta.get("hedged") and meta.get("hedge_quote"):
             lines.append(f"- **Hedge quote:** > {meta['hedge_quote']}")
-        if meta.get("exclusion_wording_quote") or meta.get("excluded_object"):
+        ka_entry = meta.get("ask_back", {}).get("kind_anchor") if isinstance(meta.get("ask_back"), dict) else None
+        if isinstance(ka_entry, dict) and ka_entry.get("status") == "not_found" and not meta.get("exclusion_wording_quote"):
+            cand_obj = f" (candidate excluded object: {meta['excluded_object']})" if meta.get("excluded_object") else ""
+            lines.append(
+                f"- **Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading):** "
+                f"no supporting exclusion wording quote found; searched: {ka_entry.get('searched_where', '')}{cand_obj}"
+            )
+            if ka_entry.get("reason"):
+                lines.append(f"  - *Reason:* {ka_entry['reason']}")
+        elif meta.get("exclusion_wording_quote") or meta.get("excluded_object"):
             ewq_str = f'"{meta["exclusion_wording_quote"]}"' if meta.get("exclusion_wording_quote") else "*missing*"
             eobj_str = meta.get("excluded_object") or "*missing*"
             lines.append(f"- **Kind anchor (E7, reader quote-checked):** wording {ewq_str}; excluded object: {eobj_str}")
-        elif isinstance(meta.get("ask_back"), dict) and isinstance(meta["ask_back"].get("kind_anchor"), dict):
-            ka = meta["ask_back"]["kind_anchor"]
-            if ka.get("status") == "not_found":
-                lines.append(
-                    f"- **Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading):** "
-                    f"no supporting exclusion wording quote found; searched: {ka.get('searched_where', '')}"
-                )
-                if ka.get("reason"):
-                    lines.append(f"  - *Reason:* {ka['reason']}")
         if meta.get("kind") == "effectivenessClaim":
             if meta.get("method_measurement_quote"):
                 lines.append(f"- **Method measurement quote:** > {meta['method_measurement_quote']}")
@@ -525,7 +535,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 if hyp_tag and hyp_tag in hyp_quotes:
                     lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
         ab_data = meta.get("ask_back")
-        unans_codes = c.get("ask_back_unanswered") or []
+        rab_claim = report.get("reader_ask_back", {}).get("by_claim", {}).get(c["id"], {})
+        unans_details = rab_claim.get("unanswered_details") or []
+        unans_codes = rab_claim.get("unanswered") or []
         if ab_data or (ab_sum.get("applicable_v25") and unans_codes):
             lines.append(
                 "- **Reader's Quote-Checked Ask-Back Answers *(not Lean-verified; Lean proof covers structural flow verdict only)*:**"
@@ -581,7 +593,11 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                         if key == "causal" and entry.get("reason"):
                             lines.append(f"    - *Reason:* {entry['reason']}")
             if ab_sum.get("applicable_v25") and unans_codes:
-                lines.append(f"  - **Unanswered ask-back items:** {', '.join(unans_codes)}")
+                unans_labels = [
+                    f"{u['code']} ({u['field']})" if isinstance(u, dict) and u.get("field") else str(u)
+                    for u in (unans_details or unans_codes)
+                ]
+                lines.append(f"  - **Unanswered / incomplete ask-back items:** {', '.join(unans_labels)}")
         lines.append("")
 
     return "\n".join(lines)
