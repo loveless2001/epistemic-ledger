@@ -474,6 +474,15 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             ewq_str = f'"{meta["exclusion_wording_quote"]}"' if meta.get("exclusion_wording_quote") else "*missing*"
             eobj_str = meta.get("excluded_object") or "*missing*"
             lines.append(f"- **Kind anchor (E7, reader quote-checked):** wording {ewq_str}; excluded object: {eobj_str}")
+        elif isinstance(meta.get("ask_back"), dict) and isinstance(meta["ask_back"].get("kind_anchor"), dict):
+            ka = meta["ask_back"]["kind_anchor"]
+            if ka.get("status") == "not_found":
+                lines.append(
+                    f"- **Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading):** "
+                    f"no supporting exclusion wording quote found; searched: {ka.get('searched_where', '')}"
+                )
+                if ka.get("reason"):
+                    lines.append(f"  - *Reason:* {ka['reason']}")
         if meta.get("kind") == "effectivenessClaim":
             if meta.get("method_measurement_quote"):
                 lines.append(f"- **Method measurement quote:** > {meta['method_measurement_quote']}")
@@ -1042,7 +1051,7 @@ CRITICAL RULES:
 5. **Classify each clause by what it asserts, NOT by hedging phrases:**
    - Split multi-clause sentences into separate claims when one clause makes a direct claim and another adds a hedged generalization (e.g., `"In this setting, property P is recovered from raw signal S"` vs `"offering an initial indication that P arises spontaneously"`).
    - For emergence / `"only X"` clauses under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`) or `kind: "emergesWithout"` (`target`, `tag`).
-   - **E7 Kind Anchor (required by `ask` for `emergesWithout` / `emergesWithExclusion`):** supply `"exclusion_wording_quote"` (exact verbatim substring inside the claim's own `quote` saying a source is absent, excluded, not needed, or arises on its own, e.g. `"without external calibration"`) AND `"excluded_object"` (naming specifically what is excluded, e.g. `"external calibration inputs during inference, not during sensor manufacturing"`). If a clause cannot be anchored to exclusion/independence wording, reconsider the claim's `kind`.
+   - **E7 Kind Anchor (required by `ask` for `emergesWithout` / `emergesWithExclusion`):** supply `"exclusion_wording_quote"` (exact verbatim substring inside the claim's own `quote` saying a source is absent, excluded, not needed, or arises on its own, e.g. `"without external calibration"`) AND `"excluded_object"` (naming specifically what is excluded, e.g. `"external calibration inputs during inference, not during sensor manufacturing"`). If no exclusion wording exists in the claim, either reconsider the claim's `kind` or record `ask_back.kind_anchor: {{"status": "not_found", "searched_where": "..."}}` so the reading is kept and explicitly marked as having no supporting exclusion quote.
    - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`). Attach `"hedged": true` with verbatim `"hedge_quote"` (>= 12 non-space chars, inside the claim's own `quote`) ONLY to the specific clause that the hedge modifies (display-only metadata; does not alter Lean verdicts).
    - Contrast: genuine conditional statements such as `"Given a supplied X, Y follows"` remain `kind: "conditionalFlow"`.
 6. For structural effectiveness / comparison claims (`nature: "quantitative"` with `quantitative_kind: "order"` or `"threshold"`, or qualitative structural comparisons), use `kind: "effectivenessClaim"` with:

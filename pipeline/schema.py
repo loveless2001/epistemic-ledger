@@ -152,7 +152,9 @@ KIND_ANCHOR_QUESTION = (
     "kind_anchor",
     "Kind anchor for emergesWithout / emergesWithExclusion: provide 'exclusion_wording_quote' (verbatim substring "
     "inside this claim's own quote saying a source is absent, excluded, not needed, or arises on its own) and "
-    "'excluded_object' (naming specifically what is excluded) — or reconsider the claim's kind if it cannot be anchored.",
+    "'excluded_object' (naming specifically what is excluded). If no exclusion wording exists in the claim, "
+    "either reconsider the claim's kind or record ask_back.kind_anchor = {status: 'not_found', searched_where: '...'} "
+    "(keeping the reading explicitly marked as unanchored rather than looping).",
 )
 # Known legacy/accounting/numeric fields that are intentionally out of scope for EpistemicLedger
 # (ignored during structural Lean verification and reported explicitly as out of scope).
@@ -586,14 +588,47 @@ def validate_spec(
                 )
 
         def check_ask_back_entry(
-            ab: Any, ab_path: str, claim_id_ref: str | None, claim_qm_ref: QuoteMatch | None, claim_q: Any
+            ab: Any, ab_path: str, claim_id_ref: str | None, claim_kind_ref: str, claim_qm_ref: QuoteMatch | None, claim_q: Any
         ) -> None:
             if not isinstance(ab, dict):
                 errors.append(ValidationErrorItem(ab_path, "type_error", "ask_back must be an object"))
                 return
-            allowed_ab_keys = {"causal", "own_wording", "slice", "test_inputs", "rests_on"}
+            allowed_ab_keys = {"causal", "own_wording", "slice", "test_inputs", "rests_on", "kind_anchor"}
             for k in sorted(set(ab.keys()) - allowed_ab_keys):
                 errors.append(ValidationErrorItem(f"{ab_path}.{k}", "unknown_key", f"Unknown ask_back key {k!r}"))
+            if "kind_anchor" in ab:
+                ka_ep = f"{ab_path}.kind_anchor"
+                ka_entry = ab["kind_anchor"]
+                if claim_kind_ref not in ("emergesWithout", "emergesWithExclusion"):
+                    errors.append(
+                        ValidationErrorItem(
+                            ka_ep,
+                            "unexpected_kind_anchor",
+                            "ask_back.kind_anchor is only allowed on emergesWithout / emergesWithExclusion claims",
+                        )
+                    )
+                elif not isinstance(ka_entry, dict):
+                    errors.append(ValidationErrorItem(ka_ep, "type_error", "kind_anchor must be an object"))
+                elif ka_entry.get("status") != "not_found":
+                    errors.append(
+                        ValidationErrorItem(
+                            f"{ka_ep}.status",
+                            "invalid_enum",
+                            "ask_back.kind_anchor.status must be 'not_found' (for anchored claims, supply exclusion_wording_quote and excluded_object on the claim)",
+                        )
+                    )
+                elif _check_allowed_keys(
+                    ka_entry,
+                    {"status", "searched_where", "reason", "notes"},
+                    {"status", "searched_where"},
+                    ka_ep,
+                    errors,
+                ):
+                    _check_nonempty_str(ka_entry["searched_where"], f"{ka_ep}.searched_where", errors)
+                    if "reason" in ka_entry:
+                        _check_nonempty_str(ka_entry["reason"], f"{ka_ep}.reason", errors)
+                    if "notes" in ka_entry:
+                        _check_nonempty_str(ka_entry["notes"], f"{ka_ep}.notes", errors)
             for qkey in ("causal", "own_wording", "slice", "test_inputs", "rests_on"):
                 if qkey not in ab:
                     continue
@@ -984,7 +1019,7 @@ def validate_spec(
                 _check_nonempty_str(cl["excluded_object"], f"{p}.excluded_object", errors)
 
             if "ask_back" in cl:
-                check_ask_back_entry(cl["ask_back"], f"{p}.ask_back", cid, claim_qm, cl["quote"])
+                check_ask_back_entry(cl["ask_back"], f"{p}.ask_back", cid, kind, claim_qm, cl["quote"])
 
             if kind in ("emergesWithout", "uniqueRecovery"):
                 check_defined_endpoint(cl["target"], f"{p}.target")
@@ -1178,8 +1213,12 @@ def evaluate_ask_back(spec: Any) -> dict[str, Any]:
         if kind in ("emergesWithout", "emergesWithExclusion"):
             has_ewq = isinstance(cl.get("exclusion_wording_quote"), str) and bool(cl["exclusion_wording_quote"].strip())
             has_obj = isinstance(cl.get("excluded_object"), str) and bool(cl["excluded_object"].strip())
+            ka = ab.get("kind_anchor")
+            ka_not_found = isinstance(ka, dict) and ka.get("status") == "not_found"
             if has_ewq and has_obj:
                 answered_states["kind_anchor"] = "answered"
+            elif ka_not_found:
+                answered_states["kind_anchor"] = "not_found"
             else:
                 answered_states["kind_anchor"] = "unanswered"
                 missing_parts = []

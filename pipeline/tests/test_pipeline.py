@@ -2204,6 +2204,27 @@ class PipelineTests(unittest.TestCase):
             bad_e7["claims"][0]["exclusion_wording_quote"] = "rules out sensor drift"
             self.assertTrue(any(e.code == "exclusion_wording_outside_claim" for e in validate_spec(bad_e7, doc=doc)[0]))
 
+            # Codex #27465: E7 `ask_back.kind_anchor: {status: "not_found", searched_where: ...}` finishes `ask`
+            # cleanly (exit 0, no infinite re-ask loop) and marks the reading explicitly as unanchored in the report!
+            unanchored_e7_spec = copy.deepcopy(complete_spec)
+            del unanchored_e7_spec["claims"][0]["exclusion_wording_quote"]
+            del unanchored_e7_spec["claims"][0]["excluded_object"]
+            unanchored_e7_spec["claims"][0]["ask_back"]["kind_anchor"] = {
+                "status": "not_found",
+                "searched_where": "Checked claim quote; no explicit exclusion wording found.",
+                "reason": "Keeping reading for review while flagging it as unanchored.",
+            }
+            self.assertEqual(validate_spec(unanchored_e7_spec, doc=doc)[0], [])
+            sp_unanch = base / "unanchored_e7.json"
+            sp_unanch.write_text(json.dumps(unanchored_e7_spec), encoding="utf-8")
+            buf_unanch = io.StringIO()
+            with contextlib.redirect_stdout(buf_unanch):
+                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_unanch)]), 0)
+            out_unanch = base / "out_unanch"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_unanch), "--out", str(out_unanch)]), 0)
+            md_unanch = (out_unanch / "AskBackAuditor_report.md").read_text(encoding="utf-8")
+            self.assertIn("Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading)", md_unanch)
+
 
 if __name__ == "__main__":
     unittest.main()
