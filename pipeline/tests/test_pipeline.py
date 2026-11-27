@@ -1475,403 +1475,21 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("declared in claim sentence", md_dl)
             self.assertIn("declared in document body (offset @", md_dl)
 
-    def test_v25_ask_back_loop_e1_to_e7_and_non_blocking_run_compare(self) -> None:
-        """End-to-end tests for v2.5 ask-back loop (E1–E7, `plans/261127-1310-ask-back-loop-and-record-extension-spec/plan.md`):
-        1. E1 `audit_cli ask --doc --spec` (and `--document` alias) lists unanswered E2–E7 questions,
-           exits with `EXIT_ASK_INCOMPLETE` (4), and prints NO Lean verdicts.
-        2. Incomplete v2.5 ask-back NEVER aborts `run` or `compare` (channel rule 1): structural Lean
-           verdicts are still produced (exit 0) and reports mark ask-back as INCOMPLETE.
-        3. Answering all E2–E7 items (`answered` / `not_found` / `not_applicable`) makes `ask` return 0
-           (still printing no verdict), displays reader's quote-checked answers verbatim in a separate
-           non-Lean-verified section of the report, and adds ZERO verdict effect in Lean.
-        4. Mechanical checks:
-           - E3 `own_wording.quote` inside claim sentence -> `own_wording_inside_claim`,
-           - E6 `rests_on` unknown ID / self-loop / cycle -> `unknown_rests_on_claim` / `self_rests_on` / `rests_on_cycle`,
-           - E7 `exclusion_wording_quote` outside claim quote -> `exclusion_wording_outside_claim` (and short
-             verbatim phrases like `"needs no pair"` inside claim quote succeed and anchor inside claim span),
-           - E2 `supporting_ops` unknown op -> `unknown_op`.
-        """
-        import contextlib
-        import io
-        from pipeline.audit_cli import EXIT_ASK_INCOMPLETE
-
-        doc_text = (
-            "Abstract: Our device recovers property P and needs no pair to align outputs.\n"
-            "Section 2: Under a single synthetic benchmark grid, the calibration run reproduces the fitted curve.\n"
-            "Section 3: In contrast to the abstract, our experiments only suggest that the alignment holds partly under these settings.\n"
-            "Section 4: The model parameters alpha and beta were inferred directly from the experimental curve before testing.\n"
-            "Section 5: A control ablation with randomized sensors rules out sensor drift as the sole explanation.\n"
-            "Section 6: Given the calibrated readout, the downstream diagnostic follows directly.\n"
-        )
-        q_c1 = "Our device recovers property P and needs no pair to align outputs."
-        q_c2 = "Given the calibrated readout, the downstream diagnostic follows directly."
-        q_slice = "Under a single synthetic benchmark grid, the calibration run reproduces the fitted curve."
-        q_cautious = "In contrast to the abstract, our experiments only suggest that the alignment holds partly under these settings."
-        q_fit = "The model parameters alpha and beta were inferred directly from the experimental curve before testing."
-        q_ablation = "A control ablation with randomized sensors rules out sensor drift as the sole explanation."
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            doc_path = base / "synthetic_v25.txt"
-            doc_path.write_text(doc_text, encoding="utf-8")
-            doc = ingest_document(str(doc_path))
-
-            draft_spec = {
-                "schema_version": "epistemic-ledger/v2.5",
-                "auditor": "AskBackAuditor",
-                "paper_title": "Synthetic Ask-Back Loop Test",
-                "nodes": ["rawSensor", "deviceOut", "diagOut"],
-                "tags": ["pairedSignal"],
-                "sources": [
-                    {"node": "rawSensor", "origin": "measured", "carries": [], "quote": q_c1},
-                ],
-                "ops": [
-                    {"name": "align_step", "inputs": ["rawSensor"], "output": "deviceOut", "kind": "transform", "introduces": [], "quote": q_c1},
-                    {"name": "diag_step", "inputs": ["deviceOut"], "output": "diagOut", "kind": "transform", "introduces": [], "quote": q_c2},
-                ],
-                "claims": [
-                    {
-                        "id": "c1",
-                        "statement": "Device recovers property P without needing paired calibration.",
-                        "quote": q_c1,
-                        "provenance": "authorClaimed",
-                        "nature": "qualitative",
-                        "kind": "emergesWithExclusion",
-                        "target": "deviceOut",
-                        "excluded_channel": "deviceOut",
-                        "tag": "pairedSignal",
-                    },
-                    {
-                        "id": "c2",
-                        "statement": "Given the calibrated readout, the downstream diagnostic follows.",
-                        "quote": q_c2,
-                        "provenance": "authorClaimed",
-                        "nature": "qualitative",
-                        "kind": "conditionalFlow",
-                        "target": "diagOut",
-                        "declared_sources": ["rawSensor"],
-                    },
-                ],
-            }
-            self.assertEqual(validate_spec(draft_spec, doc=doc)[0], [])
-
-            sp_draft = base / "draft.json"
-            sp_draft.write_text(json.dumps(draft_spec), encoding="utf-8")
-
-            # 1. `audit_cli ask` on incomplete draft -> exit 4 (EXIT_ASK_INCOMPLETE), prints NO Lean verdict!
-            buf_txt = io.StringIO()
-            with contextlib.redirect_stdout(buf_txt):
-                rc_ask = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_draft)])
-            self.assertEqual(rc_ask, EXIT_ASK_INCOMPLETE)
-            ask_out = buf_txt.getvalue()
-            self.assertIn("[E2]", ask_out)
-            self.assertIn("[E7]", ask_out)
-            for verdict_word in ("admissible", "rejected", "unestablished"):
-                self.assertNotIn(verdict_word, ask_out.lower())
-
-            # `--document` alias + `--json` mode
-            buf_json = io.StringIO()
-            with contextlib.redirect_stdout(buf_json):
-                rc_ask_j = cli_main(["ask", "--document", str(doc_path), "--spec", str(sp_draft), "--json"])
-            self.assertEqual(rc_ask_j, EXIT_ASK_INCOMPLETE)
-            ask_payload = json.loads(buf_json.getvalue())
-            self.assertFalse(ask_payload["ask_back"]["complete"])
-            # c1 has E2..E7 (6 unanswered); c2 has E2..E6 (5 unanswered) -> 11 total
-            self.assertEqual(ask_payload["ask_back"]["unanswered_count"], 11)
-
-            # 2. Incomplete v2.5 draft MUST NOT abort `run` or `compare` (exit 0, Lean verdict still produced)
-            out_draft = base / "out_draft"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_draft), "--out", str(out_draft)]), 0)
-            rep_draft = json.loads((out_draft / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
-            md_draft = (out_draft / "AskBackAuditor_report.md").read_text(encoding="utf-8")
-            self.assertFalse(rep_draft["ask_back_summary"]["complete"])
-            self.assertEqual(rep_draft["ask_back_summary"]["unanswered_count"], 11)
-            self.assertIn("Ask-Back Completeness:** INCOMPLETE", md_draft)
-            draft_verdicts = {c["id"]: c["verdict"] for c in rep_draft["lean_verification"]["claims"]}
-            self.assertEqual(draft_verdicts, {"c1": "admissible", "c2": "admissible"})
-
-            # 3. Complete all E2–E7 answers (including short 11-char E7 `"needs no pair"` and strong readings
-            #    like `sentence_stronger`, `beyond`, `fitted_on_test_data` — verifying ZERO Lean verdict change!)
-            complete_spec = copy.deepcopy(draft_spec)
-            complete_spec["claims"][0]["exclusion_wording_quote"] = "needs no pair"
-            complete_spec["claims"][0]["excluded_object"] = "paired calibration examples during alignment readout"
-            complete_spec["claims"][0]["ask_back"] = {
-                "causal": {
-                    "status": "answered",
-                    "quotes": [q_ablation],
-                    "rules_out": "sensor drift as the sole explanation",
-                    "supporting_ops": ["align_step"],
-                    "supporting_nodes": ["rawSensor"],
-                },
-                "own_wording": {
-                    "status": "answered",
-                    "quote": q_cautious,
-                    "same_proposition_reason": "Both refer to the same alignment property of the same device under these settings.",
-                    "reading": "sentence_stronger",
-                },
-                "slice": {
-                    "status": "answered",
-                    "quote": q_slice,
-                    "reading": "beyond",
-                    "reason": "Tested only on a single synthetic benchmark grid, whereas the abstract speaks broadly.",
-                },
-                "test_inputs": {
-                    "status": "answered",
-                    "quotes": [q_fit, q_slice],
-                    "fitted_inputs": "alpha and beta inferred directly from the experimental curve",
-                    "compared_output": "reproduction of the same fitted curve",
-                    "claims_independent_test": True,
-                    "reading": "fitted_on_test_data",
-                    "reason": "Model parameters were inferred from the curve used to check reproduction.",
-                },
-                "rests_on": {
-                    "status": "not_applicable",
-                    "reason": "Standalone primary claim.",
-                },
-            }
-            complete_spec["claims"][1]["ask_back"] = {
-                "causal": {
-                    "status": "not_found",
-                    "searched_where": "Checked Sections 2-6; no causal ablation for the downstream diagnostic.",
-                },
-                "own_wording": {
-                    "status": "not_found",
-                    "searched_where": "Checked Abstract and Sections 2-6; stated once only.",
-                },
-                "slice": {
-                    "status": "answered",
-                    "quote": q_slice,
-                    "reading": "within",
-                    "reason": "Conditional statement explicitly scoped to the calibrated readout.",
-                },
-                "test_inputs": {
-                    "status": "not_applicable",
-                    "reason": "Conditional derivation step, not claiming an empirical reproduction test.",
-                },
-                "rests_on": {
-                    "status": "answered",
-                    "claim_ids": ["c1"],
-                    "reason": "Depends on the aligned device output established in c1.",
-                    "quote": q_c2,
-                },
-            }
-            errs_c, quotes_c = validate_spec(complete_spec, doc=doc)
-            self.assertEqual(errs_c, [])
-            q_map = {qm.path: qm for qm in quotes_c}
-            # E7 short subquote offset anchored inside c1's span
-            c1_off = q_map["$.claims[0].quote"].char_offset
-            ew_off = q_map["$.claims[0].exclusion_wording_quote"].char_offset
-            self.assertEqual(ew_off, c1_off + q_c1.find("needs no pair"))
-            # E3 own_wording offset lies outside c1's span
-            ow_off = q_map["$.claims[0].ask_back.own_wording.quote"].char_offset
-            self.assertGreaterEqual(ow_off, c1_off + len(q_c1))
-
-            sp_done = base / "complete.json"
-            sp_done.write_text(json.dumps(complete_spec), encoding="utf-8")
-
-            buf_done = io.StringIO()
-            with contextlib.redirect_stdout(buf_done):
-                rc_done = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_done)])
-            self.assertEqual(rc_done, 0)
-            self.assertIn("Ask-back complete: 0 unanswered question(s)", buf_done.getvalue())
-
-            out_done = base / "out_done"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_done), "--out", str(out_done)]), 0)
-            rep_done = json.loads((out_done / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
-            md_done = (out_done / "AskBackAuditor_report.md").read_text(encoding="utf-8")
-            self.assertTrue(rep_done["ask_back_summary"]["complete"])
-            # Verdicts MUST remain unchanged (v2 spec: no verdict effect from E2–E6)
-            done_verdicts = {c["id"]: c["verdict"] for c in rep_done["lean_verification"]["claims"]}
-            self.assertEqual(done_verdicts, draft_verdicts)
-            self.assertIn("Reader's Quote-Checked Ask-Back Answers *(not Lean-verified", md_done)
-            self.assertIn("Kind anchor (E7, reader quote-checked)", md_done)
-            self.assertIn("sentence_stronger", md_done)
-            self.assertIn("fitted_on_test_data", md_done)
-
-            # 4. Mechanical negative controls (E2 unknown_op, E3 inside_claim, E6 unknown/self/cycle, E7 outside_claim)
-            bad_op = copy.deepcopy(complete_spec)
-            bad_op["claims"][0]["ask_back"]["causal"]["supporting_ops"] = ["nonexistent_op"]
-            self.assertTrue(any(e.code == "unknown_op" for e in validate_spec(bad_op, doc=doc)[0]))
-
-            bad_ow = copy.deepcopy(complete_spec)
-            bad_ow["claims"][0]["ask_back"]["own_wording"]["quote"] = "Our device recovers property P"
-            self.assertTrue(any(e.code == "own_wording_inside_claim" for e in validate_spec(bad_ow, doc=doc)[0]))
-
-            bad_ref = copy.deepcopy(complete_spec)
-            bad_ref["claims"][1]["ask_back"]["rests_on"]["claim_ids"] = ["noSuchClaim"]
-            self.assertTrue(any(e.code == "unknown_rests_on_claim" for e in validate_spec(bad_ref, doc=doc)[0]))
-
-            bad_self = copy.deepcopy(complete_spec)
-            bad_self["claims"][1]["ask_back"]["rests_on"]["claim_ids"] = ["c2"]
-            self.assertTrue(any(e.code == "self_rests_on" for e in validate_spec(bad_self, doc=doc)[0]))
-
-            bad_cyc = copy.deepcopy(complete_spec)
-            bad_cyc["claims"][0]["ask_back"]["rests_on"] = {
-                "status": "answered",
-                "claim_ids": ["c2"],
-                "reason": "Circular dependency test.",
-            }
-            self.assertTrue(any(e.code == "rests_on_cycle" for e in validate_spec(bad_cyc, doc=doc)[0]))
-
-            bad_e7 = copy.deepcopy(complete_spec)
-            bad_e7["claims"][0]["exclusion_wording_quote"] = "rules out sensor drift"
-            self.assertTrue(any(e.code == "exclusion_wording_outside_claim" for e in validate_spec(bad_e7, doc=doc)[0]))
-
-            # Codex #27465: E7 `ask_back.kind_anchor: {status: "not_found", searched_where: ...}` finishes `ask`
-            # cleanly (exit 0, no infinite re-ask loop) and marks the reading explicitly as unanchored in the report!
-            unanchored_e7_spec = copy.deepcopy(complete_spec)
-            del unanchored_e7_spec["claims"][0]["exclusion_wording_quote"]
-            del unanchored_e7_spec["claims"][0]["excluded_object"]
-            unanchored_e7_spec["claims"][0]["ask_back"]["kind_anchor"] = {
-                "status": "not_found",
-                "searched_where": "Checked claim quote; no explicit exclusion wording found.",
-                "reason": "Keeping reading for review while flagging it as unanchored.",
-            }
-            self.assertEqual(validate_spec(unanchored_e7_spec, doc=doc)[0], [])
-            sp_unanch = base / "unanchored_e7.json"
-            sp_unanch.write_text(json.dumps(unanchored_e7_spec), encoding="utf-8")
-            buf_unanch = io.StringIO()
-            with contextlib.redirect_stdout(buf_unanch):
-                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_unanch)]), 0)
-            out_unanch = base / "out_unanch"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_unanch), "--out", str(out_unanch)]), 0)
-            md_unanch = (out_unanch / "AskBackAuditor_report.md").read_text(encoding="utf-8")
-            self.assertIn("Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading)", md_unanch)
-
-            # Codex #27467 Case 1: partial ask-back answer missing a sub-field (`reason` on E5 test_inputs):
-            # - `ask --json` MUST exit 4 (EXIT_ASK_INCOMPLETE) with `complete=False`, `unanswered_count=1`, naming `ask_back.test_inputs.reason`!
-            # - `run` MUST exit 0 and STILL produce Lean structural proof (`lean_verification` populated, `admissible`), marking ask-back INCOMPLETE!
-            partial_e5_spec = copy.deepcopy(complete_spec)
-            del partial_e5_spec["claims"][0]["ask_back"]["test_inputs"]["reason"]
-            sp_partial = base / "partial_e5.json"
-            sp_partial.write_text(json.dumps(partial_e5_spec), encoding="utf-8")
-            buf_p = io.StringIO()
-            with contextlib.redirect_stdout(buf_p):
-                rc_p = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_partial), "--json"])
-            self.assertEqual(rc_p, EXIT_ASK_INCOMPLETE)
-            p_json = json.loads(buf_p.getvalue())
-            self.assertFalse(p_json["ask_back"]["complete"])
-            self.assertEqual(p_json["ask_back"]["unanswered_count"], 1)
-            self.assertIn("ask_back.test_inputs.reason", p_json["ask_back"]["claims"][0]["unanswered"][0]["field"])
-
-            out_partial = base / "out_partial"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_partial), "--out", str(out_partial)]), 0)
-            rep_partial = json.loads((out_partial / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
-            self.assertIsNotNone(rep_partial["lean_verification"])
-            self.assertEqual(rep_partial["lean_verification"]["claims"][0]["verdict"], "admissible")
-            self.assertFalse(rep_partial["ask_back_summary"]["complete"])
-            # Codex #27467 JSON separation: reader ask-back sits in top-level `reader_ask_back` (`verified_by_lean=False`), NOT inside `lean_verification.claims[]`!
-            self.assertFalse(rep_partial["reader_ask_back"]["verified_by_lean"])
-            self.assertNotIn("ask_back", rep_partial["lean_verification"]["claims"][0])
-            self.assertIn("c1", rep_partial["reader_ask_back"]["by_claim"])
-
-            # Still fail hard (exit 2) when a quote in partial ask-back is hallucinated/ungrounded!
-            bad_quote_partial = copy.deepcopy(partial_e5_spec)
-            bad_quote_partial["claims"][0]["ask_back"]["test_inputs"]["quotes"] = ["Totally fabricated sentence not in document."]
-            self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_quote_partial, doc=doc)[0]))
-
-            # Codex #27467 Case 2: E3 `own_wording.quote` taken from an earlier clause of the SAME sentence MUST fail (`own_wording_inside_claim`)!
-            same_sent_doc_path = base / "same_sent.txt"
-            same_sent_doc_path.write_text(
-                "Abstract: First, we build a model, parts of a single dataset, which explains why alignment scales only via width.\n"
-                "Section 4: Our results only suggest why alignment scales partly via width.\n",
-                encoding="utf-8",
-            )
-            same_sent_doc = ingest_document(str(same_sent_doc_path))
-            ss_spec = copy.deepcopy(complete_spec)
-            ss_spec["sources"][0]["quote"] = "which explains why alignment scales only via width."
-            ss_spec["ops"][0]["quote"] = "which explains why alignment scales only via width."
-            ss_spec["ops"][1]["quote"] = "Our results only suggest why alignment scales partly via width."
-            ss_spec["claims"] = [
-                {
-                    "id": "ss1",
-                    "statement": "Explains why alignment scales only via width.",
-                    "quote": "which explains why alignment scales only via width.",
-                    "nature": "qualitative",
-                    "kind": "conditionalFlow",
-                    "target": "deviceOut",
-                    "declared_sources": ["rawSensor"],
-                    "ask_back": {
-                        "own_wording": {
-                            "status": "answered",
-                            "quote": "First, we build a model, parts of a single dataset",
-                            "same_proposition_reason": "Earlier clause of the exact same sentence.",
-                            "reading": "sentence_stronger",
-                        }
-                    },
-                }
-            ]
-            self.assertTrue(
-                any(e.code == "own_wording_inside_claim" for e in validate_spec(ss_spec, doc=same_sent_doc)[0])
-            )
-            # Genuine restatement in Section 4 (different sentence) passes cleanly!
-            ss_spec["claims"][0]["ask_back"]["own_wording"]["quote"] = (
-                "Our results only suggest why alignment scales partly via width."
-            )
-            self.assertEqual(validate_spec(ss_spec, doc=same_sent_doc)[0], [])
-
-            # Codex #27467 Case 3: E7 `not_found` + kept `excluded_object` prints `not_found` warning & `searched_where`
-            # AND conflicting `exclusion_wording_quote` + `kind_anchor.status == 'not_found'` fails (`conflicting_kind_anchor`)!
-            kept_obj_spec = copy.deepcopy(unanchored_e7_spec)
-            kept_obj_spec["claims"][0]["excluded_object"] = "paired calibration examples"
-            self.assertEqual(validate_spec(kept_obj_spec, doc=doc)[0], [])
-            sp_kept = base / "kept_obj.json"
-            sp_kept.write_text(json.dumps(kept_obj_spec), encoding="utf-8")
-            out_kept = base / "out_kept"
-            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_kept), "--out", str(out_kept)]), 0)
-            md_kept = (out_kept / "AskBackAuditor_report.md").read_text(encoding="utf-8")
-            self.assertIn("Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading)", md_kept)
-            self.assertIn("Checked claim quote; no explicit exclusion wording found.", md_kept)
-            self.assertIn("candidate excluded object: paired calibration examples", md_kept)
-
-            conflict_e7 = copy.deepcopy(kept_obj_spec)
-            conflict_e7["claims"][0]["exclusion_wording_quote"] = "needs no pair"
-            self.assertTrue(any(e.code == "conflicting_kind_anchor" for e in validate_spec(conflict_e7, doc=doc)[0]))
-
-            # Claude #27468 Notes:
-            # (1) `ask` on legacy v2.4 spec exits 0 with "does not apply" message;
-            # (2) `outOfScope` claims in v2.5 are skipped cleanly by `ask` (0 unanswered).
-            v24_spec = copy.deepcopy(draft_spec)
-            v24_spec["schema_version"] = "epistemic-ledger/v2.4"
-            sp_v24 = base / "legacy_v24.json"
-            sp_v24.write_text(json.dumps(v24_spec), encoding="utf-8")
-            buf_v24 = io.StringIO()
-            with contextlib.redirect_stdout(buf_v24):
-                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_v24)]), 0)
-            self.assertIn("does not apply", buf_v24.getvalue())
-
-            oos_v25_spec = copy.deepcopy(draft_spec)
-            oos_v25_spec["claims"] = [
-                {
-                    "id": "oos1",
-                    "statement": "Derived ratio out of scope.",
-                    "quote": q_c1,
-                    "nature": "quantitative",
-                    "quantitative_kind": "derivedComparison",
-                    "kind": "outOfScope",
-                }
-            ]
-            sp_oos25 = base / "oos_v25.json"
-            sp_oos25.write_text(json.dumps(oos_v25_spec), encoding="utf-8")
-            buf_oos25 = io.StringIO()
-            with contextlib.redirect_stdout(buf_oos25):
-                self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_oos25)]), 0)
-            self.assertIn("Ask-back complete: 0 unanswered question(s)", buf_oos25.getvalue())
-
-    def test_epistemic_report_display_d1_to_d4_and_legacy_not_asked(self) -> None:
-        """End-to-end tests for spec D1–D4 (`261127-1525-report-display-follows-epistemic-criteria-spec`):
-        - D1: `admissible` -> `display_state: noStructuralAlarm`, rendered as `no structural alarm` in
-          Markdown report, comparison report, and CLI summary; `"admissible"` appears ONLY in the enum legend.
-        - D2: `admissible` with `declared_bet_count >= 1` -> `display_state: conditional`, rendered as
-          `conditional on N declared, unchecked assumption(s)` (while `unestablished` with bets stays `unestablished`).
-        - D3: Reader stop answers (E2–E5) and E6 `rests_on` (with referenced `display_state`) appear directly
-          under claim heading (before findings) and in verdict table, labeled `reader-recorded, quote-checked,
-          not Lean-verified`, stored under `reader_ask_back` (`verified_by_lean: False`), never under
-          `lean_verification`; `"none recorded"` when none; `"not asked"` for records older than v2.5.
-        - D4: `missingCostAccounting` alone no longer moves kernel-verified `epistemicVerdict` (remains
-          `admissible` / `noStructuralAlarm` + note `no cost accounting recorded; not counted`), while declared
-          flawed ledgers (`trivialCostLedger`, `unusedCostLedger`, `unaccountedCostSource`) and control-arm
-          findings are unchanged.
+    def test_questions_slot_legacy_ask_back_ignored_and_display_states(self) -> None:
+        """End-to-end tests for C4+D1 (`question-slot-spec.md`) + D1/D2 display states:
+        1. `admissible` -> `display_state: noStructuralAlarm` (`no structural alarm`), or `conditional`
+           (`conditional on N declared, unchecked assumption(s)`) when `declared_bet_count >= 1`;
+           `"admissible"` appears ONLY in the enum legend.
+        2. Legacy v2.5 record with `ask_back`, `exclusion_wording_quote`, `excluded_object` runs exit 0,
+           silently ignores `ask_back`, and emits no stop-answer text or E2–E7 lines.
+        3. Record-level `questions` slot supports `answered`, `partly` (including short 2-char phrase `"Có"`),
+           `not_in_document`, `asked_by` in `{reader, human}`, optional `claim_id` (rendered under claim vs
+           grouped by `about_quote` under `## Questions`), JSON under `questions` with `verified_by_lean: False`,
+           and ZERO Lean verdict effect.
+        4. Validation refuses: ungrounded `answer_quotes`, `phrase` not in `about_quote`, `not_in_document`
+           with non-empty `answer_quotes`, `partly` without `stays_open`, `not_in_document` without `searched`,
+           `answered` with empty `answer_quotes`, invalid `asked_by`, unknown `claim_id`.
+        5. `ask` and `compare` are removed from `audit_cli`.
         """
         import contextlib
         import io
@@ -1880,26 +1498,34 @@ class PipelineTests(unittest.TestCase):
         doc_text = (
             "Abstract: The randomised trial shows treatment outperforms the independent control arm.\n"
             "Section 2: Assuming hypothesis H1 and hypothesis H2, the main structural bound holds.\n"
-            "Section 3: In contrast to the abstract, the authors only suggest a modest trend on the test set.\n"
-            "Section 4: The experiment only measured cohort A and fitted its parameters on cohort A.\n"
-            "Section 5: The secondary claim rests directly on the main structural bound.\n"
+            "Section 3: Có, ở thời điểm sinh con đầu lòng; mẫu khảo sát chỉ gồm 120 người tại hai thành phố lớn.\n"
+            "Section 4: The experiment only measured cohort A and did not measure long-term outcomes.\n"
+            "Section 5: The randomised allocation was stratified by clinic and balanced across arms.\n"
         )
         q_rct = "The randomised trial shows treatment outperforms the independent control arm."
         q_thm = "Assuming hypothesis H1 and hypothesis H2, the main structural bound holds."
-        q_own = "In contrast to the abstract, the authors only suggest a modest trend on the test set."
-        q_slice = "The experiment only measured cohort A and fitted its parameters on cohort A."
-        q_sec = "The secondary claim rests directly on the main structural bound."
+        q_vn = "Có, ở thời điểm sinh con đầu lòng; mẫu khảo sát chỉ gồm 120 người tại hai thành phố lớn."
+        q_slice = "The experiment only measured cohort A and did not measure long-term outcomes."
+        q_strat = "The randomised allocation was stratified by clinic and balanced across arms."
 
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            doc_path = base / "d1_d4.txt"
+            doc_path = base / "qslot.txt"
             doc_path.write_text(doc_text, encoding="utf-8")
             doc = ingest_document(str(doc_path))
 
-            spec_v25 = {
+            # 5. `ask` and `compare` are gone from CLI
+            for removed_cmd in ("ask", "compare", "extract"):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as cm:
+                        cli_main([removed_cmd, "--doc", str(doc_path)])
+                self.assertEqual(cm.exception.code, 2)
+
+            # 1 & 2. Legacy v2.5 record carrying `ask_back` + `exclusion_wording_quote` + `excluded_object`
+            spec_legacy_ab = {
                 "schema_version": "epistemic-ledger/v2.5",
                 "auditor": "DisplayAuditor",
-                "paper_title": "D1-D4 Epistemic Display Verification",
+                "paper_title": "Question Slot & Display Verification",
                 "nodes": [
                     "treatIn",
                     "ctrlIn",
@@ -1935,11 +1561,8 @@ class PipelineTests(unittest.TestCase):
                         "cost_ledger_node": None,
                         "cost_tag": "studyCost",
                         "ask_back": {
-                            "causal": {"status": "answered", "quote": q_rct, "rules_out": "selection bias via randomisation"},
-                            "own_wording": {"status": "not_found", "searched_where": "Checked all sections."},
-                            "slice": {"status": "answered", "quote": q_slice, "reading": "within", "reason": "Scoped to trial."},
-                            "test_inputs": {"status": "not_applicable", "reason": "RCT comparison."},
-                            "rests_on": {"status": "not_applicable", "reason": "Standalone RCT."},
+                            "causal": {"status": "not_found", "searched_where": "Legacy ignored field."},
+                            "slice": {"status": "answered", "quote": "legacy unverified quote ignored", "reading": "beyond"},
                         },
                     },
                     {
@@ -1954,13 +1577,6 @@ class PipelineTests(unittest.TestCase):
                         "control_node": "ctrlArm",
                         "cost_ledger_node": "unusedLedger",
                         "cost_tag": "studyCost",
-                        "ask_back": {
-                            "causal": {"status": "not_applicable", "reason": "Ledger stress test."},
-                            "own_wording": {"status": "not_applicable", "reason": "Ledger stress test."},
-                            "slice": {"status": "not_applicable", "reason": "Ledger stress test."},
-                            "test_inputs": {"status": "not_applicable", "reason": "Ledger stress test."},
-                            "rests_on": {"status": "not_applicable", "reason": "Standalone."},
-                        },
                     },
                     {
                         "id": "thmConditionalTwoBets",
@@ -1975,31 +1591,8 @@ class PipelineTests(unittest.TestCase):
                             {"tag": "hyp2", "status": "bet", "quote": q_thm},
                         ],
                         "declared_bets": ["hyp1", "hyp2"],
-                        "ask_back": {
-                            "causal": {"status": "not_found", "searched_where": "Sections 2-5; no causal test."},
-                            "own_wording": {
-                                "status": "answered",
-                                "quote": q_own,
-                                "same_proposition_reason": "Restates the same trend cautiously.",
-                                "reading": "sentence_stronger",
-                            },
-                            "slice": {
-                                "status": "answered",
-                                "quote": q_slice,
-                                "reading": "beyond",
-                                "reason": "Only cohort A was measured.",
-                            },
-                            "test_inputs": {
-                                "status": "answered",
-                                "quote": q_slice,
-                                "fitted_inputs": "parameters fitted on cohort A",
-                                "compared_output": "cohort A trend",
-                                "claims_independent_test": True,
-                                "reading": "fitted_on_test_data",
-                                "reason": "Fitted on the evaluated cohort.",
-                            },
-                            "rests_on": {"status": "not_applicable", "reason": "Primary theorem claim."},
-                        },
+                        "exclusion_wording_quote": "legacy ignored",
+                        "excluded_object": "legacy ignored",
                     },
                     {
                         "id": "thmUnestablishedWithOneDeclaredBet",
@@ -2014,191 +1607,164 @@ class PipelineTests(unittest.TestCase):
                             {"tag": "hyp3", "status": "bet", "quote": q_thm},
                         ],
                         "declared_bets": ["hyp1"],
-                        "ask_back": {
-                            "causal": {"status": "not_applicable", "reason": "Theorem check."},
-                            "own_wording": {"status": "not_applicable", "reason": "Theorem check."},
-                            "slice": {"status": "not_applicable", "reason": "Theorem check."},
-                            "test_inputs": {"status": "not_applicable", "reason": "Theorem check."},
-                            "rests_on": {"status": "not_applicable", "reason": "Standalone."},
-                        },
                     },
                     {
-                        "id": "secRestsOnConditional",
-                        "statement": "Secondary claim rests on the conditional bound.",
-                        "quote": q_sec,
+                        "id": "condFlowClaim",
+                        "statement": "Conditional on treatIn, thmOut follows.",
+                        "quote": q_thm,
                         "provenance": "authorClaimed",
                         "nature": "qualitative",
                         "kind": "conditionalFlow",
                         "target": "thmOut",
                         "declared_sources": ["treatIn"],
-                        "ask_back": {
-                            "causal": {"status": "not_applicable", "reason": "Summary restatement."},
-                            "own_wording": {"status": "not_applicable", "reason": "Stated once."},
-                            "slice": {"status": "answered", "quote": q_slice, "reading": "within", "reason": "Within scope."},
-                            "test_inputs": {"status": "not_applicable", "reason": "No fitted test."},
-                            "rests_on": {
-                                "status": "answered",
-                                "claim_ids": ["thmConditionalTwoBets"],
-                                "reason": "Directly rests on the main bound.",
-                            },
-                        },
                     },
                 ],
             }
-            self.assertEqual(validate_spec(spec_v25, doc=doc)[0], [])
+            self.assertEqual(validate_spec(spec_legacy_ab, doc=doc)[0], [])
 
-            sp = base / "d1_d4.json"
-            sp.write_text(json.dumps(spec_v25), encoding="utf-8")
-            out = base / "out"
+            sp_leg = base / "legacy_ab.json"
+            sp_leg.write_text(json.dumps(spec_legacy_ab), encoding="utf-8")
+            out_leg = base / "out_leg"
             cli_buf = io.StringIO()
             with contextlib.redirect_stdout(cli_buf):
-                rc = cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)])
+                rc = cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_leg), "--out", str(out_leg)])
             self.assertEqual(rc, 0)
             cli_out = cli_buf.getvalue()
 
-            rep = json.loads((out / "DisplayAuditor_report.json").read_text(encoding="utf-8"))
-            md = (out / "DisplayAuditor_report.md").read_text(encoding="utf-8")
-            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+            rep_leg = json.loads((out_leg / "DisplayAuditor_report.json").read_text(encoding="utf-8"))
+            md_leg = (out_leg / "DisplayAuditor_report.md").read_text(encoding="utf-8")
+            by_id_leg = {c["id"]: c for c in rep_leg["lean_verification"]["claims"]}
 
-            # C2: missingCostAccounting removed; independent control with cost_ledger_node=None -> clean noStructuralAlarm
-            self.assertEqual(by_id["rctNoCostLedger"]["verdict"], "admissible")
-            self.assertEqual(by_id["rctNoCostLedger"]["display_state"], "noStructuralAlarm")
-            self.assertEqual(by_id["rctNoCostLedger"]["findings"], [])
-            # Declared flawed ledger (unusedCostLedger) still moves verdict to unestablished
-            self.assertEqual(by_id["rctUnusedDeclaredLedger"]["verdict"], "unestablished")
-            self.assertEqual(by_id["rctUnusedDeclaredLedger"]["display_state"], "unestablished")
-            self.assertIn("unusedCostLedger", [f["type"] for f in by_id["rctUnusedDeclaredLedger"]["findings"]])
+            self.assertEqual(by_id_leg["rctNoCostLedger"]["verdict"], "admissible")
+            self.assertEqual(by_id_leg["rctNoCostLedger"]["display_state"], "noStructuralAlarm")
+            self.assertEqual(by_id_leg["rctNoCostLedger"]["findings"], [])
+            self.assertEqual(by_id_leg["rctUnusedDeclaredLedger"]["verdict"], "unestablished")
+            self.assertEqual(by_id_leg["thmConditionalTwoBets"]["display_state"], "conditional")
+            self.assertEqual(by_id_leg["thmUnestablishedWithOneDeclaredBet"]["display_state"], "unestablished")
+            self.assertEqual(by_id_leg["condFlowClaim"]["display_state"], "noStructuralAlarm")
+            self.assertIn("checks declared upstream sources", md_leg)
 
-            # D2: conditional on 2 declared, unchecked assumptions; unestablished with 1 declared bet stays unestablished
-            self.assertEqual(by_id["thmConditionalTwoBets"]["verdict"], "admissible")
-            self.assertEqual(by_id["thmConditionalTwoBets"]["display_state"], "conditional")
-            self.assertEqual(by_id["thmConditionalTwoBets"]["declared_bet_count"], 2)
-            self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["verdict"], "unestablished")
-            self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["display_state"], "unestablished")
-
-            # D1 CLI summary lines: no "admissible", shows "no structural alarm" and "conditional on 2 ..."
+            # CLI & Markdown display legend check
             self.assertNotIn("admissible", cli_out.lower())
             self.assertIn("rctNoCostLedger: no structural alarm (0 finding(s),", cli_out)
             self.assertIn("thmConditionalTwoBets: conditional on 2 declared, unchecked assumptions", cli_out)
-
-            # D1 Markdown: "admissible" must appear ONLY in the legend naming `EpistemicVerdict.admissible`
-            non_legend_md = "\n".join(
-                ln for ln in md.splitlines() if "Display-state legend:" not in ln
-            )
+            non_legend_md = "\n".join(ln for ln in md_leg.splitlines() if "Display-state legend:" not in ln)
             self.assertIsNone(re.search(r"\badmissible\b", non_legend_md, flags=re.IGNORECASE))
-            self.assertIn("EpistemicVerdict.admissible", md)
-            self.assertIn("conditional on 2 declared, unchecked assumptions", md)
 
-            # D3 JSON separation: stop_answers strictly under reader_ask_back (verified_by_lean=False), never lean_verification
-            rab = rep["reader_ask_back"]
-            self.assertFalse(rab["verified_by_lean"])
-            self.assertEqual(rab["stop_answers_summary"]["in_scope_claims_with_stop_answers"], 1)
-            self.assertEqual(rab["stop_answers_summary"]["in_scope_claims_total"], 5)
-            for c in rep["lean_verification"]["claims"]:
-                self.assertNotIn("stop_answers", c)
-                self.assertNotIn("ask_back", c)
-            self.assertEqual(
-                rab["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
-                [
-                    "causal_test_not_found",
-                    "sentence_stronger_than_own_wording",
-                    "speaks_beyond_slice",
-                    "fitted_on_test_data",
-                ],
-            )
-            self.assertEqual(rab["by_claim"]["rctNoCostLedger"]["stop_answers"], [])
-            self.assertEqual(
-                rab["by_claim"]["secRestsOnConditional"]["rests_on"],
-                [
-                    {
-                        "claim_id": "thmConditionalTwoBets",
-                        "display_state": "conditional",
-                        "declared_bet_count": 2,
-                        "stop_answer_count": 4,
-                    }
-                ],
-            )
+            # Zero stop-answer or E2-E7 artifacts anywhere in JSON or Markdown
+            self.assertNotIn("reader_ask_back", rep_leg)
+            self.assertNotIn("ask_back_summary", rep_leg)
+            self.assertFalse(rep_leg["questions"]["verified_by_lean"])
+            self.assertEqual(rep_leg["questions"]["items"], [])
+            for forbidden_txt in ("Stop answers", "Reader Stop Answers", "Ask-Back", "E2:", "E3:", "E4:", "E5:", "E6", "E7"):
+                self.assertNotIn(forbidden_txt, md_leg)
 
-            # D3 Markdown ordering: stop answers appear directly under claim heading BEFORE Statement & Findings
-            self.assertIn("1/5 in-scope claim(s) carry a stop answer", md)
-            self.assertIn("reader-recorded, quote-checked, not Lean-verified", md)
-            sec_start = md.index("### `thmConditionalTwoBets`")
-            sec_body = md[sec_start : md.index("### `thmUnestablishedWithOneDeclaredBet`")]
-            self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Statement:**"))
-            self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Findings:**"))
-            # D3b: E6 rests_on displays both the referenced claim's display_state and its stop_answer_count
-            self.assertIn(
-                "`thmConditionalTwoBets` (conditional on 2 declared, unchecked assumptions; 4 stop answers)",
-                md,
-            )
-
-            # Codex #27514 preflight: partial/incomplete ask-back entries (e.g. E2 not_found missing
-            # searched_where, E4 beyond missing quote/reason) MUST NOT be promoted as quote-checked stop
-            # answers, while completed entries on the SAME claim (e.g. E3 sentence_stronger) STILL appear!
-            partial_stop_spec = copy.deepcopy(spec_v25)
-            partial_stop_spec["auditor"] = "PartialStopAuditor"
-            partial_stop_spec["claims"] = [
-                copy.deepcopy(spec_v25["claims"][2]),  # thmConditionalTwoBets
-            ]
-            partial_stop_spec["claims"][0]["ask_back"] = {
-                "causal": {"status": "not_found"},  # incomplete: missing searched_where -> excluded
-                "own_wording": {  # complete -> MUST still appear!
+            # 3. Attach record-level `questions` covering `answered`, `partly` (short phrase `"Có"`),
+            #    `not_in_document`, `reader` + `human`, with and without `claim_id`
+            spec_with_q = copy.deepcopy(spec_legacy_ab)
+            spec_with_q["questions"] = [
+                {
+                    "about_quote": q_rct,
+                    "phrase": "randomised trial",
+                    "question": "How was randomisation carried out across clinics?",
+                    "asked_by": "reader",
                     "status": "answered",
-                    "quote": q_own,
-                    "same_proposition_reason": "Restates the same trend cautiously.",
-                    "reading": "sentence_stronger",
+                    "answer_quotes": [q_strat],
+                    "answer": "Allocation was stratified by clinic and balanced across arms.",
+                    "claim_id": "rctNoCostLedger",
                 },
-                "slice": {"status": "answered", "reading": "beyond"},  # incomplete: missing quote/reason -> excluded
-            }
-            sp_pstop = base / "partial_stop.json"
-            sp_pstop.write_text(json.dumps(partial_stop_spec), encoding="utf-8")
-            out_pstop = base / "out_pstop"
-            self.assertEqual(
-                cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_pstop), "--out", str(out_pstop)]),
-                0,
-            )
-            rep_pstop = json.loads((out_pstop / "PartialStopAuditor_report.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                rep_pstop["reader_ask_back"]["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
-                ["sentence_stronger_than_own_wording"],
-            )
-            # If ALL entries are incomplete, stop_answers is empty and count is 0/1
-            all_partial_spec = copy.deepcopy(partial_stop_spec)
-            del all_partial_spec["claims"][0]["ask_back"]["own_wording"]
-            sp_apstop = base / "all_partial_stop.json"
-            sp_apstop.write_text(json.dumps(all_partial_spec), encoding="utf-8")
-            out_apstop = base / "out_apstop"
-            self.assertEqual(
-                cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_apstop), "--out", str(out_apstop)]),
-                0,
-            )
-            rep_apstop = json.loads((out_apstop / "PartialStopAuditor_report.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                rep_apstop["reader_ask_back"]["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
-                [],
-            )
-            self.assertEqual(
-                rep_apstop["reader_ask_back"]["stop_answers_summary"]["in_scope_claims_with_stop_answers"],
-                0,
-            )
+                {
+                    "about_quote": q_vn,
+                    "phrase": "Có",
+                    "question": "Does 'Có' rest on a nationally representative sample?",
+                    "asked_by": "human",
+                    "status": "partly",
+                    "answer_quotes": [q_vn],
+                    "answer": "The sentence reports a sample of 120 respondents in two major cities.",
+                    "stays_open": "Whether the finding generalizes beyond those two cities is not answered.",
+                },
+                {
+                    "about_quote": q_vn,
+                    "phrase": "120 người",
+                    "question": "What was the response rate for the 120 respondents?",
+                    "asked_by": "reader",
+                    "status": "not_in_document",
+                    "answer": "No response rate is reported.",
+                    "searched": "Checked Abstract and Sections 2-5; no response rate appears.",
+                },
+                {
+                    "about_quote": q_thm,
+                    "phrase": "main structural bound",
+                    "question": "Were long-term outcomes measured?",
+                    "asked_by": "human",
+                    "status": "not_in_document",
+                    "answer_quotes": [],
+                    "searched": "Checked Sections 2-5; Section 4 states long-term outcomes were not measured.",
+                    "claim_id": "thmConditionalTwoBets",
+                },
+            ]
+            self.assertEqual(validate_spec(spec_with_q, doc=doc)[0], [])
 
-            # Acceptance 4: record older than v2.5 still runs and shows "not asked"
-            out_legacy = base / "out_legacy_v21"
+            sp_q = base / "with_q.json"
+            sp_q.write_text(json.dumps(spec_with_q, ensure_ascii=False), encoding="utf-8")
+            out_q = base / "out_q"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_q), "--out", str(out_q)]), 0)
+            rep_q = json.loads((out_q / "DisplayAuditor_report.json").read_text(encoding="utf-8"))
+            md_q = (out_q / "DisplayAuditor_report.md").read_text(encoding="utf-8")
+
+            # Lean block must be 100% identical (zero verdict effect!)
             self.assertEqual(
-                cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(SPEC_A), "--out", str(out_legacy)]),
-                0,
+                [{k: v for k, v in c.items()} for c in rep_q["lean_verification"]["claims"]],
+                [{k: v for k, v in c.items()} for c in rep_leg["lean_verification"]["claims"]],
             )
-            rep_leg = json.loads((out_legacy / "AuditorA_report.json").read_text(encoding="utf-8"))
-            md_leg = (out_legacy / "AuditorA_report.md").read_text(encoding="utf-8")
-            self.assertEqual(
-                rep_leg["reader_ask_back"]["by_claim"]["claimA_clean_measured"]["stop_answers_status"],
-                "not_asked",
-            )
-            self.assertIn("not asked", md_leg)
-            non_legend_leg = "\n".join(
-                ln for ln in md_leg.splitlines() if "Display-state legend:" not in ln
-            )
-            self.assertIsNone(re.search(r"\badmissible\b", non_legend_leg, flags=re.IGNORECASE))
+            self.assertFalse(rep_q["questions"]["verified_by_lean"])
+            self.assertEqual(len(rep_q["questions"]["items"]), 4)
+            for c in rep_q["lean_verification"]["claims"]:
+                self.assertNotIn("questions", c)
+
+            # Attached question appears under claim `rctNoCostLedger`; unattached grouped by `about_quote` under `## Questions`
+            sec_rct = md_q[md_q.index("### `rctNoCostLedger`") : md_q.index("### `rctUnusedDeclaredLedger`")]
+            self.assertIn('**"randomised trial"** (reader, `answered`)', sec_rct)
+            self.assertIn(q_strat, sec_rct)
+            self.assertIn("## Questions", md_q)
+            q_sec = md_q[md_q.index("## Questions") :]
+            # Both unattached questions share `q_vn`, so `> {q_vn}` appears once as group header
+            self.assertEqual(q_sec.count(f"> {q_vn}"), 1)
+            self.assertIn('**"Có"** (human, `partly`)', q_sec)
+            self.assertIn('**"120 người"** (reader, `not_in_document`)', q_sec)
+
+            # 4. Negative controls (spec Acceptance check 3)
+            bad_ungrounded = copy.deepcopy(spec_with_q)
+            bad_ungrounded["questions"][0]["answer_quotes"] = ["Fabricated quote not present in the source document."]
+            self.assertTrue(any(e.code == "ungrounded_quote" for e in validate_spec(bad_ungrounded, doc=doc)[0]))
+
+            bad_phrase = copy.deepcopy(spec_with_q)
+            bad_phrase["questions"][1]["phrase"] = "not inside about quote"
+            self.assertTrue(any(e.code == "phrase_not_in_about_quote" for e in validate_spec(bad_phrase, doc=doc)[0]))
+
+            bad_nid_quotes = copy.deepcopy(spec_with_q)
+            bad_nid_quotes["questions"][2]["answer_quotes"] = [q_slice]
+            self.assertTrue(any(e.code == "unexpected_answer_quotes" for e in validate_spec(bad_nid_quotes, doc=doc)[0]))
+
+            bad_partly = copy.deepcopy(spec_with_q)
+            del bad_partly["questions"][1]["stays_open"]
+            self.assertTrue(any(e.code == "missing_key" and e.path.endswith(".stays_open") for e in validate_spec(bad_partly, doc=doc)[0]))
+
+            bad_nid_searched = copy.deepcopy(spec_with_q)
+            del bad_nid_searched["questions"][2]["searched"]
+            self.assertTrue(any(e.code == "missing_key" and e.path.endswith(".searched") for e in validate_spec(bad_nid_searched, doc=doc)[0]))
+
+            bad_ans_empty = copy.deepcopy(spec_with_q)
+            bad_ans_empty["questions"][0]["answer_quotes"] = []
+            self.assertTrue(any(e.code == "empty_list" for e in validate_spec(bad_ans_empty, doc=doc)[0]))
+
+            bad_asker = copy.deepcopy(spec_with_q)
+            bad_asker["questions"][0]["asked_by"] = "bot"
+            self.assertTrue(any(e.code == "invalid_enum" and e.path.endswith(".asked_by") for e in validate_spec(bad_asker, doc=doc)[0]))
+
+            bad_cid = copy.deepcopy(spec_with_q)
+            bad_cid["questions"][0]["claim_id"] = "noSuchClaim"
+            self.assertTrue(any(e.code == "unknown_question_claim" for e in validate_spec(bad_cid, doc=doc)[0]))
 
 
 if __name__ == "__main__":

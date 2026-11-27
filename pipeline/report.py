@@ -1,18 +1,16 @@
-"""Reporting, quote-anchored multi-auditor reconciliation, and LLM extraction prompt generation."""
+"""Reporting and LLM extraction prompt generation."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize, normalize_whitespace
+from pipeline.ingest import IngestedDocument, dehyphenate_and_normalize
 from pipeline.lean_runner import LeanVerificationResult
 from pipeline.schema import (
     QuoteMatch,
     ValidationErrorItem,
     collect_out_of_scope_spec_fields,
-    evaluate_ask_back,
-    is_ask_back_entry_complete,
     verify_quote_in_document,
 )
 
@@ -110,25 +108,6 @@ DISPLAY_STATE_LEGEND = (
     "`outOfScope` correspond directly to the remaining Lean enum states.*"
 )
 
-STOP_ANSWER_LABELS: dict[str, tuple[str, str]] = {
-    "causal_test_not_found": (
-        "E2: causal test not found",
-        "no test found that separates the mechanism from another explanation",
-    ),
-    "sentence_stronger_than_own_wording": (
-        "E3: sentence stronger",
-        "sentence is stronger than the paper's own wording elsewhere",
-    ),
-    "speaks_beyond_slice": (
-        "E4: beyond slice",
-        "sentence speaks beyond the tested observation slice",
-    ),
-    "fitted_on_test_data": (
-        "E5: fitted on test data",
-        "test inputs were fitted on the test data",
-    ),
-}
-
 
 def compute_display_state(verdict: str, declared_bet_count: int = 0) -> str:
     """Map Lean `EpistemicVerdict` + `declared_bet_count` to one of the 5 display states:
@@ -145,69 +124,6 @@ def format_display_state_short(verdict: str, declared_bet_count: int = 0) -> str
             return f"conditional on {declared_bet_count} declared, unchecked {noun}"
         return "no structural alarm"
     return verdict
-
-
-def _format_dep_display_state(dep: dict[str, Any]) -> str:
-    ds = dep.get("display_state")
-    bets = int(dep.get("declared_bet_count", 0))
-    if ds == "noStructuralAlarm":
-        base = "no structural alarm"
-    elif ds == "conditional":
-        noun = "assumption" if bets == 1 else "assumptions"
-        base = f"conditional on {bets} declared, unchecked {noun}" if bets >= 1 else "conditional"
-    else:
-        base = str(ds) if ds else "unknown"
-    stop_count = int(dep.get("stop_answer_count", 0))
-    if stop_count > 0:
-        s_noun = "stop answer" if stop_count == 1 else "stop answers"
-        return f"{base}; {stop_count} {s_noun}"
-    return base
-
-
-def _extract_stop_answers(claim_meta: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Extract canonical reader stop-answer codes (E2–E5) and E6 `rests_on` claim IDs from `ask_back`.
-
-    Gates per individual question entry via `is_ask_back_entry_complete` so incomplete draft entries
-    (e.g., E2 `not_found` missing `searched_where` or E4 `beyond` missing `quote`/`reason`) are never
-    promoted under the 'quote-checked' label, while completed entries on the same claim still display.
-    """
-    ab = claim_meta.get("ask_back") if isinstance(claim_meta, dict) else None
-    if not isinstance(ab, dict):
-        return [], []
-    stops: list[str] = []
-    causal = ab.get("causal")
-    if is_ask_back_entry_complete("causal", causal) and causal.get("status") == "not_found":
-        stops.append("causal_test_not_found")
-    own = ab.get("own_wording")
-    if (
-        is_ask_back_entry_complete("own_wording", own)
-        and own.get("status") == "answered"
-        and own.get("reading") == "sentence_stronger"
-    ):
-        stops.append("sentence_stronger_than_own_wording")
-    sl = ab.get("slice")
-    if (
-        is_ask_back_entry_complete("slice", sl)
-        and sl.get("status") == "answered"
-        and sl.get("reading") == "beyond"
-    ):
-        stops.append("speaks_beyond_slice")
-    ti = ab.get("test_inputs")
-    if (
-        is_ask_back_entry_complete("test_inputs", ti)
-        and ti.get("status") == "answered"
-        and ti.get("reading") == "fitted_on_test_data"
-    ):
-        stops.append("fitted_on_test_data")
-    rests_on_ids: list[str] = []
-    ro = ab.get("rests_on")
-    if (
-        is_ask_back_entry_complete("rests_on", ro)
-        and ro.get("status") == "answered"
-        and isinstance(ro.get("claim_ids"), list)
-    ):
-        rests_on_ids = [str(cid) for cid in ro["claim_ids"] if isinstance(cid, str)]
-    return stops, rests_on_ids
 
 
 def _format_verdict_table(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
@@ -243,10 +159,6 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "provenance": meta.get("provenance", "authorClaimed"),
         "nature": meta.get("nature", "qualitative"),
     }
-    if isinstance(meta.get("exclusion_wording_quote"), str):
-        sig["exclusion_wording_quote"] = normalize_whitespace(meta["exclusion_wording_quote"])
-    if isinstance(meta.get("excluded_object"), str):
-        sig["excluded_object"] = meta["excluded_object"]
     if "quantitative_kind" in meta:
         sig["quantitative_kind"] = meta["quantitative_kind"]
     for k in (
@@ -415,91 +327,11 @@ def build_single_report_dict(
                     "declaration_locations": _compute_declaration_locations(doc, spec, meta),
                 }
             )
-    display_by_cid: dict[str, tuple[str, int]] = {
-        c["id"]: (c["display_state"], int(c["declared_bet_count"])) for c in lean_claims_payload
-    }
-    verdict_by_cid: dict[str, str] = {c["id"]: c["verdict"] for c in lean_claims_payload}
-
-    ask_back_summary = evaluate_ask_back(spec)
-    applicable_v25 = bool(ask_back_summary.get("applicable_v25", False))
-    ask_by_cid = {c["claim_id"]: c for c in ask_back_summary.get("claims", [])}
-    reader_ask_back_by_claim: dict[str, Any] = {}
-    in_scope_total = 0
-    in_scope_with_stop = 0
-    total_claims_count = 0
-    total_with_stop = 0
-    if isinstance(spec, dict) and isinstance(spec.get("claims"), list):
-        extracted_by_cid: dict[str, tuple[list[str], list[str]]] = {
-            str(cl["id"]): _extract_stop_answers(cl)
-            for cl in spec["claims"]
-            if isinstance(cl, dict) and cl.get("id")
-        }
-        for cl in spec["claims"]:
-            if not isinstance(cl, dict) or not cl.get("id"):
-                continue
-            cid = str(cl["id"])
-            total_claims_count += 1
-            cinfo = ask_by_cid.get(cid, {})
-            skipped_oos = bool(cinfo.get("skipped_out_of_scope", False))
-            is_oos = (
-                verdict_by_cid.get(cid) == "outOfScope"
-                or cl.get("kind") == "outOfScope"
-                or (
-                    cl.get("nature") == "quantitative"
-                    and cl.get("quantitative_kind") in ("specificValue", "derivedComparison")
-                )
-            )
-            has_ab_dict = isinstance(cl.get("ask_back"), dict)
-            stop_answers, rests_on_ids = extracted_by_cid[cid]
-            rests_on_resolved: list[dict[str, Any]] = []
-            for dep_id in rests_on_ids:
-                dep_stop_count = len(extracted_by_cid.get(dep_id, ([], []))[0])
-                if dep_id in display_by_cid:
-                    dep_ds, dep_bets = display_by_cid[dep_id]
-                    rests_on_resolved.append(
-                        {
-                            "claim_id": dep_id,
-                            "display_state": dep_ds,
-                            "declared_bet_count": dep_bets,
-                            "stop_answer_count": dep_stop_count,
-                        }
-                    )
-                else:
-                    rests_on_resolved.append(
-                        {
-                            "claim_id": dep_id,
-                            "display_state": None,
-                            "declared_bet_count": 0,
-                            "stop_answer_count": dep_stop_count,
-                        }
-                    )
-            if not applicable_v25 and not has_ab_dict:
-                stop_status = "not_asked"
-            elif skipped_oos and not has_ab_dict:
-                stop_status = "not_asked"
-            elif stop_answers:
-                stop_status = "recorded"
-            else:
-                stop_status = "none_recorded"
-            if not is_oos:
-                in_scope_total += 1
-                if stop_answers:
-                    in_scope_with_stop += 1
-            if stop_answers:
-                total_with_stop += 1
-            reader_ask_back_by_claim[cid] = {
-                "verified_by_lean": False,
-                "complete": bool(cinfo.get("complete", True)),
-                "skipped_out_of_scope": skipped_oos,
-                "unanswered": [u["code"] for u in cinfo.get("unanswered", [])],
-                "unanswered_details": cinfo.get("unanswered", []),
-                "stop_answers_status": stop_status,
-                "stop_answers": stop_answers,
-                "rests_on": rests_on_resolved,
-                "exclusion_wording_quote": cl.get("exclusion_wording_quote"),
-                "excluded_object": cl.get("excluded_object"),
-                "ask_back": cl.get("ask_back"),
-            }
+    raw_questions = (
+        [q for q in spec["questions"] if isinstance(q, dict)]
+        if isinstance(spec, dict) and isinstance(spec.get("questions"), list)
+        else []
+    )
     return {
         "schema_version": "epistemic-ledger-report/v2.2",
         "document": {
@@ -511,23 +343,13 @@ def build_single_report_dict(
         "declared_auditor": declared_auditor,
         "paper_title": spec.get("paper_title", "") if isinstance(spec, dict) else "",
         "grounding_and_schema_ok": len(errors) == 0,
-        "ask_back_summary": ask_back_summary,
-        "reader_ask_back": {
+        "questions": {
             "verified_by_lean": False,
             "scope_note": (
-                "Reader's quote-checked ask-back answers (E2–E7), stop answers, and kind anchors. "
-                "NOT verified by the Lean 4 kernel (Lean proves structural flow verdicts in `lean_verification` only)."
+                "Reader or human questions and quote-checked answers. "
+                "NOT verified by the Lean 4 kernel (no verdict effect)."
             ),
-            "summary": ask_back_summary,
-            "stop_answers_summary": {
-                "applicable_v25": applicable_v25,
-                "in_scope_claims_total": in_scope_total,
-                "in_scope_claims_with_stop_answers": in_scope_with_stop,
-                "total_claims": total_claims_count,
-                "claims_with_stop_answers": total_with_stop,
-                "verified_by_lean": False,
-            },
-            "by_claim": reader_ask_back_by_claim,
+            "items": raw_questions,
         },
         "out_of_scope": out_of_scope,
         "validation_errors": [
@@ -548,10 +370,27 @@ def build_single_report_dict(
         else {
             "lean_file": str(lean_result.lean_file),
             "axioms_ok": lean_result.raw_axioms_ok,
-            "scope_note": "Lean 4 kernel proofs cover structural flow verdicts and findings only (not reader ask-back answers).",
+            "scope_note": "Lean 4 kernel proofs cover structural flow verdicts and findings only (not questions or answers).",
             "claims": lean_claims_payload,
         },
     }
+
+
+def _render_question_markdown_lines(q: dict[str, Any], indent: str = "") -> list[str]:
+    phrase = q.get("phrase", "")
+    question = q.get("question", "")
+    asked_by = q.get("asked_by", "")
+    status = q.get("status", "")
+    out = [f'{indent}- **"{phrase}"** ({asked_by}, `{status}`): {question}']
+    if q.get("answer"):
+        out.append(f"{indent}  - *Answer:* {q['answer']}")
+    for aq in q.get("answer_quotes") or []:
+        out.append(f'{indent}  - *Quote:* "{aq}"')
+    if q.get("stays_open"):
+        out.append(f"{indent}  - *Stays open:* {q['stays_open']}")
+    if q.get("searched"):
+        out.append(f"{indent}  - *Searched:* {q['searched']}")
+    return out
 
 
 def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) -> str:
@@ -576,38 +415,6 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
 
     lv = report["lean_verification"]
     lines.append(f"- **Lean 4 Kernel Proof (structural flow only):** `{lv['lean_file']}` (axioms whitelist OK: `{lv['axioms_ok']}`)")
-    ab_sum = report.get("ask_back_summary", {})
-    rab = report.get("reader_ask_back", {})
-    rab_by_claim = rab.get("by_claim", {})
-    stop_sum = rab.get("stop_answers_summary", {})
-    if ab_sum.get("applicable_v25"):
-        if ab_sum.get("complete"):
-            lines.append("- **Ask-Back Completeness:** COMPLETE (all E2–E7 questions answered; reader answers are quote-checked evidence, not Lean-verified)")
-        else:
-            lines.append(
-                f"- **Ask-Back Completeness:** INCOMPLETE ({ab_sum['unanswered_count']} unanswered question(s); "
-                f"structural Lean verdict still produced — run `audit_cli ask` to inspect open questions)"
-            )
-        in_sc_with = int(stop_sum.get("in_scope_claims_with_stop_answers", 0))
-        in_sc_tot = int(stop_sum.get("in_scope_claims_total", 0))
-        tot_with = int(stop_sum.get("claims_with_stop_answers", in_sc_with))
-        tot_all = int(stop_sum.get("total_claims", in_sc_tot))
-        if tot_with == in_sc_with:
-            lines.append(
-                f"- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** "
-                f"{in_sc_with}/{in_sc_tot} in-scope claim(s) carry a stop answer"
-            )
-        else:
-            extra_oos = tot_with - in_sc_with
-            lines.append(
-                f"- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** "
-                f"{in_sc_with}/{in_sc_tot} in-scope claim(s) carry a stop answer "
-                f"({tot_with}/{tot_all} total claims including {extra_oos} out-of-scope)"
-            )
-    else:
-        lines.append(
-            "- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** not asked (record older than v2.5)"
-        )
     if report.get("out_of_scope"):
         lines += ["", "## Out of Scope", ""]
         for item in report["out_of_scope"]:
@@ -618,26 +425,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         "",
         DISPLAY_STATE_LEGEND,
         "",
-        "| Claim ID | Kind | Target / Channel | Display State (Lean) | Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified) | Findings | Axioms |",
-        "|---|---|---|---|---|---|---|",
+        "| Claim ID | Kind | Target / Channel | Display State (Lean) | Findings | Axioms |",
+        "|---|---|---|---|---|---|",
     ]
-
-    def _format_stop_table_cell(rab_c: dict[str, Any]) -> str:
-        st_status = rab_c.get("stop_answers_status", "not_asked")
-        stops = rab_c.get("stop_answers") or []
-        rests_on = rab_c.get("rests_on") or []
-        if st_status == "not_asked" and not stops and not rests_on:
-            return "not asked"
-        parts = [STOP_ANSWER_LABELS[s][0] for s in stops if s in STOP_ANSWER_LABELS]
-        if rests_on:
-            deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
-            if parts:
-                parts.append(f"E6 rests on: {deps}")
-            else:
-                return f"none recorded; E6 rests on: {deps}"
-        if not parts:
-            return "none recorded"
-        return "; ".join(parts)
 
     claim_by_id = {c["id"]: c for c in spec["claims"]}
     for c in lv["claims"]:
@@ -654,10 +444,19 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             if "excluded_channel" in sig:
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
-        stop_cell = _format_stop_table_cell(rab_by_claim.get(c["id"], {}))
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {stop_cell} | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
+
+    all_questions = report.get("questions", {}).get("items", [])
+    questions_by_claim: dict[str, list[dict[str, Any]]] = {}
+    unattached_questions: list[dict[str, Any]] = []
+    for q in all_questions:
+        qcid = q.get("claim_id")
+        if isinstance(qcid, str) and qcid in claim_by_id:
+            questions_by_claim.setdefault(qcid, []).append(q)
+        else:
+            unattached_questions.append(q)
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
     source_quotes = {s["node"]: s["quote"] for s in spec["sources"]}
@@ -673,44 +472,10 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         lines.append(
             f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`)"
         )
-        # D3: Reader stop answers directly under the claim heading (before findings)
-        rab_claim = rab_by_claim.get(c["id"], {})
-        st_status = rab_claim.get("stop_answers_status", "not_asked")
-        stops = rab_claim.get("stop_answers") or []
-        rests_on = rab_claim.get("rests_on") or []
-        if st_status == "not_asked" and not stops and not rests_on:
-            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:** not asked")
-        elif stops:
-            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:**")
-            for scode in stops:
-                short_lbl, desc = STOP_ANSWER_LABELS.get(scode, (scode, scode))
-                lines.append(f"  - **{short_lbl} (`{scode}`):** {desc}")
-            if rests_on:
-                deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
-                lines.append(f"  - **E6 (`rests_on`):** {deps}")
-        else:
-            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:** none recorded")
-            if rests_on:
-                deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
-                lines.append(f"- **Rests on (E6, *reader-recorded, quote-checked, not Lean-verified*):** {deps}")
-
         lines += [
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
-        ka_entry = meta.get("ask_back", {}).get("kind_anchor") if isinstance(meta.get("ask_back"), dict) else None
-        if isinstance(ka_entry, dict) and ka_entry.get("status") == "not_found" and not meta.get("exclusion_wording_quote"):
-            cand_obj = f" (candidate excluded object: {meta['excluded_object']})" if meta.get("excluded_object") else ""
-            lines.append(
-                f"- **Kind anchor (E7, `not_found` — unanchored emergence/exclusion reading):** "
-                f"no supporting exclusion wording quote found; searched: {ka_entry.get('searched_where', '')}{cand_obj}"
-            )
-            if ka_entry.get("reason"):
-                lines.append(f"  - *Reason:* {ka_entry['reason']}")
-        elif meta.get("exclusion_wording_quote") or meta.get("excluded_object"):
-            ewq_str = f'"{meta["exclusion_wording_quote"]}"' if meta.get("exclusion_wording_quote") else "*missing*"
-            eobj_str = meta.get("excluded_object") or "*missing*"
-            lines.append(f"- **Kind anchor (E7, reader quote-checked):** wording {ewq_str}; excluded object: {eobj_str}")
         if meta.get("kind") == "effectivenessClaim":
             if meta.get("method_measurement_quote"):
                 lines.append(f"- **Method measurement quote:** > {meta['method_measurement_quote']}")
@@ -736,6 +501,11 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                     "- **Findings:** None (structural comparison checks passed: independent control and evaluation wiring; "
                     "does NOT certify numerical ratios/values or necessity claims such as 'need')."
                 )
+            elif meta.get("kind") == "conditionalFlow":
+                lines.append(
+                    "- **Findings:** None (no structural alarm: checks declared upstream sources in the modeled graph only; "
+                    "does not certify unmodeled reality)."
+                )
             else:
                 lines.append("- **Findings:** None (no structural alarm inside the declared observation slice; does not certify unmodeled reality).")
         else:
@@ -752,70 +522,30 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 hyp_tag = f.get("hypothesis")
                 if hyp_tag and hyp_tag in hyp_quotes:
                     lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
-        ab_data = meta.get("ask_back")
-        unans_details = rab_claim.get("unanswered_details") or []
-        unans_codes = rab_claim.get("unanswered") or []
-        if ab_data or (ab_sum.get("applicable_v25") and unans_codes):
-            lines.append(
-                "- **Reader's Quote-Checked Ask-Back Answers *(not Lean-verified; Lean proof covers structural flow verdict only)*:**"
-            )
-            if isinstance(ab_data, dict):
-                ab_labels = [
-                    ("causal", "E2 Causal"),
-                    ("own_wording", "E3 Own wording"),
-                    ("slice", "E4 Slice"),
-                    ("test_inputs", "E5 Test inputs"),
-                    ("rests_on", "E6 Rests on"),
-                ]
-                for key, label in ab_labels:
-                    entry = ab_data.get(key)
-                    if not isinstance(entry, dict):
-                        continue
-                    st = entry.get("status", "unknown")
-                    if st == "not_found":
-                        lines.append(f"  - **{label}** (`not_found`): searched: {entry.get('searched_where', '')}")
-                        if entry.get("reason"):
-                            lines.append(f"    - *Reason:* {entry['reason']}")
-                    elif st == "not_applicable":
-                        lines.append(f"  - **{label}** (`not_applicable`): {entry.get('reason', '')}")
-                    elif st == "answered":
-                        details: list[str] = []
-                        if key == "causal":
-                            details.append(f"rules out: {entry.get('rules_out', '')}")
-                            if entry.get("supporting_ops"):
-                                details.append(f"ops={entry['supporting_ops']}")
-                            if entry.get("supporting_nodes"):
-                                details.append(f"nodes={entry['supporting_nodes']}")
-                        elif key == "own_wording":
-                            details.append(f"reading=`{entry.get('reading', '')}`")
-                            details.append(f"same proposition: {entry.get('same_proposition_reason', '')}")
-                        elif key == "slice":
-                            details.append(f"reading=`{entry.get('reading', '')}`")
-                            details.append(f"reason: {entry.get('reason', '')}")
-                        elif key == "test_inputs":
-                            details.append(f"reading=`{entry.get('reading', '')}`")
-                            details.append(f"claims_independent_test=`{entry.get('claims_independent_test')}`")
-                            details.append(f"fitted: {entry.get('fitted_inputs', '')}")
-                            details.append(f"compared: {entry.get('compared_output', '')}")
-                            details.append(f"reason: {entry.get('reason', '')}")
-                        elif key == "rests_on":
-                            cids = entry.get("claim_ids", [])
-                            details.append(f"claim_ids={cids}")
-                            details.append(f"reason: {entry.get('reason', '')}")
-                        lines.append(f"  - **{label}** (`answered`): {'; '.join(details)}")
-                        if isinstance(entry.get("quote"), str):
-                            lines.append(f"    - *Quote:* \"{entry['quote']}\"")
-                        for q_item in entry.get("quotes", []) if isinstance(entry.get("quotes"), list) else []:
-                            lines.append(f"    - *Quote:* \"{q_item}\"")
-                        if key == "causal" and entry.get("reason"):
-                            lines.append(f"    - *Reason:* {entry['reason']}")
-            if ab_sum.get("applicable_v25") and unans_codes:
-                unans_labels = [
-                    f"{u['code']} ({u['field']})" if isinstance(u, dict) and u.get("field") else str(u)
-                    for u in (unans_details or unans_codes)
-                ]
-                lines.append(f"  - **Unanswered / incomplete ask-back items:** {', '.join(unans_labels)}")
+        claim_qs = questions_by_claim.get(c["id"], [])
+        if claim_qs:
+            lines.append("- **Questions *(quote-checked, not Lean-verified)*:**")
+            for q in claim_qs:
+                lines.extend(_render_question_markdown_lines(q, indent="  "))
         lines.append("")
+
+    if unattached_questions:
+        lines += [
+            "## Questions",
+            "",
+            "*Quote-checked against the source document; not verified by Lean; no verdict effect.*",
+            "",
+        ]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for q in unattached_questions:
+            aq = str(q.get("about_quote", ""))
+            grouped.setdefault(aq, []).append(q)
+        for about_q, q_items in grouped.items():
+            lines.append(f"> {about_q}")
+            lines.append("")
+            for q in q_items:
+                lines.extend(_render_question_markdown_lines(q, indent=""))
+            lines.append("")
 
     return "\n".join(lines)
 
