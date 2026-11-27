@@ -547,19 +547,31 @@ def _claim_anchor_span(doc: IngestedDocument, quote: str) -> tuple[int, int, str
     return (qm.char_offset, qm.char_offset + len(qm.normalized_quote), qm.normalized_quote)
 
 
-def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA") -> str:
+def build_extraction_prompt(
+    doc: IngestedDocument,
+    auditor_name: str = "AuditorA",
+    pre_brief: str | None = None,
+) -> str:
     """Build a strict extraction prompt for any LLM/agent to produce a quote-grounded AuditSpec JSON."""
+    pre_section = ""
+    if pre_brief and pre_brief.strip():
+        pre_section = (
+            "\nPRE-FORMALIZATION HANDOFF BRIEF (optional context from Stage 1 `audit_cli pre`; "
+            "evaluate independently against the document — push back or omit anything not supported by the text):\n"
+            "--- BEGIN PRE BRIEF ---\n"
+            f"{pre_brief.strip()}\n"
+            "--- END PRE BRIEF ---\n"
+        )
     return f"""You are an independent epistemological auditor.
-Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.5`.
+Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.5`.{pre_section}
 
-WORKFLOW (PROPOSE -> ASK -> ANSWER -> ASK AGAIN):
-1. First propose claims and the operational flow graph in a `v2.5` JSON record.
-2. Run `python3 -m pipeline.audit_cli ask --doc <doc> --spec <spec.json>`. It lists any unanswered ask-back questions (E2–E7) per claim without printing verdicts (exit 4 while unanswered, exit 0 when complete).
-3. Answer every unanswered item using verbatim quotes from the document (or `status: "not_found"` with `searched_where`, or `status: "not_applicable"` with `reason`), and run `ask` again until exit 0.
-4. Reader ask-back answers are quote-checked evidence displayed separately in the report; they are NOT labelled "Lean verified" (Lean proves only the structural flow verdict).
+WORKFLOW:
+1. Propose claims, the operational flow graph, and optional record-level `questions` in a `v2.5` JSON record.
+2. Run `python3 -m pipeline.audit_cli run --doc <doc> --spec <spec.json> --out <out_dir>` to check verbatim quotes, schema validity, and Lean 4 structural flow verdicts.
+3. Optional top-level `questions` are quote-checked evidence displayed separately in the report (`verified_by_lean: false`, zero effect on Lean verdicts); Lean proves only the structural flow verdict.
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, `method_measurement_quote`/`control_measurement_quote`, and `ask_back` quote MUST be copied VERBATIM from the document (>= 12 non-space characters; `exclusion_wording_quote` may be a shorter verbatim substring >= 3 non-space characters inside the claim's own quote). Do NOT paraphrase or invent quotes.
+1. Every `source`, `op`, `claim`, `method_measurement_quote`/`control_measurement_quote`, and `questions` (`about_quote`, `answer_quotes`) quote MUST be copied VERBATIM from the document (>= 12 non-space characters; `questions[].phrase` may be any shorter verbatim substring inside `about_quote`). Do NOT paraphrase or invent quotes.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
 4. Set `"provenance"` on every claim (`"authorClaimed"` or `"reviewerStressTest"`), AND declare `"nature"`: `"qualitative"` or `"quantitative"`.
@@ -570,7 +582,6 @@ CRITICAL RULES:
 5. **Classify each clause by what it asserts, NOT by hedging phrases:**
    - Split multi-clause sentences into separate claims when one clause makes a direct claim and another adds a hedged generalization (e.g., `"In this setting, property P is recovered from raw signal S"` vs `"offering an initial indication that P arises spontaneously"`).
    - For emergence / `"only X"` clauses under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`) or `kind: "emergesWithout"` (`target`, `tag`).
-   - **E7 Kind Anchor (required by `ask` for `emergesWithout` / `emergesWithExclusion`):** supply `"exclusion_wording_quote"` (exact verbatim substring inside the claim's own `quote` saying a source is absent, excluded, not needed, or arises on its own, e.g. `"without external calibration"`) AND `"excluded_object"` (naming specifically what is excluded, e.g. `"external calibration inputs during inference, not during sensor manufacturing"`). If no exclusion wording exists in the claim, either reconsider the claim's `kind` or record `ask_back.kind_anchor: {{"status": "not_found", "searched_where": "..."}}` so the reading is kept and explicitly marked as having no supporting exclusion quote.
    - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`).
    - Contrast: genuine conditional statements such as `"Given a supplied X, Y follows"` remain `kind: "conditionalFlow"`.
 6. For structural effectiveness / comparison claims (`nature: "quantitative"` with `quantitative_kind: "order"` or `"threshold"`, or qualitative structural comparisons), use `kind: "effectivenessClaim"` with:
@@ -584,13 +595,11 @@ CRITICAL RULES:
     - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
     - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
 11. For `kind: "lossy"` ops, add optional `"loses": ["<tag>", ...]` ONLY when the document explicitly witnesses that distinct values of those specific tag(s) collide to identical outputs while remaining jointly valid with any outside observations; omit `"loses"` if the document only describes the step as lossy in general or if unmodeled joint constraints couple separate inputs (when two inputs share a coupling like `c = r`, derive both from one shared upstream `SourceNode` so side-information bypass is detected).
-12. **Ask-back record (`ask_back`) per claim (checked by `audit_cli ask`):** every claim should answer five questions (`causal`, `own_wording`, `slice`, `test_inputs`, `rests_on`), each with `status: "answered" | "not_found" | "not_applicable"` (`rests_on` uses `"answered"` or `"not_applicable"`):
-    - `causal` (E2): if answered, include `"quotes"` (or `"quote"`), `"rules_out"`, and optional `"supporting_ops"` / `"supporting_nodes"` reusing the graph.
-    - `own_wording` (E3): if answered, include `"quote"` (MUST appear outside the claim's own sentence), `"same_proposition_reason"`, and `"reading": "same" | "sentence_stronger" | "sentence_weaker"`.
-    - `slice` (E4): if answered, include `"quote"` (or `"quotes"`), `"reading": "within" | "beyond"`, and `"reason"`.
-    - `test_inputs` (E5): answer applicability explicitly (`status: "not_applicable"` with `"reason"` if not claiming an empirical test, agreement, reproduction, or prediction); if answered, include `"quotes"` (or `"quote"`), `"fitted_inputs"`, `"compared_output"`, `"claims_independent_test"` (bool), `"reading": "independent" | "fitted_on_test_data" | "unclear"`, and `"reason"`.
-    - `rests_on` (E6): `status: "answered"` with `"claim_ids"` (acyclic list of claim IDs in this record) and `"reason"` (plus optional `"quote"`), or `status: "not_applicable"` with `"reason"`.
-    - For any `status: "not_found"`, provide `"searched_where"` naming the sections/appendices checked.
+12. **Optional top-level `"questions"` slot** (`verified_by_lean: false`, zero Lean verdict effect): use to record open questions (including pre-formalization questions) tied to exact wording in the document. Each item requires `"about_quote"` (verbatim from document), `"phrase"` (verbatim substring inside `about_quote`), `"question"`, `"asked_by"` (`"reader"` or `"human"`), and `"status"`:
+    - `"answered"`: requires non-empty `"answer_quotes"` (verbatim from document) and `"answer"`.
+    - `"partly"`: requires non-empty `"answer_quotes"`, `"answer"`, and `"stays_open"`.
+    - `"not_in_document"`: requires `"searched"` (where checked) and MUST NOT include non-empty `"answer_quotes"`.
+    - Optional `"claim_id"` links a question to a claim ID in `"claims"`.
 
 JSON TEMPLATE:
 {{
@@ -615,16 +624,18 @@ JSON TEMPLATE:
       "kind": "emergesWithExclusion",
       "target": "nodeB",
       "excluded_channel": "nodeB",
-      "tag": "tagX",
-      "exclusion_wording_quote": "without external calibration",
-      "excluded_object": "external calibration inputs during device readout",
-      "ask_back": {{
-        "causal": {{"status": "not_found", "searched_where": "Sections 2-4; no ablation isolating this mechanism was found."}},
-        "own_wording": {{"status": "not_found", "searched_where": "Checked abstract and Section 5; no separate restatement found."}},
-        "slice": {{"status": "answered", "quote": "verbatim slice quote from text", "reading": "within", "reason": "Claim stays within the tested synthetic benchmark."}},
-        "test_inputs": {{"status": "not_applicable", "reason": "Conceptual architecture claim, not an empirical reproduction test."}},
-        "rests_on": {{"status": "not_applicable", "reason": "Standalone claim."}}
-      }}
+      "tag": "tagX"
+    }}
+  ],
+  "questions": [
+    {{
+      "about_quote": "Device D recovers property P without external calibration inputs.",
+      "phrase": "without external calibration",
+      "question": "Does the paper test whether sensor manufacturing calibration already supplies property P?",
+      "asked_by": "reader",
+      "status": "not_in_document",
+      "searched": "Checked Methods and Section 4; manufacturing calibration is not discussed.",
+      "claim_id": "claim1"
     }}
   ]
 }}

@@ -63,34 +63,33 @@ Every structural claim also checks graph completeness (`danglingInput`).
 lake build
 ```
 
-### 2. Run the pipeline & frozen blind-record regression test suite (21 tests, 46 frozen public claims)
+### 2. Run the unified pipeline test suite (28 tests: Pre -> Gate -> Post + 46 frozen public blind-regression claims)
 
 ```bash
 python3 -m unittest discover -s pipeline/tests -v
 ```
 
-### 3. Audit a document or generate an extraction prompt
+### 3. Two-stage CLI: Pre-formalization -> Pre-Gate -> Post (Lean 4)
 
 ```bash
-# Single audit (supports .pdf via pdftotext, .md, .txt, or arxiv:<id>)
+# Stage 1 (Pre, optional): NMF+IPOD exploration prompt & Pre-Gate handoff
+python3 -m pipeline.audit_cli pre-prompt --doc <doc> --graph concept-graph.json --out /tmp/pre_prompt.txt
+python3 -m pipeline.audit_cli pre --graph concept-graph.json --trace trace.json --doc <doc> --out /tmp/pre-out
+
+# Stage 2 (Post): generate extraction prompt (optionally with Pre brief) and verify in Lean 4
+python3 -m pipeline.audit_cli prompt --doc arxiv:2509.07745 --auditor AuditorA --out /tmp/barontini_prompt.txt
 python3 -m pipeline.audit_cli run \
   --doc pipeline/examples/sample_framework.md \
   --spec pipeline/examples/sample_framework_auditor_a.json \
   --out /tmp/epistemic-run
-
-# Generate a strict extraction prompt for any LLM/agent
-python3 -m pipeline.audit_cli prompt \
-  --doc arxiv:2509.07745 \
-  --auditor AuditorA \
-  --out /tmp/barontini_prompt.txt
 ```
 
-See [pipeline/README.md](pipeline/README.md) for CLI details (`run`, `prompt`).
+See [pipeline/README.md](pipeline/README.md) for full CLI details (`pre-prompt`, `pre`, `prompt`, `run`, `--pre-brief`, `--pre-gate`).
 
 ## Repository Layout
 
 - `EpistemicLedger/OperationFlow.lean` — Core operation-graph verifier, `epistemicVerdict`, Policy 3, structural `effectivenessClaim`, `theoremApplication`, and constructive soundness theorems (axioms `{propext, Quot.sound}` only).
 - `EpistemicLedger/AxiomReport.lean` — Build-time `#print axioms` check over all core soundness theorems.
 - `EpistemicLedger/Cases/` — Operation-flow blind-test archives, adversarial regression suites, and benchmark proofs.
-- `pipeline/` — Zero-dependency Python 3 stdlib CLI (`ingest.py`, `schema.py`, `lean_runner.py`, `report.py`, `audit_cli.py`) + unit and frozen blind-regression tests (`pipeline/tests/`).
+- `pipeline/` — Zero-dependency Python 3 stdlib unified CLI (`ingest.py`, `preform.py`, `schema.py`, `lean_runner.py`, `report.py`, `audit_cli.py`) + unit and frozen blind-regression tests (`pipeline/tests/`).
 - `pipeline/examples/` — Committed audit specs including real-paper examples (`society_ai_scientists_v21_5claims.json`, `society_ai_scientists_v23.json`, `papadopetraki_2025_v23.json`).

@@ -1226,7 +1226,7 @@ class PipelineTests(unittest.TestCase):
             ep_doc_path.write_text(ep_doc_text, encoding="utf-8")
             ep_doc = ingest_document(str(ep_doc_path))
 
-            # Prompt check: includes v2.5 ask-back/nature/quantitative_kind/decomposition/hedging rules
+            # Prompt check: reflects trimmed CLI (`audit_cli run` + top-level `questions` slot, no removed `ask`/`ask_back`)
             # AND never leaks any of the 13 graded sentences into prompt instructions (Claude #27435 / v2 spec)
             from pipeline.report import build_extraction_prompt
 
@@ -1234,10 +1234,10 @@ class PipelineTests(unittest.TestCase):
             prompt_header = prompt_txt.split("--- BEGIN DOCUMENT ---", 1)[0]
             for needle in (
                 "epistemic-ledger/v2.5",
-                "audit_cli ask",
-                "ask_back",
-                "exclusion_wording_quote",
-                "excluded_object",
+                "audit_cli run",
+                '"questions"',
+                "about_quote",
+                "not_in_document",
                 "quantitative_kind",
                 "specificValue",
                 "derivedComparison",
@@ -1246,6 +1246,11 @@ class PipelineTests(unittest.TestCase):
             ):
                 self.assertIn(needle, prompt_header)
             for forbidden in (
+                "audit_cli ask",
+                "ask_back",
+                "exclusion_wording_quote",
+                "excluded_object",
+                "E2–E7",
                 "Good views need 42 times",
                 "42 times fewer",
                 "Within this task",
