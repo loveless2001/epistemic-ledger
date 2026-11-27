@@ -92,22 +92,20 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue((out / "invalid_auditor_report.json").is_file())
             self.assertFalse((out / "invalid_auditor_Verified.lean").exists())
 
-            # Also block invalid --auditor in `extract` and `prompt` before any file write
-            rc_ext = cli_main(
+            # Also block invalid --auditor in `prompt` before any file write
+            rc_prompt = cli_main(
                 [
-                    "extract",
+                    "prompt",
                     "--doc",
                     str(SAMPLE_DOC),
-                    "--extractor-cmd",
-                    f"cat {SPEC_A}",
                     "--auditor",
                     "../pwn",
                     "--out",
-                    str(out),
+                    str(out / "pwn_prompt.txt"),
                 ]
             )
-            self.assertEqual(rc_ext, 2)
-            self.assertFalse((base / "nested" / "pwn_prompt.txt").exists())
+            self.assertEqual(rc_prompt, 2)
+            self.assertFalse((out / "pwn_prompt.txt").exists())
 
     def test_p1_undefined_claim_endpoint_rejected(self) -> None:
         """Codex P1-2: claim target or excluded_channel not defined as a source or op output must fail."""
@@ -262,27 +260,6 @@ class PipelineTests(unittest.TestCase):
                 )
             )
 
-    def test_extract_cli_hook_end_to_end_without_shell(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "ext"
-            rc = cli_main(
-                [
-                    "extract",
-                    "--doc",
-                    str(SAMPLE_DOC),
-                    "--extractor-cmd",
-                    f"cat {SPEC_A}",
-                    "--auditor",
-                    "AuditorA",
-                    "--out",
-                    str(out),
-                ]
-            )
-            self.assertEqual(rc, 0)
-            self.assertTrue((out / "AuditorA_prompt.txt").is_file())
-            self.assertTrue((out / "AuditorA_Verified.lean").is_file())
-            self.assertTrue((out / "AuditorA_report.md").is_file())
-
     def test_string_escaping_with_quotes_and_backslashes_in_statement(self) -> None:
         doc = ingest_document(str(SAMPLE_DOC))
         spec = json.loads(SPEC_A.read_text(encoding="utf-8"))
@@ -410,52 +387,13 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse((out / "AuditorA_report.json").exists())
             self.assertFalse((out / "AuditorA_report.md").exists())
 
-    def test_codex_r3_extract_failure_clears_stale_artifacts_and_conditional_declared_diff_flagged(self) -> None:
-        """Codex R3 polish:
-        (a) Rerunning `extract` with a failing extractor (exit 3) clears prior spec/proof/reports.
-        (b) Two `conditionalFlow` claims with identical verdicts but different `declared_sources`
-            must flag `same_declared_sources = False` and not claim identical full signatures.
+    def test_codex_r3_conditional_declared_diff_flagged(self) -> None:
+        """Codex R3 polish: Two `conditionalFlow` claims with identical verdicts but different
+        `declared_sources` must flag `same_declared_sources = False` and not claim identical full signatures.
         """
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            out_ext = base / "ext"
-            rc_ok = cli_main(
-                [
-                    "extract",
-                    "--doc",
-                    str(SAMPLE_DOC),
-                    "--extractor-cmd",
-                    f"cat {SPEC_A}",
-                    "--auditor",
-                    "AuditorA",
-                    "--out",
-                    str(out_ext),
-                ]
-            )
-            self.assertEqual(rc_ok, 0)
-            self.assertTrue((out_ext / "AuditorA_spec.json").is_file())
-            self.assertTrue((out_ext / "AuditorA_Verified.lean").is_file())
-
-            rc_fail = cli_main(
-                [
-                    "extract",
-                    "--doc",
-                    str(SAMPLE_DOC),
-                    "--extractor-cmd",
-                    "python3 -c 'import sys; sys.exit(1)'",
-                    "--auditor",
-                    "AuditorA",
-                    "--out",
-                    str(out_ext),
-                ]
-            )
-            self.assertEqual(rc_fail, 3)
-            self.assertFalse((out_ext / "AuditorA_spec.json").exists())
-            self.assertFalse((out_ext / "AuditorA_Verified.lean").exists())
-            self.assertFalse((out_ext / "AuditorA_report.json").exists())
-            self.assertFalse((out_ext / "AuditorA_report.md").exists())
-
-            # (b) Two conditionalFlow claims: both admissible on modelRegimeA, different declared_sources
+            # Two conditionalFlow claims: both admissible on modelRegimeA, different declared_sources
             s1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
             s1["claims"] = [
                 {

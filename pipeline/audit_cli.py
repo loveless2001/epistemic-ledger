@@ -5,7 +5,6 @@ Commands:
   run      Verify one AuditSpec JSON against a document (quotes + Lean 4 kernel) -> report.md + report.json + .lean
   compare  Verify 2+ AuditSpec JSONs against a document and emit quote-anchored cross-auditor diff
   prompt   Ingest a document (.pdf/.md/.txt/arxiv:<id>) and emit a strict extraction prompt for any LLM/agent
-  extract  End-to-end 1-command run using an external extractor command (reads prompt on stdin, emits JSON on stdout)
 """
 
 from __future__ import annotations
@@ -13,9 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
-import shlex
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -36,14 +32,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Distinct exit code for `audit_cli ask` when schema/grounding pass but ask-back questions remain unanswered
 # (kept distinct from exit 2 validation error and exit 3 extractor crash so runners do not treat it as a fatal crash).
 EXIT_ASK_INCOMPLETE = 4
-
-
-def _extract_json_block(raw: str) -> dict[str, Any]:
-    text = raw.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
-    if fence:
-        text = fence.group(1)
-    return json.loads(text)
 
 
 def _safe_out_path(out_dir: Path, filename: str) -> Path:
@@ -291,70 +279,6 @@ def cmd_prompt(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_extract(args: argparse.Namespace) -> int:
-    if not is_valid_ident(args.auditor):
-        print(f"Invalid --auditor identifier: {args.auditor!r}", file=sys.stderr)
-        return 2
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir = Path(args.cache_dir) if args.cache_dir else None
-
-    # Clear any stale artifacts for this auditor BEFORE invoking the extractor so a failing
-    # extractor (exit 3) can never leave a prior run's spec/proof/report beside the new prompt.
-    spec_path = _safe_out_path(out_dir, f"{args.auditor}_spec.json")
-    _unlink_if_exists(spec_path)
-    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_Verified.lean"))
-    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_report.json"))
-    _unlink_if_exists(_safe_out_path(out_dir, f"{args.auditor}_report.md"))
-
-    # Single document snapshot shared between extraction prompt and Lean verification
-    doc = ingest_document(args.doc, cache_dir=cache_dir)
-    prompt = build_extraction_prompt(doc, auditor_name=args.auditor)
-    _atomic_write_text(_safe_out_path(out_dir, f"{args.auditor}_prompt.txt"), prompt)
-
-    argv_cmd = shlex.split(args.extractor_cmd)
-    if not argv_cmd:
-        print("Empty --extractor-cmd", file=sys.stderr)
-        return 2
-
-    proc = subprocess.run(
-        argv_cmd,
-        shell=False,
-        input=prompt,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        print(f"Extractor command failed (exit {proc.returncode}):\n{proc.stderr}", file=sys.stderr)
-        return 3
-
-    spec = _extract_json_block(proc.stdout)
-    _atomic_write_text(spec_path, json.dumps(spec, indent=2))
-
-    report, _, ok = _audit_one(
-        doc,
-        spec_path,
-        out_dir,
-        Path(args.repo_root),
-        file_stem_override=args.auditor,
-        auditor_label_override=args.auditor,
-    )
-    print(f"End-to-end report written to {out_dir / (args.auditor + '_report.md')}")
-    if not ok:
-        print(f"Grounding/schema failed with {len(report['validation_errors'])} error(s).", file=sys.stderr)
-        return 2
-    ab = report.get("ask_back_summary", {})
-    if ab.get("applicable_v25") and not ab.get("complete", True):
-        print(
-            f"  Note: ask-back incomplete ({ab['unanswered_count']} unanswered question(s)); "
-            f"structural Lean verdict produced without aborting."
-        )
-    for c in report["lean_verification"]["claims"]:
-        label = format_display_state_short(c["verdict"], int(c.get("declared_bet_count", 0)))
-        print(f"  - {c['id']}: {label} ({len(c['findings'])} finding(s), axioms={c['axioms']})")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Epistemic Ledger automated audit pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -391,15 +315,6 @@ def main(argv: list[str] | None = None) -> int:
     p_prompt.add_argument("--out", default="")
     p_prompt.add_argument("--cache-dir", default="")
     p_prompt.set_defaults(func=cmd_prompt)
-
-    p_ext = sub.add_parser("extract", help="End-to-end extraction + Lean verification via argv extractor cmd")
-    p_ext.add_argument("--doc", required=True)
-    p_ext.add_argument("--extractor-cmd", required=True, help="Command (parsed via shlex, shell=False) reading prompt on stdin, printing JSON on stdout")
-    p_ext.add_argument("--auditor", default="AutoAuditor")
-    p_ext.add_argument("--out", required=True)
-    p_ext.add_argument("--repo-root", default=str(REPO_ROOT))
-    p_ext.add_argument("--cache-dir", default="")
-    p_ext.set_defaults(func=cmd_extract)
 
     args = parser.parse_args(argv)
     return args.func(args)
