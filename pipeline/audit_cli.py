@@ -3,7 +3,6 @@
 Commands:
   ask      Inspect an AuditSpec JSON against a document and list unanswered E2–E7 ask-back questions (prints no verdict)
   run      Verify one AuditSpec JSON against a document (quotes + Lean 4 kernel) -> report.md + report.json + .lean
-  compare  Verify 2+ AuditSpec JSONs against a document and emit quote-anchored cross-auditor diff
   prompt   Ingest a document (.pdf/.md/.txt/arxiv:<id>) and emit a strict extraction prompt for any LLM/agent
 """
 
@@ -20,7 +19,6 @@ from typing import Any
 from pipeline.ingest import IngestedDocument, ingest_document
 from pipeline.lean_runner import run_lean_verification
 from pipeline.report import (
-    build_comparison_report,
     build_extraction_prompt,
     build_single_report_dict,
     format_display_state_short,
@@ -72,33 +70,6 @@ def _atomic_write_text(dest: Path, content: str) -> None:
 def _unlink_if_exists(path: Path) -> None:
     if path.exists():
         path.unlink()
-
-
-def _allocate_unique_stems(raw_specs: list[Any]) -> list[str]:
-    """Guarantee collision-free internal file/column stems for any multiset of auditor names
-    (e.g. `AuditorA, AuditorA, AuditorA_1` -> `AuditorA_2, AuditorA_3, AuditorA_1`)."""
-    base_stems = [
-        _safe_stem(s.get("auditor") if isinstance(s, dict) else None, f"spec_{idx + 1}")
-        for idx, s in enumerate(raw_specs)
-    ]
-    counts: dict[str, int] = {}
-    for st in base_stems:
-        counts[st] = counts.get(st, 0) + 1
-
-    reserved: set[str] = set(base_stems)
-    unique_stems: list[str] = []
-    for st in base_stems:
-        if counts[st] == 1:
-            unique_stems.append(st)
-        else:
-            k = 1
-            while f"{st}_{k}" in reserved:
-                k += 1
-            chosen = f"{st}_{k}"
-            reserved.add(chosen)
-            unique_stems.append(chosen)
-    assert len(set(unique_stems)) == len(unique_stems)
-    return unique_stems
 
 
 def _audit_one(
@@ -220,49 +191,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_compare(args: argparse.Namespace) -> int:
-    if len(args.specs) < 2:
-        print("compare requires at least 2 --spec files", file=sys.stderr)
-        return 2
-    out_dir = Path(args.out)
-    cache_dir = Path(args.cache_dir) if args.cache_dir else None
-    # Single document snapshot shared across every auditor and the final comparison
-    doc = ingest_document(args.doc, cache_dir=cache_dir)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    comp_json_path = _safe_out_path(out_dir, "comparison.json")
-    comp_md_path = _safe_out_path(out_dir, "comparison.md")
-    _unlink_if_exists(comp_json_path)
-    _unlink_if_exists(comp_md_path)
-
-    raw_specs = [json.loads(Path(sp).read_text(encoding="utf-8")) for sp in args.specs]
-    unique_stems = _allocate_unique_stems(raw_specs)
-
-    reports: list[dict[str, Any]] = []
-    specs: list[dict[str, Any]] = []
-    all_ok = True
-    for sp, stem in zip(args.specs, unique_stems):
-        rep, spec, ok = _audit_one(
-            doc,
-            Path(sp),
-            out_dir,
-            Path(args.repo_root),
-            file_stem_override=stem,
-            auditor_label_override=stem,
-        )
-        reports.append(rep)
-        specs.append(spec)
-        all_ok = all_ok and ok
-
-    comp_dict, comp_md = build_comparison_report(doc, reports, specs)
-    _atomic_write_text(comp_json_path, json.dumps(comp_dict, indent=2))
-    _atomic_write_text(comp_md_path, comp_md)
-    print(f"Comparison written to {out_dir / 'comparison.md'}")
-    for row in comp_dict["claim_comparison"]:
-        print(f"  - claim #{row['anchor_index']} (@{row['char_offset']}): {row['status']}")
-    return 0 if all_ok else 2
-
-
 def cmd_prompt(args: argparse.Namespace) -> int:
     if not is_valid_ident(args.auditor):
         print(f"Invalid --auditor identifier: {args.auditor!r}", file=sys.stderr)
@@ -300,14 +228,6 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--repo-root", default=str(REPO_ROOT))
     p_run.add_argument("--cache-dir", default="")
     p_run.set_defaults(func=cmd_run)
-
-    p_cmp = sub.add_parser("compare", help="Verify 2+ AuditSpec JSONs and emit quote-anchored cross-auditor diff")
-    p_cmp.add_argument("--doc", required=True, help="Path to .pdf/.md/.txt or arxiv:<id>")
-    p_cmp.add_argument("--spec", dest="specs", action="append", required=True, help="AuditSpec JSON (repeatable)")
-    p_cmp.add_argument("--out", required=True, help="Output directory")
-    p_cmp.add_argument("--repo-root", default=str(REPO_ROOT))
-    p_cmp.add_argument("--cache-dir", default="")
-    p_cmp.set_defaults(func=cmd_compare)
 
     p_prompt = sub.add_parser("prompt", help="Emit strict extraction prompt for any LLM/agent")
     p_prompt.add_argument("--doc", required=True)

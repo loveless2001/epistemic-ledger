@@ -51,30 +51,6 @@ class PipelineTests(unittest.TestCase):
                 ["lossyChannelOnPath"],
             )
 
-    def test_multi_auditor_compare_agrees_despite_measured_rgb_tagging_difference(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "cmp"
-            rc = cli_main(
-                [
-                    "compare",
-                    "--doc",
-                    str(SAMPLE_DOC),
-                    "--spec",
-                    str(SPEC_A),
-                    "--spec",
-                    str(SPEC_B),
-                    "--out",
-                    str(out),
-                ]
-            )
-            self.assertEqual(rc, 0)
-            comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
-            self.assertTrue(comp["all_grounding_ok"])
-            self.assertEqual(len(comp["claim_comparison"]), 4)
-            for row in comp["claim_comparison"]:
-                self.assertTrue(row["verdicts_agree"], f"Unexpected disagreement on {row['claim_quote']}")
-                self.assertEqual(row["status"], "AGREE")
-
     def test_p1_path_traversal_auditor_cannot_escape_out_dir(self) -> None:
         """Codex P1-1: malicious `auditor` field like `../../escaped` must never write outside `out`."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,67 +103,6 @@ class PipelineTests(unittest.TestCase):
         errors, _ = validate_spec(spec, doc=doc)
         codes = [e.code for e in errors]
         self.assertEqual(codes.count("undefined_claim_endpoint"), 2)
-
-    def test_p1_compare_matches_by_quote_not_claim_id_and_handles_failures(self) -> None:
-        """Codex P1-3:
-        (a) Same quote with DIFFERENT claim IDs must align and AGREE.
-        (b) Different quotes with SAME claim ID must NOT produce false AGREE.
-        (c) Duplicate auditor names must NOT overwrite each other.
-        (d) Failed grounding on both specs must NOT print 'identical Lean-verified verdicts'.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            # (a) Same quote, different IDs + duplicate auditor name "AuditorA"
-            spec_b_mod = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            spec_b_mod["auditor"] = "AuditorA"
-            for i, cl in enumerate(spec_b_mod["claims"]):
-                cl["id"] = f"renamed_{i}"
-            p_b = base / "b_renamed.json"
-            p_b.write_text(json.dumps(spec_b_mod), encoding="utf-8")
-
-            out1 = base / "cmp1"
-            rc1 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(SPEC_A), "--spec", str(p_b), "--out", str(out1)])
-            self.assertEqual(rc1, 0)
-            comp1 = json.loads((out1 / "comparison.json").read_text(encoding="utf-8"))
-            self.assertEqual(comp1["auditors"], ["AuditorA_1", "AuditorA_2"])
-            self.assertEqual(len(comp1["claim_comparison"]), 4)
-            self.assertTrue(all(r["status"] == "AGREE" for r in comp1["claim_comparison"]))
-            self.assertTrue((out1 / "AuditorA_1_Verified.lean").is_file())
-            self.assertTrue((out1 / "AuditorA_2_Verified.lean").is_file())
-
-            # (b) Different quotes sharing the same claim ID "sameId" -> 2 separate UNMATCHED rows
-            s_one = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            s_one["claims"] = [copy.deepcopy(s_one["claims"][0])]
-            s_one["claims"][0]["id"] = "sameId"
-            s_two = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            s_two["claims"] = [copy.deepcopy(s_two["claims"][1])]
-            s_two["claims"][0]["id"] = "sameId"
-            p1, p2 = base / "diff1.json", base / "diff2.json"
-            p1.write_text(json.dumps(s_one), encoding="utf-8")
-            p2.write_text(json.dumps(s_two), encoding="utf-8")
-
-            out2 = base / "cmp2"
-            rc2 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(p1), "--spec", str(p2), "--out", str(out2)])
-            self.assertEqual(rc2, 0)
-            comp2 = json.loads((out2 / "comparison.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(comp2["claim_comparison"]), 2)
-            self.assertTrue(all(r["status"] == "UNVERIFIED_OR_UNMATCHED" for r in comp2["claim_comparison"]))
-
-            # (d) Both fail grounding -> report must say UNVERIFIED, never "identical Lean-verified verdicts"
-            bad1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            bad1["sources"][0]["quote"] = "fabricated hallucinated quote number one"
-            bad2 = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            bad2["sources"][0]["quote"] = "fabricated hallucinated quote number two"
-            pb1, pb2 = base / "bad1.json", base / "bad2.json"
-            pb1.write_text(json.dumps(bad1), encoding="utf-8")
-            pb2.write_text(json.dumps(bad2), encoding="utf-8")
-
-            out3 = base / "cmp3"
-            rc3 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pb1), "--spec", str(pb2), "--out", str(out3)])
-            self.assertEqual(rc3, 2)
-            md3 = (out3 / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("UNVERIFIED", md3)
-            self.assertNotIn("identical Lean-verified verdicts", md3)
 
     def test_p2_claim_id_suffix_collision_safe_and_stale_proof_removed(self) -> None:
         """Codex P2: claim IDs like `c` and `c_verdict` must NOT collide; failed rerun removes stale proof."""
@@ -274,88 +189,6 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["claimD_unique_recovery"].verdict, "rejected")
             self.assertEqual(by_id["claimD_unique_recovery"].findings[0]["op"], 'op_"quoted"_\\slash')
 
-    def test_codex_r2_p1_multi_claim_same_quote_not_dropped_and_signature_diff_flagged(self) -> None:
-        """Codex R2 P1-1:
-        (a) Auditor A has TWO claims (1 rejected, 1 admissible) on the same quote while Auditor B
-            has 1 admissible claim -> must NOT drop the rejected claim or report AGREE; must flag AMBIGUOUS.
-        (b) Same verdict on same quote with different `excluded_channel` or `tag` must flag signature diff.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            # (a) Multi-claim on same quote
-            s_a = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            clean_c = copy.deepcopy(s_a["claims"][0])
-            rejected_same_quote = copy.deepcopy(s_a["claims"][0])
-            rejected_same_quote["id"] = "claimA_strict_also_checked"
-            rejected_same_quote["kind"] = "emergesWithout"
-            del rejected_same_quote["excluded_channel"]
-            s_a["claims"] = [rejected_same_quote, clean_c]
-
-            s_b = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            s_b["claims"] = [copy.deepcopy(s_b["claims"][0])]
-
-            pa, pb = base / "a.json", base / "b.json"
-            pa.write_text(json.dumps(s_a), encoding="utf-8")
-            pb.write_text(json.dumps(s_b), encoding="utf-8")
-
-            out1 = base / "cmp_ambig"
-            rc1 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out1)])
-            self.assertEqual(rc1, 0)
-            comp1 = json.loads((out1 / "comparison.json").read_text(encoding="utf-8"))
-            row = comp1["claim_comparison"][0]
-            self.assertEqual(row["status"], "AMBIGUOUS")
-            self.assertFalse(row["verdicts_agree"])
-            self.assertEqual(len(row["by_auditor"]["AuditorA"]["claims"]), 2)
-            verdicts_a = {c["verdict"] for c in row["by_auditor"]["AuditorA"]["claims"]}
-            self.assertEqual(verdicts_a, {"rejected", "admissible"})
-
-            # (b) Same verdict (rejected) on same quote, different excluded_channel -> flag diff
-            s_c1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            s_c1["claims"] = [copy.deepcopy(s_c1["claims"][2])]  # claimC: excluded_channel = lossWithDepth
-            s_c2 = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            c2 = copy.deepcopy(s_c2["claims"][2])
-            c2["excluded_channel"] = "modelRegimeC"  # different excluded_channel, still rejected
-            s_c2["claims"] = [c2]
-            pc1, pc2 = base / "c1.json", base / "c2.json"
-            pc1.write_text(json.dumps(s_c1), encoding="utf-8")
-            pc2.write_text(json.dumps(s_c2), encoding="utf-8")
-
-            out2 = base / "cmp_sig"
-            rc2 = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pc1), "--spec", str(pc2), "--out", str(out2)])
-            self.assertEqual(rc2, 0)
-            comp2 = json.loads((out2 / "comparison.json").read_text(encoding="utf-8"))
-            row2 = comp2["claim_comparison"][0]
-            self.assertTrue(row2["verdicts_agree"])
-            self.assertFalse(row2["same_excluded_channel"])
-            self.assertIn("excluded_channel differs", (out2 / "comparison.md").read_text(encoding="utf-8"))
-
-    def test_codex_r2_p1_three_way_auditor_collision_AuditorA_AuditorA_AuditorA_1(self) -> None:
-        """Codex R2 P1-2: `AuditorA, AuditorA, AuditorA_1` must produce 3 distinct report & proof files."""
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            s1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            s1["auditor"] = "AuditorA"
-            s1["claims"] = [s1["claims"][0]]
-            s2 = copy.deepcopy(s1)
-            s3 = copy.deepcopy(s1)
-            s3["auditor"] = "AuditorA_1"
-
-            p1, p2, p3 = base / "s1.json", base / "s2.json", base / "s3.json"
-            p1.write_text(json.dumps(s1), encoding="utf-8")
-            p2.write_text(json.dumps(s2), encoding="utf-8")
-            p3.write_text(json.dumps(s3), encoding="utf-8")
-
-            out = base / "cmp3way"
-            rc = cli_main(
-                ["compare", "--doc", str(SAMPLE_DOC), "--spec", str(p1), "--spec", str(p2), "--spec", str(p3), "--out", str(out)]
-            )
-            self.assertEqual(rc, 0)
-            comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(set(comp["auditors"])), 3)
-            for aud in comp["auditors"]:
-                self.assertTrue((out / f"{aud}_report.json").is_file())
-                self.assertTrue((out / f"{aud}_Verified.lean").is_file())
-
     def test_codex_r2_p2_failed_lean_rerun_leaves_no_stale_proof_or_report(self) -> None:
         """Codex R2 P2-3: rerunning into an existing out dir with an unavailable Lean repo must clear
         stale `*_Verified.lean` and `*_report.json` (`axioms_ok: true`) rather than leaving them on disk."""
@@ -386,51 +219,6 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse((out / "AuditorA_Verified.lean").exists())
             self.assertFalse((out / "AuditorA_report.json").exists())
             self.assertFalse((out / "AuditorA_report.md").exists())
-
-    def test_codex_r3_conditional_declared_diff_flagged(self) -> None:
-        """Codex R3 polish: Two `conditionalFlow` claims with identical verdicts but different
-        `declared_sources` must flag `same_declared_sources = False` and not claim identical full signatures.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            # Two conditionalFlow claims: both admissible on modelRegimeA, different declared_sources
-            s1 = json.loads(SPEC_A.read_text(encoding="utf-8"))
-            s1["claims"] = [
-                {
-                    "id": "cond1",
-                    "statement": "Under Regime A, 3D geometry arises.",
-                    "quote": "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss.",
-                    "kind": "conditionalFlow",
-                    "target": "modelRegimeA",
-                    "declared_sources": ["trueSceneState", "measuredRgbFrames"],
-                }
-            ]
-            s2 = json.loads(SPEC_B.read_text(encoding="utf-8"))
-            s2["claims"] = [
-                {
-                    "id": "cond2",
-                    "statement": "Under Regime A, 3D geometry arises.",
-                    "quote": "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss.",
-                    "kind": "conditionalFlow",
-                    "target": "modelRegimeA",
-                    "declared_sources": ["trueSceneState", "measuredRgbFrames", "lidarDepthMaps"],
-                }
-            ]
-            p1, p2 = base / "cond1.json", base / "cond2.json"
-            p1.write_text(json.dumps(s1), encoding="utf-8")
-            p2.write_text(json.dumps(s2), encoding="utf-8")
-            out_cmp = base / "cmp_cond"
-            rc_cmp = cli_main(
-                ["compare", "--doc", str(SAMPLE_DOC), "--spec", str(p1), "--spec", str(p2), "--out", str(out_cmp)]
-            )
-            self.assertEqual(rc_cmp, 0)
-            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
-            row = comp["claim_comparison"][0]
-            self.assertTrue(row["verdicts_agree"])
-            self.assertFalse(row["same_declared_sources"])
-            md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("declared_sources differs", md)
-            self.assertNotIn("identical Lean-verified verdicts and full claim signatures", md)
 
     def test_v23_effectiveness_claim_numeric_budgets_forget_proof_and_arm_independence(self) -> None:
         """Tier 2 (v2.4 — structural only): end-to-end JSON -> Lean 4 kernel tests:
@@ -603,29 +391,6 @@ class PipelineTests(unittest.TestCase):
                 [f["type"] for f in by_id["noControlNoLedgerUnestablished"]["findings"]],
                 ["missingMatchedControl"],
             )
-
-            # `compare` flags provenance & nature differences even when verdicts agree!
-            s_cmp_a = copy.deepcopy(spec)
-            s_cmp_a["auditor"] = "CmpA"
-            s_cmp_a["claims"] = [copy.deepcopy(spec["claims"][1])]
-            s_cmp_b = copy.deepcopy(s_cmp_a)
-            s_cmp_b["auditor"] = "CmpB"
-            s_cmp_b["claims"][0]["provenance"] = "reviewerStressTest"
-            s_cmp_b["claims"][0]["quantitative_kind"] = "threshold"
-            pa, pb = Path(tmp) / "ca.json", Path(tmp) / "cb.json"
-            pa.write_text(json.dumps(s_cmp_a), encoding="utf-8")
-            pb.write_text(json.dumps(s_cmp_b), encoding="utf-8")
-            out_cmp = Path(tmp) / "cmp_v24"
-            rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)])
-            self.assertEqual(rc_cmp, 0)
-            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
-            row = comp["claim_comparison"][0]
-            self.assertTrue(row["verdicts_agree"])
-            self.assertEqual(row["strictest_verdict"], "admissible")
-            self.assertFalse(row["same_provenance"])
-            self.assertFalse(row["same_nature"])
-            cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("provenance/nature differs", cmp_md)
 
     def test_numeric_boundary_grounding_and_explicit_out_of_scope_notice(self) -> None:
         """Clean v2.4 scope boundary (user #27429 + Claude #27430 Part A):
@@ -808,19 +573,6 @@ class PipelineTests(unittest.TestCase):
             e_bogus, _ = validate_spec(s_bogus, doc=doc)
             self.assertTrue(any(e.code == "unknown_key" for e in e_bogus))
 
-            # 6. `compare` propagates `out_of_scope` into comparison.json & comparison.md
-            out_cmp_oos = Path(tmp) / "out_cmp_oos"
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(doc_path), "--spec", str(sp), "--spec", str(sp_legacy), "--out", str(out_cmp_oos)]),
-                0,
-            )
-            comp_oos = json.loads((out_cmp_oos / "comparison.json").read_text(encoding="utf-8"))
-            comp_oos_md = (out_cmp_oos / "comparison.md").read_text(encoding="utf-8")
-            self.assertTrue(any("without reading or comparing numbers" in s for s in comp_oos["out_of_scope"]))
-            self.assertTrue(any("Ignored out-of-scope numeric/accounting fields" in s for s in comp_oos["out_of_scope"]))
-            self.assertIn("## Out of Scope", comp_oos_md)
-            self.assertIn("Ignored out-of-scope numeric/accounting fields", comp_oos_md)
-
     def test_four_state_verdicts_admissible_unestablished_rejected_out_of_scope(self) -> None:
         """4-state `EpistemicVerdict` end-to-end test:
         - `admissible` (rendered as `admissible (consistent within declared slice)` in Markdown)
@@ -921,23 +673,12 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("**[Out of Scope]** Normative policy/ethics balancing", md)
             self.assertIn("Explicitly out-of-scope claim(s) (claimNormativeOutOfScope)", md)
 
-            # `compare` aligns all 4 verdict states cleanly
-            out_cmp = Path(tmp) / "cmp_out"
-            rc_cmp = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(sp_a), "--spec", str(sp_b), "--out", str(out_cmp)])
-            self.assertEqual(rc_cmp, 0)
-            comp = json.loads((out_cmp / "comparison.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(comp["claim_comparison"]), 4)
-            self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
-
-    def test_codex_notShown_sole_path_lossy_side_branch_and_claude_span_overlap_compare(self) -> None:
-        """Regression tests for Codex `#27358` and Claude `#27361`:
-        1. Sole path through `.forget tag .notShown` -> `unestablished` (no false `smuggledStructure`),
-           while adding an un-attempted bypass -> `rejected`.
+    def test_codex_notShown_sole_path_and_lossy_side_branch(self) -> None:
+        """Regression tests for Codex `#27358`:
+        1. Sole path through `.forget tag .notShown` -> `rejected` on emergence (Rule 2),
+           while adding an un-attempted bypass -> `rejected` with `smuggledStructure`.
         2. `uniqueRecovery` with `.lossy` ONLY on an unrelated noise branch -> `admissible`;
            missing upstream `SourceNode` access (`unaccessedTargetStructure`) -> `unestablished`.
-        3. `compare` aligns claims with minor quote boundary differences (e.g., trailing period
-           omitted by Auditor A, included by Auditor B -> `span_overlap`, `AGREE`), while still
-           NOT merging two disjoint sentences.
         """
         doc = ingest_document(str(SAMPLE_DOC))
         q_a_with_dot = "Under Regime A, 3D geometry arises in the learned representation without 3D prediction targets in the training loss."
@@ -948,7 +689,7 @@ class PipelineTests(unittest.TestCase):
         spec_a = {
             "schema_version": "epistemic-ledger/v2.3",
             "auditor": "SpanA",
-            "paper_title": "Codex & Claude Regression",
+            "paper_title": "Codex Regression",
             "nodes": ["srcTag", "bypassTag", "noise", "forgotten", "roundedNoise", "pairOut", "targetSole", "targetBypass"],
             "tags": ["geometry3D"],
             "sources": [
@@ -967,7 +708,7 @@ class PipelineTests(unittest.TestCase):
                 {
                     "id": "soleNotShown",
                     "statement": "Sole path passes through .notShown forget.",
-                    "quote": q_a_no_dot,  # intentionally omits trailing period
+                    "quote": q_a_no_dot,
                     "kind": "emergesWithout",
                     "target": "targetSole",
                     "tag": "geometry3D",
@@ -998,19 +739,13 @@ class PipelineTests(unittest.TestCase):
                 },
             ],
         }
-        spec_b = copy.deepcopy(spec_a)
-        spec_b["auditor"] = "SpanB"
-        spec_b["claims"][0]["quote"] = q_a_with_dot  # includes trailing period!
-
         self.assertEqual(validate_spec(spec_a, doc=doc)[0], [])
-        self.assertEqual(validate_spec(spec_b, doc=doc)[0], [])
 
         with tempfile.TemporaryDirectory() as tmp:
-            pa, pb = Path(tmp) / "a.json", Path(tmp) / "b.json"
+            pa = Path(tmp) / "a.json"
             pa.write_text(json.dumps(spec_a), encoding="utf-8")
-            pb.write_text(json.dumps(spec_b), encoding="utf-8")
-            out = Path(tmp) / "cmp"
-            rc = cli_main(["compare", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--spec", str(pb), "--out", str(out)])
+            out = Path(tmp) / "run"
+            rc = cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(pa), "--out", str(out)])
             self.assertEqual(rc, 0)
 
             rep_a = json.loads((out / "SpanA_report.json").read_text(encoding="utf-8"))
@@ -1023,25 +758,12 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["unaccessedRecovery"]["verdict"], "unestablished")
             self.assertEqual([f["type"] for f in by_id["unaccessedRecovery"]["findings"]], ["unaccessedTargetStructure"])
 
-            comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(comp["claim_comparison"]), 4)
-            self.assertTrue(all(r["status"] == "AGREE" for r in comp["claim_comparison"]))
-            by_cid = {r["by_auditor"]["SpanA"]["claim_id"]: r for r in comp["claim_comparison"]}
-            self.assertEqual(by_cid["soleNotShown"]["quote_match_mode"], "span_overlap")
-            self.assertGreater(by_cid["soleNotShown"]["min_span_iou"], 0.95)
-            self.assertEqual(by_cid["notShownPlusBypass"]["quote_match_mode"], "exact")
-            comp_md = (out / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("pairwise min IoU=", comp_md)
-
-    def test_codex_27370_order_independent_compare_unique_recovery_and_rule3_theorem_application(self) -> None:
+    def test_codex_27370_unique_recovery_and_rule3_theorem_application(self) -> None:
         """Regression tests for Codex `#27370` + Rule 3 (`theoremApplication`) end-to-end:
-        1. Order-independent `compare`: 3-sentence doc where M bridges L and R (`IoU(M,L)=IoU(M,R)>0.5`,
-           `IoU(L,R)<=0.5`) yields identical `AMBIGUOUS` (`ambiguous_span_chain`, true pairwise `min_span_iou`)
-           under both `[M, L, R]` and `[L, R, M]` `--spec` orderings.
-        2. `uniqueRecovery`:
+        1. `uniqueRecovery`:
            - `(x, round(x))` with direct lossless path -> `admissible`,
            - sole access through `.forget x .notShown` -> `unestablished` (`failedForgetOnPath`).
-        3. Rule 3 (`theoremApplication`):
+        2. Rule 3 (`theoremApplication`):
            - `.knownFalse` hypothesis -> `rejected` (even if listed in `declared_bets`),
            - undeclared `.bet` -> `unestablished` (`undeclaredHypothesisBet`),
            - `.discharged` + declared `.bet` -> `admissible`,
@@ -1064,55 +786,7 @@ class PipelineTests(unittest.TestCase):
             doc_path.write_text(doc_text, encoding="utf-8")
             doc = ingest_document(str(doc_path))
 
-            def make_bridge_spec(aud: str, quote: str) -> dict:
-                return {
-                    "schema_version": "epistemic-ledger/v2.3",
-                    "auditor": aud,
-                    "paper_title": "Bridge Order Test",
-                    "nodes": ["x", "out"],
-                    "tags": ["sig"],
-                    "sources": [{"node": "x", "origin": "measured", "carries": ["sig"], "quote": quote}],
-                    "ops": [{"name": "pass", "inputs": ["x"], "output": "out", "kind": "transform", "introduces": [], "quote": quote}],
-                    "claims": [
-                        {
-                            "id": "c1",
-                            "statement": "Conditional on x.",
-                            "quote": quote,
-                            "kind": "conditionalFlow",
-                            "target": "out",
-                            "declared_sources": ["x"],
-                        }
-                    ],
-                }
-
-            pm, pl, pr = base / "m.json", base / "l.json", base / "r.json"
-            pm.write_text(json.dumps(make_bridge_spec("AudM", q_m)), encoding="utf-8")
-            pl.write_text(json.dumps(make_bridge_spec("AudL", q_l)), encoding="utf-8")
-            pr.write_text(json.dumps(make_bridge_spec("AudR", q_r)), encoding="utf-8")
-
-            out_mlr, out_lrm = base / "cmp_mlr", base / "cmp_lrm"
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pm), "--spec", str(pl), "--spec", str(pr), "--out", str(out_mlr)]),
-                0,
-            )
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pl), "--spec", str(pr), "--spec", str(pm), "--out", str(out_lrm)]),
-                0,
-            )
-            c_mlr = json.loads((out_mlr / "comparison.json").read_text(encoding="utf-8"))["claim_comparison"]
-            c_lrm = json.loads((out_lrm / "comparison.json").read_text(encoding="utf-8"))["claim_comparison"]
-            self.assertEqual(len(c_mlr), 1)
-            self.assertEqual(len(c_lrm), 1)
-            for row in (c_mlr[0], c_lrm[0]):
-                self.assertEqual(row["status"], "AMBIGUOUS")
-                self.assertFalse(row["verdicts_agree"])
-                self.assertEqual(row["quote_match_mode"], "ambiguous_span_chain")
-                self.assertLess(row["min_span_iou"], 0.4)
-            self.assertEqual(c_mlr[0]["char_offset"], c_lrm[0]["char_offset"])
-            self.assertEqual(c_mlr[0]["min_span_iou"], c_lrm[0]["min_span_iou"])
-            self.assertIn("ambiguous span chain", (out_mlr / "comparison.md").read_text(encoding="utf-8"))
-
-            # 2 & 3: uniqueRecovery `(x, round(x))` + `.notShown` access + Rule 3 (`theoremApplication`)
+            # uniqueRecovery `(x, round(x))` + `.notShown` access + Rule 3 (`theoremApplication`)
             spec_r3 = {
                 "schema_version": "epistemic-ledger/v2.3",
                 "auditor": "Rule3Auditor",
@@ -1731,29 +1405,6 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(ep_by_id["jepaNeedNecessityHyp"]["declared_bet_count"], 1)
             self.assertEqual(ep_by_id["jepaRatio42OutOfScope"]["verdict"], "outOfScope")
 
-            sp_ep_a = base / "ep_a.json"
-            sp_ep_b = base / "ep_b.json"
-            sp_ep_a.write_text(json.dumps(spec_ep_a_cmp), encoding="utf-8")
-            sp_ep_b.write_text(json.dumps(spec_ep_b), encoding="utf-8")
-            out_ep_cmp = base / "out_ep_cmp"
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(ep_doc_path), "--spec", str(sp_ep_a), "--spec", str(sp_ep_b), "--out", str(out_ep_cmp)]),
-                0,
-            )
-            comp_ep = json.loads((out_ep_cmp / "comparison.json").read_text(encoding="utf-8"))
-            comp_ep_md = (out_ep_cmp / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("| Strictest |", comp_ep_md)
-            rows_by_cid = {r["by_auditor"]["EpistemicA"]["claim_id"]: r for r in comp_ep["claim_comparison"]}
-            self.assertEqual(rows_by_cid["barontiniQ4Setting"]["status"], "DISAGREE")
-            self.assertEqual(rows_by_cid["barontiniQ4Setting"]["strictest_verdict"], "unestablished")
-            self.assertEqual(rows_by_cid["spacetimeQ6Unhedged"]["strictest_verdict"], "rejected")
-            self.assertEqual(rows_by_cid["spacetimeQ7Hedged"]["strictest_verdict"], "rejected")
-            self.assertEqual(rows_by_cid["genuineConditional"]["strictest_verdict"], "admissible")
-            # Codex #27436 Part D: unmatched single-auditor claim MUST leave `strictest_verdict` empty (`None` / `*—*`)!
-            self.assertEqual(rows_by_cid["jepaNeedNecessityHyp"]["status"], "UNVERIFIED_OR_UNMATCHED")
-            self.assertIsNone(rows_by_cid["jepaNeedNecessityHyp"]["strictest_verdict"])
-            self.assertIn("| *—* |", comp_ep_md)
-
             # Claude #27390: mechanical declaration_locations notes (`in_claim` vs `elsewhere_in_document`)
             # without altering verdicts!
             doc2_text = (
@@ -2036,19 +1687,6 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("Kind anchor (E7, reader quote-checked)", md_done)
             self.assertIn("sentence_stronger", md_done)
             self.assertIn("fitted_on_test_data", md_done)
-
-            # `compare` between incomplete draft and complete spec succeeds (exit 0) and notes incomplete auditor
-            spec_cmp_b = copy.deepcopy(draft_spec)
-            spec_cmp_b["auditor"] = "DraftAuditorB"
-            sp_draft_b = base / "draft_b.json"
-            sp_draft_b.write_text(json.dumps(spec_cmp_b), encoding="utf-8")
-            out_cmp = base / "out_cmp"
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(doc_path), "--spec", str(sp_done), "--spec", str(sp_draft_b), "--out", str(out_cmp)]),
-                0,
-            )
-            comp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
-            self.assertIn("Ask-Back Status:** INCOMPLETE for `DraftAuditorB`", comp_md)
 
             # 4. Mechanical negative controls (E2 unknown_op, E3 inside_claim, E6 unknown/self/cycle, E7 outside_claim)
             bad_op = copy.deepcopy(complete_spec)
@@ -2493,27 +2131,6 @@ class PipelineTests(unittest.TestCase):
                 "`thmConditionalTwoBets` (conditional on 2 declared, unchecked assumptions; 4 stop answers)",
                 md,
             )
-
-            # D1 comparison.md: no "admissible" as a state outside the legend
-            spec_b = copy.deepcopy(spec_v25)
-            spec_b["auditor"] = "DisplayAuditorB"
-            spec_b["claims"] = [copy.deepcopy(spec_v25["claims"][0]), copy.deepcopy(spec_v25["claims"][2])]
-            spec_a_cmp = copy.deepcopy(spec_b)
-            spec_a_cmp["auditor"] = "DisplayAuditorA"
-            pa, pb = base / "cmp_a.json", base / "cmp_b.json"
-            pa.write_text(json.dumps(spec_a_cmp), encoding="utf-8")
-            pb.write_text(json.dumps(spec_b), encoding="utf-8")
-            out_cmp = base / "out_cmp"
-            self.assertEqual(
-                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)]),
-                0,
-            )
-            cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
-            non_legend_cmp = "\n".join(
-                ln for ln in cmp_md.splitlines() if "Display-state legend:" not in ln
-            )
-            self.assertIsNone(re.search(r"\badmissible\b", non_legend_cmp, flags=re.IGNORECASE))
-            self.assertIn("**no structural alarm**", cmp_md)
 
             # Codex #27514 preflight: partial/incomplete ask-back entries (e.g. E2 not_found missing
             # searched_where, E4 beyond missing quote/reason) MUST NOT be promoted as quote-checked stop
