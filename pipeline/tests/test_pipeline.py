@@ -2600,7 +2600,14 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(rab["by_claim"]["rctNoCostLedger"]["stop_answers"], [])
             self.assertEqual(
                 rab["by_claim"]["secRestsOnConditional"]["rests_on"],
-                [{"claim_id": "thmConditionalTwoBets", "display_state": "conditional", "declared_bet_count": 2}],
+                [
+                    {
+                        "claim_id": "thmConditionalTwoBets",
+                        "display_state": "conditional",
+                        "declared_bet_count": 2,
+                        "stop_answer_count": 4,
+                    }
+                ],
             )
 
             # D3 Markdown ordering: stop answers appear directly under claim heading BEFORE Statement & Findings
@@ -2610,7 +2617,11 @@ class PipelineTests(unittest.TestCase):
             sec_body = md[sec_start : md.index("### `thmUnestablishedWithOneDeclaredBet`")]
             self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Statement:**"))
             self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Findings:**"))
-            self.assertIn("`thmConditionalTwoBets` (conditional on 2 declared, unchecked assumptions)", md)
+            # D3b: E6 rests_on displays both the referenced claim's display_state and its stop_answer_count
+            self.assertIn(
+                "`thmConditionalTwoBets` (conditional on 2 declared, unchecked assumptions; 4 stop answers)",
+                md,
+            )
 
             # D1 comparison.md: no "admissible" as a state outside the legend
             spec_b = copy.deepcopy(spec_v25)

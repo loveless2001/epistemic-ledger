@@ -156,11 +156,17 @@ def _format_dep_display_state(dep: dict[str, Any]) -> str:
     ds = dep.get("display_state")
     bets = int(dep.get("declared_bet_count", 0))
     if ds == "noStructuralAlarm":
-        return "no structural alarm"
-    if ds == "conditional":
+        base = "no structural alarm"
+    elif ds == "conditional":
         noun = "assumption" if bets == 1 else "assumptions"
-        return f"conditional on {bets} declared, unchecked {noun}" if bets >= 1 else "conditional"
-    return str(ds) if ds else "unknown"
+        base = f"conditional on {bets} declared, unchecked {noun}" if bets >= 1 else "conditional"
+    else:
+        base = str(ds) if ds else "unknown"
+    stop_count = int(dep.get("stop_answer_count", 0))
+    if stop_count > 0:
+        s_noun = "stop answer" if stop_count == 1 else "stop answers"
+        return f"{base}; {stop_count} {s_noun}"
+    return base
 
 
 def _extract_stop_answers(claim_meta: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -480,6 +486,11 @@ def build_single_report_dict(
     total_claims_count = 0
     total_with_stop = 0
     if isinstance(spec, dict) and isinstance(spec.get("claims"), list):
+        extracted_by_cid: dict[str, tuple[list[str], list[str]]] = {
+            str(cl["id"]): _extract_stop_answers(cl)
+            for cl in spec["claims"]
+            if isinstance(cl, dict) and cl.get("id")
+        }
         for cl in spec["claims"]:
             if not isinstance(cl, dict) or not cl.get("id"):
                 continue
@@ -496,17 +507,28 @@ def build_single_report_dict(
                 )
             )
             has_ab_dict = isinstance(cl.get("ask_back"), dict)
-            stop_answers, rests_on_ids = _extract_stop_answers(cl)
+            stop_answers, rests_on_ids = extracted_by_cid[cid]
             rests_on_resolved: list[dict[str, Any]] = []
             for dep_id in rests_on_ids:
+                dep_stop_count = len(extracted_by_cid.get(dep_id, ([], []))[0])
                 if dep_id in display_by_cid:
                     dep_ds, dep_bets = display_by_cid[dep_id]
                     rests_on_resolved.append(
-                        {"claim_id": dep_id, "display_state": dep_ds, "declared_bet_count": dep_bets}
+                        {
+                            "claim_id": dep_id,
+                            "display_state": dep_ds,
+                            "declared_bet_count": dep_bets,
+                            "stop_answer_count": dep_stop_count,
+                        }
                     )
                 else:
                     rests_on_resolved.append(
-                        {"claim_id": dep_id, "display_state": None, "declared_bet_count": 0}
+                        {
+                            "claim_id": dep_id,
+                            "display_state": None,
+                            "declared_bet_count": 0,
+                            "stop_answer_count": dep_stop_count,
+                        }
                     )
             if not applicable_v25 and not has_ab_dict:
                 stop_status = "not_asked"
