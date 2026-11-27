@@ -1613,14 +1613,18 @@ class PipelineTests(unittest.TestCase):
             ep_doc_path.write_text(ep_doc_text, encoding="utf-8")
             ep_doc = ingest_document(str(ep_doc_path))
 
-            # Prompt check: includes v2.4 nature/quantitative_kind/decomposition/hedging rules
-            # AND never leaks graded evaluation sentences into the prompt instructions (Claude #27435)
+            # Prompt check: includes v2.5 ask-back/nature/quantitative_kind/decomposition/hedging rules
+            # AND never leaks any of the 13 graded sentences into prompt instructions (Claude #27435 / v2 spec)
             from pipeline.report import build_extraction_prompt
 
             prompt_txt = build_extraction_prompt(ep_doc, auditor_name="BlindPromptCheck")
             prompt_header = prompt_txt.split("--- BEGIN DOCUMENT ---", 1)[0]
             for needle in (
-                "epistemic-ledger/v2.4",
+                "epistemic-ledger/v2.5",
+                "audit_cli ask",
+                "ask_back",
+                "exclusion_wording_quote",
+                "excluded_object",
                 "quantitative_kind",
                 "specificValue",
                 "derivedComparison",
@@ -1638,6 +1642,15 @@ class PipelineTests(unittest.TestCase):
                 "spacetime geometry",
                 "first step toward",
                 "internal degrees of freedom",
+                "no longer a hypothesis",
+                "controlled experimental setting",
+                "JEPA with bad views",
+                "Even that rotation needs no pair",
+                "platonic representations",
+                "effective Schrödinger equation",
+                "characteristic null structure",
+                "Minkowski metric",
+                "scrambles that information",
             ):
                 self.assertNotIn(forbidden, prompt_header)
 
@@ -1935,6 +1948,261 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("rests on 2 declared bets", md_dl)
             self.assertIn("declared in claim sentence", md_dl)
             self.assertIn("declared in document body (offset @", md_dl)
+
+    def test_v25_ask_back_loop_e1_to_e7_and_non_blocking_run_compare(self) -> None:
+        """End-to-end tests for v2.5 ask-back loop (E1–E7, `plans/261127-1310-ask-back-loop-and-record-extension-spec/plan.md`):
+        1. E1 `audit_cli ask --doc --spec` (and `--document` alias) lists unanswered E2–E7 questions,
+           exits with `EXIT_ASK_INCOMPLETE` (4), and prints NO Lean verdicts.
+        2. Incomplete v2.5 ask-back NEVER aborts `run` or `compare` (channel rule 1): structural Lean
+           verdicts are still produced (exit 0) and reports mark ask-back as INCOMPLETE.
+        3. Answering all E2–E7 items (`answered` / `not_found` / `not_applicable`) makes `ask` return 0
+           (still printing no verdict), displays reader's quote-checked answers verbatim in a separate
+           non-Lean-verified section of the report, and adds ZERO verdict effect in Lean.
+        4. Mechanical checks:
+           - E3 `own_wording.quote` inside claim sentence -> `own_wording_inside_claim`,
+           - E6 `rests_on` unknown ID / self-loop / cycle -> `unknown_rests_on_claim` / `self_rests_on` / `rests_on_cycle`,
+           - E7 `exclusion_wording_quote` outside claim quote -> `exclusion_wording_outside_claim` (and short
+             verbatim phrases like `"needs no pair"` inside claim quote succeed and anchor inside claim span),
+           - E2 `supporting_ops` unknown op -> `unknown_op`.
+        """
+        import contextlib
+        import io
+        from pipeline.audit_cli import EXIT_ASK_INCOMPLETE
+
+        doc_text = (
+            "Abstract: Our device recovers property P and needs no pair to align outputs.\n"
+            "Section 2: Under a single synthetic benchmark grid, the calibration run reproduces the fitted curve.\n"
+            "Section 3: In contrast to the abstract, our experiments only suggest that the alignment holds partly under these settings.\n"
+            "Section 4: The model parameters alpha and beta were inferred directly from the experimental curve before testing.\n"
+            "Section 5: A control ablation with randomized sensors rules out sensor drift as the sole explanation.\n"
+            "Section 6: Given the calibrated readout, the downstream diagnostic follows directly.\n"
+        )
+        q_c1 = "Our device recovers property P and needs no pair to align outputs."
+        q_c2 = "Given the calibrated readout, the downstream diagnostic follows directly."
+        q_slice = "Under a single synthetic benchmark grid, the calibration run reproduces the fitted curve."
+        q_cautious = "In contrast to the abstract, our experiments only suggest that the alignment holds partly under these settings."
+        q_fit = "The model parameters alpha and beta were inferred directly from the experimental curve before testing."
+        q_ablation = "A control ablation with randomized sensors rules out sensor drift as the sole explanation."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "synthetic_v25.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            draft_spec = {
+                "schema_version": "epistemic-ledger/v2.5",
+                "auditor": "AskBackAuditor",
+                "paper_title": "Synthetic Ask-Back Loop Test",
+                "nodes": ["rawSensor", "deviceOut", "diagOut"],
+                "tags": ["pairedSignal"],
+                "sources": [
+                    {"node": "rawSensor", "origin": "measured", "carries": [], "quote": q_c1},
+                ],
+                "ops": [
+                    {"name": "align_step", "inputs": ["rawSensor"], "output": "deviceOut", "kind": "transform", "introduces": [], "quote": q_c1},
+                    {"name": "diag_step", "inputs": ["deviceOut"], "output": "diagOut", "kind": "transform", "introduces": [], "quote": q_c2},
+                ],
+                "claims": [
+                    {
+                        "id": "c1",
+                        "statement": "Device recovers property P without needing paired calibration.",
+                        "quote": q_c1,
+                        "provenance": "authorClaimed",
+                        "nature": "qualitative",
+                        "kind": "emergesWithExclusion",
+                        "target": "deviceOut",
+                        "excluded_channel": "deviceOut",
+                        "tag": "pairedSignal",
+                    },
+                    {
+                        "id": "c2",
+                        "statement": "Given the calibrated readout, the downstream diagnostic follows.",
+                        "quote": q_c2,
+                        "provenance": "authorClaimed",
+                        "nature": "qualitative",
+                        "kind": "conditionalFlow",
+                        "target": "diagOut",
+                        "declared_sources": ["rawSensor"],
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(draft_spec, doc=doc)[0], [])
+
+            sp_draft = base / "draft.json"
+            sp_draft.write_text(json.dumps(draft_spec), encoding="utf-8")
+
+            # 1. `audit_cli ask` on incomplete draft -> exit 4 (EXIT_ASK_INCOMPLETE), prints NO Lean verdict!
+            buf_txt = io.StringIO()
+            with contextlib.redirect_stdout(buf_txt):
+                rc_ask = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_draft)])
+            self.assertEqual(rc_ask, EXIT_ASK_INCOMPLETE)
+            ask_out = buf_txt.getvalue()
+            self.assertIn("[E2]", ask_out)
+            self.assertIn("[E7]", ask_out)
+            for verdict_word in ("admissible", "rejected", "unestablished"):
+                self.assertNotIn(verdict_word, ask_out.lower())
+
+            # `--document` alias + `--json` mode
+            buf_json = io.StringIO()
+            with contextlib.redirect_stdout(buf_json):
+                rc_ask_j = cli_main(["ask", "--document", str(doc_path), "--spec", str(sp_draft), "--json"])
+            self.assertEqual(rc_ask_j, EXIT_ASK_INCOMPLETE)
+            ask_payload = json.loads(buf_json.getvalue())
+            self.assertFalse(ask_payload["ask_back"]["complete"])
+            # c1 has E2..E7 (6 unanswered); c2 has E2..E6 (5 unanswered) -> 11 total
+            self.assertEqual(ask_payload["ask_back"]["unanswered_count"], 11)
+
+            # 2. Incomplete v2.5 draft MUST NOT abort `run` or `compare` (exit 0, Lean verdict still produced)
+            out_draft = base / "out_draft"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_draft), "--out", str(out_draft)]), 0)
+            rep_draft = json.loads((out_draft / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
+            md_draft = (out_draft / "AskBackAuditor_report.md").read_text(encoding="utf-8")
+            self.assertFalse(rep_draft["ask_back_summary"]["complete"])
+            self.assertEqual(rep_draft["ask_back_summary"]["unanswered_count"], 11)
+            self.assertIn("Ask-Back Completeness:** INCOMPLETE", md_draft)
+            draft_verdicts = {c["id"]: c["verdict"] for c in rep_draft["lean_verification"]["claims"]}
+            self.assertEqual(draft_verdicts, {"c1": "admissible", "c2": "admissible"})
+
+            # 3. Complete all E2–E7 answers (including short 11-char E7 `"needs no pair"` and strong readings
+            #    like `sentence_stronger`, `beyond`, `fitted_on_test_data` — verifying ZERO Lean verdict change!)
+            complete_spec = copy.deepcopy(draft_spec)
+            complete_spec["claims"][0]["exclusion_wording_quote"] = "needs no pair"
+            complete_spec["claims"][0]["excluded_object"] = "paired calibration examples during alignment readout"
+            complete_spec["claims"][0]["ask_back"] = {
+                "causal": {
+                    "status": "answered",
+                    "quotes": [q_ablation],
+                    "rules_out": "sensor drift as the sole explanation",
+                    "supporting_ops": ["align_step"],
+                    "supporting_nodes": ["rawSensor"],
+                },
+                "own_wording": {
+                    "status": "answered",
+                    "quote": q_cautious,
+                    "same_proposition_reason": "Both refer to the same alignment property of the same device under these settings.",
+                    "reading": "sentence_stronger",
+                },
+                "slice": {
+                    "status": "answered",
+                    "quote": q_slice,
+                    "reading": "beyond",
+                    "reason": "Tested only on a single synthetic benchmark grid, whereas the abstract speaks broadly.",
+                },
+                "test_inputs": {
+                    "status": "answered",
+                    "quotes": [q_fit, q_slice],
+                    "fitted_inputs": "alpha and beta inferred directly from the experimental curve",
+                    "compared_output": "reproduction of the same fitted curve",
+                    "claims_independent_test": True,
+                    "reading": "fitted_on_test_data",
+                    "reason": "Model parameters were inferred from the curve used to check reproduction.",
+                },
+                "rests_on": {
+                    "status": "not_applicable",
+                    "reason": "Standalone primary claim.",
+                },
+            }
+            complete_spec["claims"][1]["ask_back"] = {
+                "causal": {
+                    "status": "not_found",
+                    "searched_where": "Checked Sections 2-6; no causal ablation for the downstream diagnostic.",
+                },
+                "own_wording": {
+                    "status": "not_found",
+                    "searched_where": "Checked Abstract and Sections 2-6; stated once only.",
+                },
+                "slice": {
+                    "status": "answered",
+                    "quote": q_slice,
+                    "reading": "within",
+                    "reason": "Conditional statement explicitly scoped to the calibrated readout.",
+                },
+                "test_inputs": {
+                    "status": "not_applicable",
+                    "reason": "Conditional derivation step, not claiming an empirical reproduction test.",
+                },
+                "rests_on": {
+                    "status": "answered",
+                    "claim_ids": ["c1"],
+                    "reason": "Depends on the aligned device output established in c1.",
+                    "quote": q_c2,
+                },
+            }
+            errs_c, quotes_c = validate_spec(complete_spec, doc=doc)
+            self.assertEqual(errs_c, [])
+            q_map = {qm.path: qm for qm in quotes_c}
+            # E7 short subquote offset anchored inside c1's span
+            c1_off = q_map["$.claims[0].quote"].char_offset
+            ew_off = q_map["$.claims[0].exclusion_wording_quote"].char_offset
+            self.assertEqual(ew_off, c1_off + q_c1.find("needs no pair"))
+            # E3 own_wording offset lies outside c1's span
+            ow_off = q_map["$.claims[0].ask_back.own_wording.quote"].char_offset
+            self.assertGreaterEqual(ow_off, c1_off + len(q_c1))
+
+            sp_done = base / "complete.json"
+            sp_done.write_text(json.dumps(complete_spec), encoding="utf-8")
+
+            buf_done = io.StringIO()
+            with contextlib.redirect_stdout(buf_done):
+                rc_done = cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_done)])
+            self.assertEqual(rc_done, 0)
+            self.assertIn("Ask-back complete: 0 unanswered question(s)", buf_done.getvalue())
+
+            out_done = base / "out_done"
+            self.assertEqual(cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_done), "--out", str(out_done)]), 0)
+            rep_done = json.loads((out_done / "AskBackAuditor_report.json").read_text(encoding="utf-8"))
+            md_done = (out_done / "AskBackAuditor_report.md").read_text(encoding="utf-8")
+            self.assertTrue(rep_done["ask_back_summary"]["complete"])
+            # Verdicts MUST remain unchanged (v2 spec: no verdict effect from E2–E6)
+            done_verdicts = {c["id"]: c["verdict"] for c in rep_done["lean_verification"]["claims"]}
+            self.assertEqual(done_verdicts, draft_verdicts)
+            self.assertIn("Reader's Quote-Checked Ask-Back Answers *(not Lean-verified", md_done)
+            self.assertIn("Kind anchor (E7, reader quote-checked)", md_done)
+            self.assertIn("sentence_stronger", md_done)
+            self.assertIn("fitted_on_test_data", md_done)
+
+            # `compare` between incomplete draft and complete spec succeeds (exit 0) and notes incomplete auditor
+            spec_cmp_b = copy.deepcopy(draft_spec)
+            spec_cmp_b["auditor"] = "DraftAuditorB"
+            sp_draft_b = base / "draft_b.json"
+            sp_draft_b.write_text(json.dumps(spec_cmp_b), encoding="utf-8")
+            out_cmp = base / "out_cmp"
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(doc_path), "--spec", str(sp_done), "--spec", str(sp_draft_b), "--out", str(out_cmp)]),
+                0,
+            )
+            comp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
+            self.assertIn("Ask-Back Status:** INCOMPLETE for `DraftAuditorB`", comp_md)
+
+            # 4. Mechanical negative controls (E2 unknown_op, E3 inside_claim, E6 unknown/self/cycle, E7 outside_claim)
+            bad_op = copy.deepcopy(complete_spec)
+            bad_op["claims"][0]["ask_back"]["causal"]["supporting_ops"] = ["nonexistent_op"]
+            self.assertTrue(any(e.code == "unknown_op" for e in validate_spec(bad_op, doc=doc)[0]))
+
+            bad_ow = copy.deepcopy(complete_spec)
+            bad_ow["claims"][0]["ask_back"]["own_wording"]["quote"] = "Our device recovers property P"
+            self.assertTrue(any(e.code == "own_wording_inside_claim" for e in validate_spec(bad_ow, doc=doc)[0]))
+
+            bad_ref = copy.deepcopy(complete_spec)
+            bad_ref["claims"][1]["ask_back"]["rests_on"]["claim_ids"] = ["noSuchClaim"]
+            self.assertTrue(any(e.code == "unknown_rests_on_claim" for e in validate_spec(bad_ref, doc=doc)[0]))
+
+            bad_self = copy.deepcopy(complete_spec)
+            bad_self["claims"][1]["ask_back"]["rests_on"]["claim_ids"] = ["c2"]
+            self.assertTrue(any(e.code == "self_rests_on" for e in validate_spec(bad_self, doc=doc)[0]))
+
+            bad_cyc = copy.deepcopy(complete_spec)
+            bad_cyc["claims"][0]["ask_back"]["rests_on"] = {
+                "status": "answered",
+                "claim_ids": ["c2"],
+                "reason": "Circular dependency test.",
+            }
+            self.assertTrue(any(e.code == "rests_on_cycle" for e in validate_spec(bad_cyc, doc=doc)[0]))
+
+            bad_e7 = copy.deepcopy(complete_spec)
+            bad_e7["claims"][0]["exclusion_wording_quote"] = "rules out sensor drift"
+            self.assertTrue(any(e.code == "exclusion_wording_outside_claim" for e in validate_spec(bad_e7, doc=doc)[0]))
 
 
 if __name__ == "__main__":

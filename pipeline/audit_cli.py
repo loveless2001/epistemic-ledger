@@ -1,6 +1,7 @@
 """CLI entrypoint for the Epistemic Ledger automated audit pipeline.
 
 Commands:
+  ask      Inspect an AuditSpec JSON against a document and list unanswered E2–E7 ask-back questions (prints no verdict)
   run      Verify one AuditSpec JSON against a document (quotes + Lean 4 kernel) -> report.md + report.json + .lean
   compare  Verify 2+ AuditSpec JSONs against a document and emit quote-anchored cross-auditor diff
   prompt   Ingest a document (.pdf/.md/.txt/arxiv:<id>) and emit a strict extraction prompt for any LLM/agent
@@ -28,9 +29,12 @@ from pipeline.report import (
     build_single_report_dict,
     render_single_report_markdown,
 )
-from pipeline.schema import is_valid_ident, validate_spec
+from pipeline.schema import evaluate_ask_back, is_valid_ident, validate_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Distinct exit code for `audit_cli ask` when schema/grounding pass but ask-back questions remain unanswered
+# (kept distinct from exit 2 validation error and exit 3 extractor crash so runners do not treat it as a fatal crash).
+EXIT_ASK_INCOMPLETE = 4
 
 
 def _extract_json_block(raw: str) -> dict[str, Any]:
@@ -147,6 +151,58 @@ def _audit_one(
     return report, spec, len(errors) == 0
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """List unanswered E2–E7 ask-back questions per claim. Never runs Lean or prints verdicts.
+
+    Exit codes:
+      0 — schema/grounding OK and all E2–E7 ask-back items finished (answered / not_found / not_applicable)
+      4 — schema/grounding OK, but one or more ask-back questions remain unanswered (`EXIT_ASK_INCOMPLETE`)
+      2 — schema or verbatim quote-grounding errors present
+    """
+    doc = ingest_document(args.doc, cache_dir=Path(args.cache_dir) if args.cache_dir else None)
+    spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    errors, quotes = validate_spec(spec, doc=doc)
+    ask_summary = evaluate_ask_back(spec)
+
+    if args.json:
+        payload = {
+            "document": {"source_ref": doc.source_ref, "sha256": doc.sha256},
+            "grounding_and_schema_ok": len(errors) == 0,
+            "validation_errors": [{"path": e.path, "code": e.code, "message": e.message} for e in errors],
+            "verified_quotes_count": sum(1 for q in quotes if q.matched),
+            "ask_back": ask_summary,
+        }
+        print(json.dumps(payload, indent=2))
+        if errors:
+            return 2
+        return 0 if ask_summary["complete"] else EXIT_ASK_INCOMPLETE
+
+    if errors:
+        print(f"Grounding/schema failed with {len(errors)} error(s):", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err.path} ({err.code}): {err.message}", file=sys.stderr)
+        return 2
+
+    if ask_summary["complete"]:
+        print(
+            f"Ask-back complete: 0 unanswered question(s) across {ask_summary['total_claims']} claim(s) "
+            f"(no verdict printed by `ask`)."
+        )
+        return 0
+
+    print(
+        f"Ask-back incomplete: {ask_summary['unanswered_count']} unanswered question(s) across "
+        f"{ask_summary['total_claims']} claim(s) (no verdict printed by `ask`):"
+    )
+    for cinfo in ask_summary["claims"]:
+        if not cinfo["unanswered"]:
+            continue
+        print(f"\nClaim `{cinfo['claim_id']}` ({cinfo['kind']}): \"{cinfo['quote']}\"")
+        for item in cinfo["unanswered"]:
+            print(f"  - [{item['code']}] `{item['field']}`: {item['question']}")
+    return EXIT_ASK_INCOMPLETE
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     doc = ingest_document(args.doc, cache_dir=Path(args.cache_dir) if args.cache_dir else None)
     report, _, ok = _audit_one(doc, Path(args.spec), Path(args.out), Path(args.repo_root))
@@ -154,6 +210,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not ok:
         print(f"Grounding/schema failed with {len(report['validation_errors'])} error(s).", file=sys.stderr)
         return 2
+    ab = report.get("ask_back_summary", {})
+    if ab.get("applicable_v25") and not ab.get("complete", True):
+        print(
+            f"  Note: ask-back incomplete ({ab['unanswered_count']} unanswered question(s)); "
+            f"structural Lean verdict produced without aborting."
+        )
     for c in report["lean_verification"]["claims"]:
         print(f"  - {c['id']}: {c['verdict']} ({len(c['findings'])} finding(s), axioms={c['axioms']})")
     return 0
@@ -270,6 +332,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
     if not ok:
         print(f"Grounding/schema failed with {len(report['validation_errors'])} error(s).", file=sys.stderr)
         return 2
+    ab = report.get("ask_back_summary", {})
+    if ab.get("applicable_v25") and not ab.get("complete", True):
+        print(
+            f"  Note: ask-back incomplete ({ab['unanswered_count']} unanswered question(s)); "
+            f"structural Lean verdict produced without aborting."
+        )
     for c in report["lean_verification"]["claims"]:
         print(f"  - {c['id']}: {c['verdict']} ({len(c['findings'])} finding(s), axioms={c['axioms']})")
     return 0
@@ -279,8 +347,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Epistemic Ledger automated audit pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p_ask = sub.add_parser(
+        "ask",
+        help="List unanswered E2–E7 ask-back questions per claim (prints no verdict; exit 0 complete, 4 incomplete, 2 error)",
+    )
+    p_ask.add_argument("--doc", "--document", dest="doc", required=True, help="Path to .pdf/.md/.txt or arxiv:<id>")
+    p_ask.add_argument("--spec", required=True, help="Path to AuditSpec JSON")
+    p_ask.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
+    p_ask.add_argument("--cache-dir", default="")
+    p_ask.set_defaults(func=cmd_ask)
+
     p_run = sub.add_parser("run", help="Verify one AuditSpec JSON against a document")
-    p_run.add_argument("--doc", required=True, help="Path to .pdf/.md/.txt or arxiv:<id>")
+    p_run.add_argument("--doc", "--document", dest="doc", required=True, help="Path to .pdf/.md/.txt or arxiv:<id>")
     p_run.add_argument("--spec", required=True, help="Path to AuditSpec JSON")
     p_run.add_argument("--out", required=True, help="Output directory for .lean + report")
     p_run.add_argument("--repo-root", default=str(REPO_ROOT))

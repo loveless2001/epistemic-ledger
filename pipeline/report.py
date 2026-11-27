@@ -11,6 +11,7 @@ from pipeline.schema import (
     QuoteMatch,
     ValidationErrorItem,
     collect_out_of_scope_spec_fields,
+    evaluate_ask_back,
     verify_quote_in_document,
 )
 
@@ -155,6 +156,10 @@ def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
     }
     if meta.get("hedged") and isinstance(meta.get("hedge_quote"), str):
         sig["hedge_quote"] = normalize_whitespace(meta["hedge_quote"])
+    if isinstance(meta.get("exclusion_wording_quote"), str):
+        sig["exclusion_wording_quote"] = normalize_whitespace(meta["exclusion_wording_quote"])
+    if isinstance(meta.get("excluded_object"), str):
+        sig["excluded_object"] = meta["excluded_object"]
     if "quantitative_kind" in meta:
         sig["quantitative_kind"] = meta["quantitative_kind"]
     for k in (
@@ -301,8 +306,10 @@ def build_single_report_dict(
             f"Ignored out-of-scope numeric/accounting fields in spec ({', '.join(ignored_fields)}): "
             "not evaluated by Lean; numerical tables and financial/bookkeeping checks require human review."
         )
+    ask_back_summary = evaluate_ask_back(spec)
+    ask_by_cid = {c["claim_id"]: c for c in ask_back_summary.get("claims", [])}
     return {
-        "schema_version": "epistemic-ledger-report/v2.1",
+        "schema_version": "epistemic-ledger-report/v2.2",
         "document": {
             "source_ref": doc.source_ref,
             "resolved_path": str(doc.resolved_path),
@@ -312,6 +319,7 @@ def build_single_report_dict(
         "declared_auditor": declared_auditor,
         "paper_title": spec.get("paper_title", "") if isinstance(spec, dict) else "",
         "grounding_and_schema_ok": len(errors) == 0,
+        "ask_back_summary": ask_back_summary,
         "out_of_scope": out_of_scope,
         "validation_errors": [
             {"path": e.path, "code": e.code, "message": e.message} for e in errors
@@ -356,6 +364,22 @@ def build_single_report_dict(
                         (m.get("hedge_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
                         None,
                     ),
+                    "exclusion_wording_quote": next(
+                        (m.get("exclusion_wording_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        None,
+                    ),
+                    "excluded_object": next(
+                        (m.get("excluded_object") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        None,
+                    ),
+                    "ask_back": next(
+                        (m.get("ask_back") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                        None,
+                    ),
+                    "ask_back_complete": bool(ask_by_cid.get(c.claim_id, {}).get("complete", True)),
+                    "ask_back_unanswered": [
+                        u["code"] for u in ask_by_cid.get(c.claim_id, {}).get("unanswered", [])
+                    ],
                     "declared_bet_count": _count_declared_bets(
                         next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {})
                     ),
@@ -392,7 +416,16 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         return "\n".join(lines) + "\n"
 
     lv = report["lean_verification"]
-    lines.append(f"- **Lean 4 Kernel Proof:** `{lv['lean_file']}` (axioms whitelist OK: `{lv['axioms_ok']}`)")
+    lines.append(f"- **Lean 4 Kernel Proof (structural flow only):** `{lv['lean_file']}` (axioms whitelist OK: `{lv['axioms_ok']}`)")
+    ab_sum = report.get("ask_back_summary", {})
+    if ab_sum.get("applicable_v25"):
+        if ab_sum.get("complete"):
+            lines.append("- **Ask-Back Completeness:** COMPLETE (all E2–E7 questions answered; reader answers are quote-checked evidence, not Lean-verified)")
+        else:
+            lines.append(
+                f"- **Ask-Back Completeness:** INCOMPLETE ({ab_sum['unanswered_count']} unanswered question(s); "
+                f"structural Lean verdict still produced — run `audit_cli ask` to inspect open questions)"
+            )
     if report.get("out_of_scope"):
         lines += ["", "## Out of Scope", ""]
         for item in report["out_of_scope"]:
@@ -437,6 +470,10 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         ]
         if meta.get("hedged") and meta.get("hedge_quote"):
             lines.append(f"- **Hedge quote:** > {meta['hedge_quote']}")
+        if meta.get("exclusion_wording_quote") or meta.get("excluded_object"):
+            ewq_str = f'"{meta["exclusion_wording_quote"]}"' if meta.get("exclusion_wording_quote") else "*missing*"
+            eobj_str = meta.get("excluded_object") or "*missing*"
+            lines.append(f"- **Kind anchor (E7, reader quote-checked):** wording {ewq_str}; excluded object: {eobj_str}")
         if meta.get("kind") == "effectivenessClaim":
             if meta.get("method_measurement_quote"):
                 lines.append(f"- **Method measurement quote:** > {meta['method_measurement_quote']}")
@@ -478,6 +515,64 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 hyp_tag = f.get("hypothesis")
                 if hyp_tag and hyp_tag in hyp_quotes:
                     lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
+        ab_data = meta.get("ask_back")
+        unans_codes = c.get("ask_back_unanswered") or []
+        if ab_data or (ab_sum.get("applicable_v25") and unans_codes):
+            lines.append(
+                "- **Reader's Quote-Checked Ask-Back Answers *(not Lean-verified; Lean proof covers structural flow verdict only)*:**"
+            )
+            if isinstance(ab_data, dict):
+                ab_labels = [
+                    ("causal", "E2 Causal"),
+                    ("own_wording", "E3 Own wording"),
+                    ("slice", "E4 Slice"),
+                    ("test_inputs", "E5 Test inputs"),
+                    ("rests_on", "E6 Rests on"),
+                ]
+                for key, label in ab_labels:
+                    entry = ab_data.get(key)
+                    if not isinstance(entry, dict):
+                        continue
+                    st = entry.get("status", "unknown")
+                    if st == "not_found":
+                        lines.append(f"  - **{label}** (`not_found`): searched: {entry.get('searched_where', '')}")
+                        if entry.get("reason"):
+                            lines.append(f"    - *Reason:* {entry['reason']}")
+                    elif st == "not_applicable":
+                        lines.append(f"  - **{label}** (`not_applicable`): {entry.get('reason', '')}")
+                    elif st == "answered":
+                        details: list[str] = []
+                        if key == "causal":
+                            details.append(f"rules out: {entry.get('rules_out', '')}")
+                            if entry.get("supporting_ops"):
+                                details.append(f"ops={entry['supporting_ops']}")
+                            if entry.get("supporting_nodes"):
+                                details.append(f"nodes={entry['supporting_nodes']}")
+                        elif key == "own_wording":
+                            details.append(f"reading=`{entry.get('reading', '')}`")
+                            details.append(f"same proposition: {entry.get('same_proposition_reason', '')}")
+                        elif key == "slice":
+                            details.append(f"reading=`{entry.get('reading', '')}`")
+                            details.append(f"reason: {entry.get('reason', '')}")
+                        elif key == "test_inputs":
+                            details.append(f"reading=`{entry.get('reading', '')}`")
+                            details.append(f"claims_independent_test=`{entry.get('claims_independent_test')}`")
+                            details.append(f"fitted: {entry.get('fitted_inputs', '')}")
+                            details.append(f"compared: {entry.get('compared_output', '')}")
+                            details.append(f"reason: {entry.get('reason', '')}")
+                        elif key == "rests_on":
+                            cids = entry.get("claim_ids", [])
+                            details.append(f"claim_ids={cids}")
+                            details.append(f"reason: {entry.get('reason', '')}")
+                        lines.append(f"  - **{label}** (`answered`): {'; '.join(details)}")
+                        if isinstance(entry.get("quote"), str):
+                            lines.append(f"    - *Quote:* \"{entry['quote']}\"")
+                        for q_item in entry.get("quotes", []) if isinstance(entry.get("quotes"), list) else []:
+                            lines.append(f"    - *Quote:* \"{q_item}\"")
+                        if key == "causal" and entry.get("reason"):
+                            lines.append(f"    - *Reason:* {entry['reason']}")
+            if ab_sum.get("applicable_v25") and unans_codes:
+                lines.append(f"  - **Unanswered ask-back items:** {', '.join(unans_codes)}")
         lines.append("")
 
     return "\n".join(lines)
@@ -738,11 +833,16 @@ def build_comparison_report(
             if item not in combined_out_of_scope:
                 combined_out_of_scope.append(item)
 
+    ask_back_by_auditor = {
+        rep["auditor"]: rep.get("ask_back_summary", {"applicable_v25": False, "complete": True, "unanswered_count": 0})
+        for rep in reports
+    }
     comp_dict = {
-        "schema_version": "epistemic-ledger-comparison/v2.1",
+        "schema_version": "epistemic-ledger-comparison/v2.2",
         "document": {"source_ref": doc.source_ref, "sha256": doc.sha256},
         "auditors": auditors,
         "all_grounding_ok": all_grounding_ok,
+        "ask_back_by_auditor": ask_back_by_auditor,
         "out_of_scope": combined_out_of_scope,
         "claim_comparison": rows,
         "sources_by_auditor": source_summary,
@@ -757,6 +857,17 @@ def build_comparison_report(
         "- **Matching Rule:** Claims are aligned via order-independent connected components of verbatim quote spans (`IoU > 0.5`); cliques reconcile as `exact`/`span_overlap`, while non-clique bridged chains (`pairwise min IoU <= 0.5`) and multi-claim anchors are flagged `AMBIGUOUS`.",
         "",
     ]
+    incomplete_auds = [
+        f"`{a}` ({info['unanswered_count']} unanswered)"
+        for a, info in ask_back_by_auditor.items()
+        if info.get("applicable_v25") and not info.get("complete", True)
+    ]
+    if incomplete_auds:
+        md.insert(
+            5,
+            f"- **Ask-Back Status:** INCOMPLETE for {', '.join(incomplete_auds)} "
+            "(structural Lean comparison still produced; ask-back answers are reader evidence, not Lean-verified).",
+        )
 
     if combined_out_of_scope:
         md += ["## Out of Scope", ""]
@@ -911,21 +1022,28 @@ def build_comparison_report(
 def build_extraction_prompt(doc: IngestedDocument, auditor_name: str = "AuditorA") -> str:
     """Build a strict extraction prompt for any LLM/agent to produce a quote-grounded AuditSpec JSON."""
     return f"""You are an independent epistemological auditor.
-Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.4`.
+Read the source document below and output ONLY a single valid JSON object conforming to schema `epistemic-ledger/v2.5`.
+
+WORKFLOW (PROPOSE -> ASK -> ANSWER -> ASK AGAIN):
+1. First propose claims and the operational flow graph in a `v2.5` JSON record.
+2. Run `python3 -m pipeline.audit_cli ask --doc <doc> --spec <spec.json>`. It lists any unanswered ask-back questions (E2–E7) per claim without printing verdicts (exit 4 while unanswered, exit 0 when complete).
+3. Answer every unanswered item using verbatim quotes from the document (or `status: "not_found"` with `searched_where`, or `status: "not_applicable"` with `reason`), and run `ask` again until exit 0.
+4. Reader ask-back answers are quote-checked evidence displayed separately in the report; they are NOT labelled "Lean verified" (Lean proves only the structural flow verdict).
 
 CRITICAL RULES:
-1. Every `source`, `op`, `claim`, optional `hedge_quote`, and optional `method_measurement_quote`/`control_measurement_quote` MUST be copied VERBATIM from the document (>= 12 non-space characters). Do NOT paraphrase or invent quotes.
+1. Every `source`, `op`, `claim`, `hedge_quote`, `method_measurement_quote`/`control_measurement_quote`, and `ask_back` quote MUST be copied VERBATIM from the document (>= 12 non-space characters; `exclusion_wording_quote` may be a shorter verbatim substring >= 3 non-space characters inside the claim's own quote). Do NOT paraphrase or invent quotes.
 2. All `nodes`, `tags`, `claim.id`, and `auditor` names must be ASCII identifiers (`^[A-Za-z][A-Za-z0-9_]*$`) and NOT Lean 4 reserved keywords.
 3. Every claim endpoint (`target`, `excluded_channel`, `branch_a`, `branch_b`, `method_node`, `evaluation_node`, and non-null `control_node`/`cost_ledger_node`) MUST be defined in the graph (either as a `SourceNode` or as the `output` of an `Op`).
 4. Set `"provenance"` on every claim (`"authorClaimed"` or `"reviewerStressTest"`), AND declare `"nature"`: `"qualitative"` or `"quantitative"`.
    - When `"nature": "quantitative"`, you MUST also set `"quantitative_kind"` to one of:
-     - `"order"` (A outperforms or uses fewer resources than B) or `"threshold"` (meets/exceeds threshold T): model structurally using `effectivenessClaim` (with optional `method_measurement_quote` / `control_measurement_quote`). Lean checks structural control presence, arm independence, evaluation wiring, and forget-proof cost-source coverage — **do NOT emit numeric `method_usage`/`control_usage`; the machine does not read or compare numbers.**
-     - `"specificValue"` (a concrete numerical figure) or `"derivedComparison"` (ratios/differences computed from reported numbers, e.g. `"3x faster"` or `"12% higher"`): emit `kind: "outOfScope"` (an ordinary reviewer checks reported tables directly).
+     - `"order"` (A outperforms or uses fewer resources than B) or `"threshold"` (meets/exceeds threshold T): MUST use `kind: "effectivenessClaim"` (with optional `method_measurement_quote` / `control_measurement_quote`). Lean checks structural control presence, arm independence, evaluation wiring, and forget-proof cost-source coverage — **do NOT emit numeric `method_usage`/`control_usage`; the machine does not read or compare numbers.**
+     - `"specificValue"` (a concrete numerical figure) or `"derivedComparison"` (ratios/differences computed from reported numbers, e.g. `"3x faster"` or `"12% higher"`): MUST use `kind: "outOfScope"` (an ordinary reviewer checks reported tables directly).
    - **Decompose compound quantitative/necessity sentences (e.g. `"Method A requires 5x fewer trials than Method B to pass the test"`):** record SEPARATE claims for (i) the observed order between the two evaluated runs (`effectivenessClaim`, `quantitative_kind: "order"`), (ii) any necessity assertion (`"requires"` / `"needs"` — whether the baseline genuinely cannot reach that outcome with less resource) as `theoremApplication` with an explicit hypothesis (`discharged` / `bet` / `knownFalse`), and (iii) the derived numerical ratio (`"5x fewer"`) as `outOfScope` (`quantitative_kind: "derivedComparison"`).
 5. **Classify each clause by what it asserts, NOT by hedging phrases:**
    - Split multi-clause sentences into separate claims when one clause makes a direct claim and another adds a hedged generalization (e.g., `"In this setting, property P is recovered from raw signal S"` vs `"offering an initial indication that P arises spontaneously"`).
    - For emergence / `"only X"` clauses under Policy 3, prefer `kind: "emergesWithExclusion"` (`target`, `excluded_channel`, `tag`) or `kind: "emergesWithout"` (`target`, `tag`).
-   - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`). Attach `"hedged": true` with verbatim `"hedge_quote"` (>= 12 non-space chars) ONLY to the specific clause that the hedge modifies (display-only metadata; does not alter Lean verdicts).
+   - **E7 Kind Anchor (required by `ask` for `emergesWithout` / `emergesWithExclusion`):** supply `"exclusion_wording_quote"` (exact verbatim substring inside the claim's own `quote` saying a source is absent, excluded, not needed, or arises on its own, e.g. `"without external calibration"`) AND `"excluded_object"` (naming specifically what is excluded, e.g. `"external calibration inputs during inference, not during sensor manufacturing"`). If a clause cannot be anchored to exclusion/independence wording, reconsider the claim's `kind`.
+   - Do NOT downgrade an emergence clause to `conditionalFlow` merely because of a framing or hedging phrase (such as `"in this setting"`, `"suggests"`, or `"an initial indication toward"`). Attach `"hedged": true` with verbatim `"hedge_quote"` (>= 12 non-space chars, inside the claim's own `quote`) ONLY to the specific clause that the hedge modifies (display-only metadata; does not alter Lean verdicts).
    - Contrast: genuine conditional statements such as `"Given a supplied X, Y follows"` remain `kind: "conditionalFlow"`.
 6. For structural effectiveness / comparison claims (`nature: "quantitative"` with `quantitative_kind: "order"` or `"threshold"`, or qualitative structural comparisons), use `kind: "effectivenessClaim"` with:
    - `method_node`, `evaluation_node`, `control_node` (or `null`), `cost_ledger_node` (or `null`), `cost_tag`
@@ -938,10 +1056,17 @@ CRITICAL RULES:
     - `hypotheses`: non-empty list of `{{"tag": "<tag>", "status": "discharged"|"bet"|"knownFalse", "quote": "<verbatim quote>"}}` (one entry per precondition)
     - `declared_bets`: list of unchecked (`"bet"`) hypothesis tags openly declared by the claim as assumptions (note: `"knownFalse"` is always rejected even if listed in `declared_bets`).
 11. For `kind: "lossy"` ops, add optional `"loses": ["<tag>", ...]` ONLY when the document explicitly witnesses that distinct values of those specific tag(s) collide to identical outputs while remaining jointly valid with any outside observations; omit `"loses"` if the document only describes the step as lossy in general or if unmodeled joint constraints couple separate inputs (when two inputs share a coupling like `c = r`, derive both from one shared upstream `SourceNode` so side-information bypass is detected).
+12. **Ask-back record (`ask_back`) per claim (checked by `audit_cli ask`):** every claim should answer five questions (`causal`, `own_wording`, `slice`, `test_inputs`, `rests_on`), each with `status: "answered" | "not_found" | "not_applicable"` (`rests_on` uses `"answered"` or `"not_applicable"`):
+    - `causal` (E2): if answered, include `"quotes"` (or `"quote"`), `"rules_out"`, and optional `"supporting_ops"` / `"supporting_nodes"` reusing the graph.
+    - `own_wording` (E3): if answered, include `"quote"` (MUST appear outside the claim's own sentence), `"same_proposition_reason"`, and `"reading": "same" | "sentence_stronger" | "sentence_weaker"`.
+    - `slice` (E4): if answered, include `"quote"` (or `"quotes"`), `"reading": "within" | "beyond"`, and `"reason"`.
+    - `test_inputs` (E5): answer applicability explicitly (`status: "not_applicable"` with `"reason"` if not claiming an empirical test, agreement, reproduction, or prediction); if answered, include `"quotes"` (or `"quote"`), `"fitted_inputs"`, `"compared_output"`, `"claims_independent_test"` (bool), `"reading": "independent" | "fitted_on_test_data" | "unclear"`, and `"reason"`.
+    - `rests_on` (E6): `status: "answered"` with `"claim_ids"` (acyclic list of claim IDs in this record) and `"reason"` (plus optional `"quote"`), or `status: "not_applicable"` with `"reason"`.
+    - For any `status: "not_found"`, provide `"searched_where"` naming the sections/appendices checked.
 
 JSON TEMPLATE:
 {{
-  "schema_version": "epistemic-ledger/v2.4",
+  "schema_version": "epistemic-ledger/v2.5",
   "auditor": "{auditor_name}",
   "paper_title": "...",
   "nodes": ["nodeA", "nodeB"],
@@ -956,13 +1081,22 @@ JSON TEMPLATE:
     {{
       "id": "claim1",
       "statement": "concise statement of claim",
-      "quote": "verbatim claim quote from text",
+      "quote": "Device D recovers property P without external calibration inputs.",
       "provenance": "authorClaimed",
       "nature": "qualitative",
       "kind": "emergesWithExclusion",
       "target": "nodeB",
       "excluded_channel": "nodeB",
-      "tag": "tagX"
+      "tag": "tagX",
+      "exclusion_wording_quote": "without external calibration",
+      "excluded_object": "external calibration inputs during device readout",
+      "ask_back": {{
+        "causal": {{"status": "not_found", "searched_where": "Sections 2-4; no ablation isolating this mechanism was found."}},
+        "own_wording": {{"status": "not_found", "searched_where": "Checked abstract and Section 5; no separate restatement found."}},
+        "slice": {{"status": "answered", "quote": "verbatim slice quote from text", "reading": "within", "reason": "Claim stays within the tested synthetic benchmark."}},
+        "test_inputs": {{"status": "not_applicable", "reason": "Conceptual architecture claim, not an empirical reproduction test."}},
+        "rests_on": {{"status": "not_applicable", "reason": "Standalone claim."}}
+      }}
     }}
   ]
 }}
