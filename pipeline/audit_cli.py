@@ -24,9 +24,11 @@ from typing import Any
 from pipeline.ingest import IngestedDocument, ingest_document
 from pipeline.lean_runner import run_lean_verification
 from pipeline.report import (
+    NOTE_ONLY_FINDING_TYPES,
     build_comparison_report,
     build_extraction_prompt,
     build_single_report_dict,
+    format_display_state_short,
     render_single_report_markdown,
 )
 from pipeline.schema import evaluate_ask_back, is_valid_ident, validate_spec
@@ -226,7 +228,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"structural Lean verdict produced without aborting."
         )
     for c in report["lean_verification"]["claims"]:
-        print(f"  - {c['id']}: {c['verdict']} ({len(c['findings'])} finding(s), axioms={c['axioms']})")
+        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
+        note_suffix = f"; note: {'; '.join(c['notes'])}" if c.get("notes") else ""
+        label = format_display_state_short(c["verdict"], int(c.get("declared_bet_count", 0)))
+        print(f"  - {c['id']}: {label} ({len(verdict_findings)} finding(s){note_suffix}, axioms={c['axioms']})")
     return 0
 
 
@@ -348,7 +353,10 @@ def cmd_extract(args: argparse.Namespace) -> int:
             f"structural Lean verdict produced without aborting."
         )
     for c in report["lean_verification"]["claims"]:
-        print(f"  - {c['id']}: {c['verdict']} ({len(c['findings'])} finding(s), axioms={c['axioms']})")
+        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
+        note_suffix = f"; note: {'; '.join(c['notes'])}" if c.get("notes") else ""
+        label = format_display_state_short(c["verdict"], int(c.get("declared_bet_count", 0)))
+        print(f"  - {c['id']}: {label} ({len(verdict_findings)} finding(s){note_suffix}, axioms={c['axioms']})")
     return 0
 
 

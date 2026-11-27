@@ -12,6 +12,7 @@ from pipeline.schema import (
     ValidationErrorItem,
     collect_out_of_scope_spec_fields,
     evaluate_ask_back,
+    is_ask_back_entry_complete,
     verify_quote_in_document,
 )
 
@@ -64,7 +65,7 @@ def format_finding_human(f: dict[str, Any]) -> str:
     if ft == "danglingInput":
         return f"**[Dangling Input]** op `{f['op']}` consumes undefined node `{f['missing']}`"
     if ft == "missingCostAccounting":
-        return f"**[Missing Cost Accounting]** method `{f['method']}` lacks raw `{f['cost_tag']}` cost accounting / cost ledger"
+        return f"**[Note — No Cost Accounting]** no cost accounting recorded for `{f['method']}` (`{f['cost_tag']}`); not counted"
     if ft == "trivialCostLedger":
         return f"**[Trivial Cost Ledger]** ledger `{f['ledger']}` is identical to arm `{f['arm']}`"
     if ft == "unusedCostLedger":
@@ -104,25 +105,135 @@ def _count_declared_bets(claim_meta: dict[str, Any]) -> int:
     )
 
 
+NOTE_ONLY_FINDING_TYPES = frozenset({"missingCostAccounting"})
+COST_NOTE_TEXT = "no cost accounting recorded; not counted"
+
+DISPLAY_STATE_LEGEND = (
+    "*Display-state legend: `no structural alarm` and `conditional on N declared, unchecked assumption(s)` "
+    "are display refinements of the Lean 4 `EpistemicVerdict.admissible` enum (zero verdict-bearing structural "
+    "findings inside the modeled graph; never certifies unmodeled reality). `unestablished`, `rejected`, and "
+    "`outOfScope` correspond directly to the remaining Lean enum states.*"
+)
+
+STOP_ANSWER_LABELS: dict[str, tuple[str, str]] = {
+    "causal_test_not_found": (
+        "E2: causal test not found",
+        "no test found that separates the mechanism from another explanation",
+    ),
+    "sentence_stronger_than_own_wording": (
+        "E3: sentence stronger",
+        "sentence is stronger than the paper's own wording elsewhere",
+    ),
+    "speaks_beyond_slice": (
+        "E4: beyond slice",
+        "sentence speaks beyond the tested observation slice",
+    ),
+    "fitted_on_test_data": (
+        "E5: fitted on test data",
+        "test inputs were fitted on the test data",
+    ),
+}
+
+
+def compute_display_state(verdict: str, declared_bet_count: int = 0) -> str:
+    """Map Lean `EpistemicVerdict` + `declared_bet_count` to one of the 5 display states:
+    `noStructuralAlarm`, `conditional`, `unestablished`, `rejected`, `outOfScope`."""
+    if verdict == "admissible":
+        return "conditional" if declared_bet_count >= 1 else "noStructuralAlarm"
+    return verdict
+
+
+def format_display_state_short(verdict: str, declared_bet_count: int = 0) -> str:
+    if verdict == "admissible":
+        if declared_bet_count >= 1:
+            noun = "assumption" if declared_bet_count == 1 else "assumptions"
+            return f"conditional on {declared_bet_count} declared, unchecked {noun}"
+        return "no structural alarm"
+    return verdict
+
+
+def _format_dep_display_state(dep: dict[str, Any]) -> str:
+    ds = dep.get("display_state")
+    bets = int(dep.get("declared_bet_count", 0))
+    if ds == "noStructuralAlarm":
+        return "no structural alarm"
+    if ds == "conditional":
+        noun = "assumption" if bets == 1 else "assumptions"
+        return f"conditional on {bets} declared, unchecked {noun}" if bets >= 1 else "conditional"
+    return str(ds) if ds else "unknown"
+
+
+def _extract_stop_answers(claim_meta: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract canonical reader stop-answer codes (E2–E5) and E6 `rests_on` claim IDs from `ask_back`.
+
+    Gates per individual question entry via `is_ask_back_entry_complete` so incomplete draft entries
+    (e.g., E2 `not_found` missing `searched_where` or E4 `beyond` missing `quote`/`reason`) are never
+    promoted under the 'quote-checked' label, while completed entries on the same claim still display.
+    """
+    ab = claim_meta.get("ask_back") if isinstance(claim_meta, dict) else None
+    if not isinstance(ab, dict):
+        return [], []
+    stops: list[str] = []
+    causal = ab.get("causal")
+    if is_ask_back_entry_complete("causal", causal) and causal.get("status") == "not_found":
+        stops.append("causal_test_not_found")
+    own = ab.get("own_wording")
+    if (
+        is_ask_back_entry_complete("own_wording", own)
+        and own.get("status") == "answered"
+        and own.get("reading") == "sentence_stronger"
+    ):
+        stops.append("sentence_stronger_than_own_wording")
+    sl = ab.get("slice")
+    if (
+        is_ask_back_entry_complete("slice", sl)
+        and sl.get("status") == "answered"
+        and sl.get("reading") == "beyond"
+    ):
+        stops.append("speaks_beyond_slice")
+    ti = ab.get("test_inputs")
+    if (
+        is_ask_back_entry_complete("test_inputs", ti)
+        and ti.get("status") == "answered"
+        and ti.get("reading") == "fitted_on_test_data"
+    ):
+        stops.append("fitted_on_test_data")
+    rests_on_ids: list[str] = []
+    ro = ab.get("rests_on")
+    if (
+        is_ask_back_entry_complete("rests_on", ro)
+        and ro.get("status") == "answered"
+        and isinstance(ro.get("claim_ids"), list)
+    ):
+        rests_on_ids = [str(cid) for cid in ro["claim_ids"] if isinstance(cid, str)]
+    return stops, rests_on_ids
+
+
+def _claim_notes_from_findings(findings: list[dict[str, Any]]) -> list[str]:
+    if any(isinstance(f, dict) and f.get("type") == "missingCostAccounting" for f in findings):
+        return [COST_NOTE_TEXT]
+    return []
+
+
 def _format_verdict_table(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
     if verdict == "admissible":
+        if declared_bet_count >= 1:
+            noun = "assumption" if declared_bet_count == 1 else "assumptions"
+            return f"conditional on {declared_bet_count} declared, unchecked {noun}"
         if kind == "effectivenessClaim":
-            return "admissible (structural comparison only; numbers & necessity unchecked)"
-        if declared_bet_count > 0:
-            noun = "bet" if declared_bet_count == 1 else "bets"
-            return f"admissible (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
-        return "admissible (consistent within declared slice)"
+            return "no structural alarm (structural comparison only; numbers & necessity unchecked)"
+        return "no structural alarm"
     return verdict
 
 
 def _format_verdict_heading(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
     if verdict == "admissible":
+        if declared_bet_count >= 1:
+            noun = "assumption" if declared_bet_count == 1 else "assumptions"
+            return f"CONDITIONAL on {declared_bet_count} declared, unchecked {noun}"
         if kind == "effectivenessClaim":
-            return "ADMISSIBLE (structural comparison only; numbers & necessity unchecked)"
-        if declared_bet_count > 0:
-            noun = "bet" if declared_bet_count == 1 else "bets"
-            return f"ADMISSIBLE (consistent within declared slice; rests on {declared_bet_count} declared {noun})"
-        return "ADMISSIBLE (consistent within declared slice)"
+            return "NO STRUCTURAL ALARM (structural comparison only; numbers & necessity unchecked)"
+        return "NO STRUCTURAL ALARM"
     if verdict == "unestablished":
         return "UNESTABLISHED (data/design stops at map edge)"
     if verdict == "outOfScope":
@@ -137,6 +248,14 @@ VERDICT_STRICTNESS_RANK: dict[str, int] = {
     "outOfScope": 3,
 }
 
+DISPLAY_STATE_STRICTNESS_RANK: dict[str, int] = {
+    "rejected": 0,
+    "unestablished": 1,
+    "conditional": 2,
+    "noStructuralAlarm": 3,
+    "outOfScope": 4,
+}
+
 
 def strictest_verdict_of(verdicts: set[str]) -> str | None:
     """Return the strictest Lean epistemic verdict among `verdicts`
@@ -144,6 +263,22 @@ def strictest_verdict_of(verdicts: set[str]) -> str | None:
     if not verdicts:
         return None
     return min(verdicts, key=lambda v: (VERDICT_STRICTNESS_RANK.get(v, 99), v))
+
+
+def strictest_display_state_of(states: set[str]) -> str | None:
+    """Return the strictest display state among `states`
+    (`rejected` > `unestablished` > `conditional` > `noStructuralAlarm` > `outOfScope`), or `None` if empty."""
+    if not states:
+        return None
+    return min(states, key=lambda s: (DISPLAY_STATE_STRICTNESS_RANK.get(s, 99), s))
+
+
+def _format_strictest_display_cell(state: str | None) -> str:
+    if not state:
+        return "*—*"
+    if state == "noStructuralAlarm":
+        return "**no structural alarm**"
+    return f"**{state}**"
 
 
 def _claim_signature(meta: dict[str, Any]) -> dict[str, Any]:
@@ -306,20 +441,96 @@ def build_single_report_dict(
             f"Ignored out-of-scope numeric/accounting fields in spec ({', '.join(ignored_fields)}): "
             "not evaluated by Lean; numerical tables and financial/bookkeeping checks require human review."
         )
+    lean_claims_payload: list[dict[str, Any]] = []
+    if lean_result is not None:
+        for c in lean_result.claims:
+            meta = next(
+                (m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
+                {},
+            )
+            bet_count = _count_declared_bets(meta)
+            lean_claims_payload.append(
+                {
+                    "id": c.claim_id,
+                    "verdict": c.verdict,
+                    "display_state": compute_display_state(c.verdict, bet_count),
+                    "findings": c.findings,
+                    "notes": _claim_notes_from_findings(c.findings),
+                    "axioms": c.axioms,
+                    "kernel_verified": c.kernel_verified,
+                    "nature": meta.get("nature", "qualitative"),
+                    "quantitative_kind": meta.get("quantitative_kind"),
+                    "hedged": bool(meta.get("hedged", False)),
+                    "hedge_quote": meta.get("hedge_quote"),
+                    "declared_bet_count": bet_count,
+                    "declaration_locations": _compute_declaration_locations(doc, spec, meta),
+                }
+            )
+    display_by_cid: dict[str, tuple[str, int]] = {
+        c["id"]: (c["display_state"], int(c["declared_bet_count"])) for c in lean_claims_payload
+    }
+    verdict_by_cid: dict[str, str] = {c["id"]: c["verdict"] for c in lean_claims_payload}
+
     ask_back_summary = evaluate_ask_back(spec)
+    applicable_v25 = bool(ask_back_summary.get("applicable_v25", False))
     ask_by_cid = {c["claim_id"]: c for c in ask_back_summary.get("claims", [])}
     reader_ask_back_by_claim: dict[str, Any] = {}
+    in_scope_total = 0
+    in_scope_with_stop = 0
+    total_claims_count = 0
+    total_with_stop = 0
     if isinstance(spec, dict) and isinstance(spec.get("claims"), list):
         for cl in spec["claims"]:
             if not isinstance(cl, dict) or not cl.get("id"):
                 continue
             cid = str(cl["id"])
+            total_claims_count += 1
             cinfo = ask_by_cid.get(cid, {})
+            skipped_oos = bool(cinfo.get("skipped_out_of_scope", False))
+            is_oos = (
+                verdict_by_cid.get(cid) == "outOfScope"
+                or cl.get("kind") == "outOfScope"
+                or (
+                    cl.get("nature") == "quantitative"
+                    and cl.get("quantitative_kind") in ("specificValue", "derivedComparison")
+                )
+            )
+            has_ab_dict = isinstance(cl.get("ask_back"), dict)
+            stop_answers, rests_on_ids = _extract_stop_answers(cl)
+            rests_on_resolved: list[dict[str, Any]] = []
+            for dep_id in rests_on_ids:
+                if dep_id in display_by_cid:
+                    dep_ds, dep_bets = display_by_cid[dep_id]
+                    rests_on_resolved.append(
+                        {"claim_id": dep_id, "display_state": dep_ds, "declared_bet_count": dep_bets}
+                    )
+                else:
+                    rests_on_resolved.append(
+                        {"claim_id": dep_id, "display_state": None, "declared_bet_count": 0}
+                    )
+            if not applicable_v25 and not has_ab_dict:
+                stop_status = "not_asked"
+            elif skipped_oos and not has_ab_dict:
+                stop_status = "not_asked"
+            elif stop_answers:
+                stop_status = "recorded"
+            else:
+                stop_status = "none_recorded"
+            if not is_oos:
+                in_scope_total += 1
+                if stop_answers:
+                    in_scope_with_stop += 1
+            if stop_answers:
+                total_with_stop += 1
             reader_ask_back_by_claim[cid] = {
+                "verified_by_lean": False,
                 "complete": bool(cinfo.get("complete", True)),
-                "skipped_out_of_scope": bool(cinfo.get("skipped_out_of_scope", False)),
+                "skipped_out_of_scope": skipped_oos,
                 "unanswered": [u["code"] for u in cinfo.get("unanswered", [])],
                 "unanswered_details": cinfo.get("unanswered", []),
+                "stop_answers_status": stop_status,
+                "stop_answers": stop_answers,
+                "rests_on": rests_on_resolved,
                 "exclusion_wording_quote": cl.get("exclusion_wording_quote"),
                 "excluded_object": cl.get("excluded_object"),
                 "ask_back": cl.get("ask_back"),
@@ -339,10 +550,18 @@ def build_single_report_dict(
         "reader_ask_back": {
             "verified_by_lean": False,
             "scope_note": (
-                "Reader's quote-checked ask-back answers (E2–E7) and kind anchors. "
+                "Reader's quote-checked ask-back answers (E2–E7), stop answers, and kind anchors. "
                 "NOT verified by the Lean 4 kernel (Lean proves structural flow verdicts in `lean_verification` only)."
             ),
             "summary": ask_back_summary,
+            "stop_answers_summary": {
+                "applicable_v25": applicable_v25,
+                "in_scope_claims_total": in_scope_total,
+                "in_scope_claims_with_stop_answers": in_scope_with_stop,
+                "total_claims": total_claims_count,
+                "claims_with_stop_answers": total_with_stop,
+                "verified_by_lean": False,
+            },
             "by_claim": reader_ask_back_by_claim,
         },
         "out_of_scope": out_of_scope,
@@ -365,42 +584,7 @@ def build_single_report_dict(
             "lean_file": str(lean_result.lean_file),
             "axioms_ok": lean_result.raw_axioms_ok,
             "scope_note": "Lean 4 kernel proofs cover structural flow verdicts and findings only (not reader ask-back answers).",
-            "claims": [
-                {
-                    "id": c.claim_id,
-                    "verdict": c.verdict,
-                    "findings": c.findings,
-                    "axioms": c.axioms,
-                    "kernel_verified": c.kernel_verified,
-                    "nature": next(
-                        (m.get("nature", "qualitative") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        "qualitative",
-                    ),
-                    "quantitative_kind": next(
-                        (m.get("quantitative_kind") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        None,
-                    ),
-                    "hedged": bool(
-                        next(
-                            (m.get("hedged", False) for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                            False,
-                        )
-                    ),
-                    "hedge_quote": next(
-                        (m.get("hedge_quote") for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id),
-                        None,
-                    ),
-                    "declared_bet_count": _count_declared_bets(
-                        next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {})
-                    ),
-                    "declaration_locations": _compute_declaration_locations(
-                        doc,
-                        spec,
-                        next((m for m in spec.get("claims", []) if isinstance(m, dict) and m.get("id") == c.claim_id), {}),
-                    ),
-                }
-                for c in lean_result.claims
-            ],
+            "claims": lean_claims_payload,
         },
     }
 
@@ -428,6 +612,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
     lv = report["lean_verification"]
     lines.append(f"- **Lean 4 Kernel Proof (structural flow only):** `{lv['lean_file']}` (axioms whitelist OK: `{lv['axioms_ok']}`)")
     ab_sum = report.get("ask_back_summary", {})
+    rab = report.get("reader_ask_back", {})
+    rab_by_claim = rab.get("by_claim", {})
+    stop_sum = rab.get("stop_answers_summary", {})
     if ab_sum.get("applicable_v25"):
         if ab_sum.get("complete"):
             lines.append("- **Ask-Back Completeness:** COMPLETE (all E2–E7 questions answered; reader answers are quote-checked evidence, not Lean-verified)")
@@ -436,11 +623,56 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 f"- **Ask-Back Completeness:** INCOMPLETE ({ab_sum['unanswered_count']} unanswered question(s); "
                 f"structural Lean verdict still produced — run `audit_cli ask` to inspect open questions)"
             )
+        in_sc_with = int(stop_sum.get("in_scope_claims_with_stop_answers", 0))
+        in_sc_tot = int(stop_sum.get("in_scope_claims_total", 0))
+        tot_with = int(stop_sum.get("claims_with_stop_answers", in_sc_with))
+        tot_all = int(stop_sum.get("total_claims", in_sc_tot))
+        if tot_with == in_sc_with:
+            lines.append(
+                f"- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** "
+                f"{in_sc_with}/{in_sc_tot} in-scope claim(s) carry a stop answer"
+            )
+        else:
+            extra_oos = tot_with - in_sc_with
+            lines.append(
+                f"- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** "
+                f"{in_sc_with}/{in_sc_tot} in-scope claim(s) carry a stop answer "
+                f"({tot_with}/{tot_all} total claims including {extra_oos} out-of-scope)"
+            )
+    else:
+        lines.append(
+            "- **Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified):** not asked (record older than v2.5)"
+        )
     if report.get("out_of_scope"):
         lines += ["", "## Out of Scope", ""]
         for item in report["out_of_scope"]:
             lines.append(f"- {item}")
-    lines += ["", "## Claim Verdicts", "", "| Claim ID | Kind | Target / Channel | Verdict | Findings | Axioms |", "|---|---|---|---|---|---|"]
+    lines += [
+        "",
+        "## Claim Verdicts",
+        "",
+        DISPLAY_STATE_LEGEND,
+        "",
+        "| Claim ID | Kind | Target / Channel | Display State (Lean) | Reader Stop Answers (reader-recorded, quote-checked, not Lean-verified) | Findings | Axioms |",
+        "|---|---|---|---|---|---|---|",
+    ]
+
+    def _format_stop_table_cell(rab_c: dict[str, Any]) -> str:
+        st_status = rab_c.get("stop_answers_status", "not_asked")
+        stops = rab_c.get("stop_answers") or []
+        rests_on = rab_c.get("rests_on") or []
+        if st_status == "not_asked" and not stops and not rests_on:
+            return "not asked"
+        parts = [STOP_ANSWER_LABELS[s][0] for s in stops if s in STOP_ANSWER_LABELS]
+        if rests_on:
+            deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
+            if parts:
+                parts.append(f"E6 rests on: {deps}")
+            else:
+                return f"none recorded; E6 rests on: {deps}"
+        if not parts:
+            return "none recorded"
+        return "; ".join(parts)
 
     claim_by_id = {c["id"]: c for c in spec["claims"]}
     for c in lv["claims"]:
@@ -457,8 +689,12 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             if "excluded_channel" in sig:
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
+        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
+        notes = c.get("notes") or _claim_notes_from_findings(c["findings"])
+        findings_cell = f"{len(verdict_findings)} (+ cost note)" if notes else str(len(verdict_findings))
+        stop_cell = _format_stop_table_cell(rab_by_claim.get(c["id"], {}))
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {stop_cell} | {findings_cell} | `{', '.join(c['axioms']) or 'none'}` |"
         )
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
@@ -473,8 +709,31 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         if nature_label == "quantitative" and meta.get("quantitative_kind"):
             nature_label = f"quantitative/{meta['quantitative_kind']}"
         hedged_suffix = ", hedged" if meta.get("hedged") else ""
+        lines.append(
+            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`{hedged_suffix})"
+        )
+        # D3: Reader stop answers directly under the claim heading (before findings)
+        rab_claim = rab_by_claim.get(c["id"], {})
+        st_status = rab_claim.get("stop_answers_status", "not_asked")
+        stops = rab_claim.get("stop_answers") or []
+        rests_on = rab_claim.get("rests_on") or []
+        if st_status == "not_asked" and not stops and not rests_on:
+            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:** not asked")
+        elif stops:
+            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:**")
+            for scode in stops:
+                short_lbl, desc = STOP_ANSWER_LABELS.get(scode, (scode, scode))
+                lines.append(f"  - **{short_lbl} (`{scode}`):** {desc}")
+            if rests_on:
+                deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
+                lines.append(f"  - **E6 (`rests_on`):** {deps}")
+        else:
+            lines.append("- **Stop answers *(reader-recorded, quote-checked, not Lean-verified)*:** none recorded")
+            if rests_on:
+                deps = ", ".join(f"`{d['claim_id']}` ({_format_dep_display_state(d)})" for d in rests_on)
+                lines.append(f"- **Rests on (E6, *reader-recorded, quote-checked, not Lean-verified*):** {deps}")
+
         lines += [
-            f"### `{c['id']}` — **{_format_verdict_heading(c['verdict'], bet_count, meta['kind'])}** (`{prov}`, `{nature_label}`{hedged_suffix})",
             f"- **Statement:** {meta['statement']}",
             f"- **Source quote:** > {meta['quote']}",
         ]
@@ -512,18 +771,20 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                     lines.append(
                         f"  - `{dl['item']}` (`{dl['kind']}`): declared in document body (offset @{dl['char_offset']}, outside claim quote)"
                     )
-        if not c["findings"]:
+        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
+        notes = c.get("notes") or _claim_notes_from_findings(c["findings"])
+        if not verdict_findings:
             if meta.get("kind") == "effectivenessClaim":
                 lines.append(
-                    "- **Findings:** None (structural comparison checks passed: independent control, evaluation wiring, "
-                    "and forget-proof cost-source coverage; does NOT certify numerical ratios/values or necessity claims such as 'need')."
+                    "- **Findings:** None (structural comparison checks passed: independent control and evaluation wiring; "
+                    "does NOT certify numerical ratios/values or necessity claims such as 'need')."
                 )
             else:
-                lines.append("- **Findings:** None (consistent within the declared observation slice; does not certify unmodeled reality).")
+                lines.append("- **Findings:** None (no structural alarm inside the declared observation slice; does not certify unmodeled reality).")
         else:
             lines.append("- **Findings:**")
             hyp_quotes = {h["tag"]: h["quote"] for h in meta.get("hypotheses", [])}
-            for f in c["findings"]:
+            for f in verdict_findings:
                 lines.append(f"  - {format_finding_human(f)}")
                 origin = f.get("origin") or f.get("shared") or f.get("source")
                 if origin and origin in source_quotes:
@@ -534,8 +795,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 hyp_tag = f.get("hypothesis")
                 if hyp_tag and hyp_tag in hyp_quotes:
                     lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
+        for note in notes:
+            lines.append(f"- **Note:** {note}")
         ab_data = meta.get("ask_back")
-        rab_claim = report.get("reader_ask_back", {}).get("by_claim", {}).get(c["id"], {})
         unans_details = rab_claim.get("unanswered_details") or []
         unans_codes = rab_claim.get("unanswered") or []
         if ab_data or (ab_sum.get("applicable_v25") and unans_codes):
@@ -664,6 +926,7 @@ def build_comparison_report(
             if anchor is None:
                 continue
             start, end, norm_quote = anchor
+            bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
             items.append(
                 {
                     "auditor": aud,
@@ -672,6 +935,9 @@ def build_comparison_report(
                     "claim": {
                         "claim_id": c["id"],
                         "verdict": c["verdict"],
+                        "display_state": c.get("display_state", compute_display_state(c["verdict"], bet_count)),
+                        "declared_bet_count": bet_count,
+                        "notes": c.get("notes") or _claim_notes_from_findings(c["findings"]),
                         "quote": norm_quote,
                         "span": [start, end],
                         "signature": _claim_signature(meta),
@@ -736,6 +1002,7 @@ def build_comparison_report(
 
         by_aud: dict[str, Any] = {}
         verdicts: set[str] = set()
+        display_states: set[str] = set()
         kinds: set[str] = set()
         targets: set[str] = set()
         tags: set[str] = set()
@@ -769,6 +1036,7 @@ def build_comparison_report(
                     by_aud[aud] = {"status": "VERIFIED", "claims": clist, **info}
                 for info in clist:
                     verdicts.add(info["verdict"])
+                    display_states.add(info["display_state"])
                     sig = info["signature"]
                     kinds.add(str(sig.get("kind")))
                     provenances.add(str(sig.get("provenance", "authorClaimed")))
@@ -812,6 +1080,7 @@ def build_comparison_report(
 
         complete_1to1 = (not missing_or_unverified) and (not ambiguous_multi_claim) and is_clique
         strictest = strictest_verdict_of(verdicts) if complete_1to1 else None
+        strictest_display = strictest_display_state_of(display_states) if complete_1to1 else None
         rows.append(
             {
                 "anchor_index": idx,
@@ -822,6 +1091,7 @@ def build_comparison_report(
                 "min_span_iou": min_span_iou,
                 "status": status,
                 "strictest_verdict": strictest,
+                "strictest_display_state": strictest_display,
                 "verdicts_agree": verdicts_agree,
                 "same_claim_kind": complete_1to1 and len(kinds) == 1,
                 "same_target_name": complete_1to1 and len(targets) == 1,
@@ -912,6 +1182,8 @@ def build_comparison_report(
     md += [
         "## Claim Verdict Reconciliation",
         "",
+        DISPLAY_STATE_LEGEND,
+        "",
         "| # | Quote Anchor (offset) | Status | Strictest | " + " | ".join(f"`{a}`" for a in auditors) + " |",
         "|---|---|---|---|" + "|".join("---" for _ in auditors) + "|",
     ]
@@ -944,7 +1216,10 @@ def build_comparison_report(
             hq_short = sig["hedge_quote"].replace("|", "\\|")
             extras.append(f'hedged="{hq_short}"')
         extra_str = (", " + ", ".join(extras)) if extras else ""
-        ftypes = ", ".join(info["finding_types"]) or "clean"
+        verdict_ftypes = [ft for ft in info["finding_types"] if ft not in NOTE_ONLY_FINDING_TYPES]
+        ftypes = ", ".join(verdict_ftypes) or "clean"
+        if info.get("notes"):
+            ftypes += "; note: no cost accounting"
         bet_count = _count_declared_bets(sig)
         return f"**{_format_verdict_table(info['verdict'], bet_count, sig.get('kind'))}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
 
@@ -982,7 +1257,7 @@ def build_comparison_report(
                 diffs.append("declared_bets")
             if diffs:
                 status_cell += f" ({'/'.join(diffs)} differs)"
-        strictest_cell = f"**{row['strictest_verdict']}**" if row.get("strictest_verdict") else "*—*"
+        strictest_cell = _format_strictest_display_cell(row.get("strictest_display_state"))
         cells = []
         for a in auditors:
             entry = row["by_auditor"][a]
@@ -1037,9 +1312,13 @@ def build_comparison_report(
                         md.append(f"  - `{a}` → *{entry['status']}*")
                     else:
                         for info in entry["claims"]:
-                            md.append(f"  - `{a}` (`{info['claim_id']}`, `{info['signature']}`) → **{info['verdict']}**")
-                            for f in info.get("findings", []):
+                            disp_lbl = format_display_state_short(info["verdict"], int(info.get("declared_bet_count", 0)))
+                            md.append(f"  - `{a}` (`{info['claim_id']}`, `{info['signature']}`) → **{disp_lbl}**")
+                            verdict_fs = [f for f in info.get("findings", []) if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
+                            for f in verdict_fs:
                                 md.append(f"    - {format_finding_human(f)}")
+                            for note in info.get("notes") or []:
+                                md.append(f"    - **Note:** {note}")
 
     return comp_dict, "\n".join(md) + "\n"
 

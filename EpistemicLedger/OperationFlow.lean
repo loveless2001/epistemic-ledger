@@ -193,10 +193,11 @@ inductive FlowVerdict where
   deriving DecidableEq, Repr
 
 /-- Four-state epistemic verdict separating:
-    - `admissible`: no structural findings inside the declared observation slice
-      (consistent within declared slice — never certifies reality outside the graph).
+    - `admissible`: no verdict-bearing structural findings inside the declared observation slice
+      (displayed as "no structural alarm" or "conditional on N declared, unchecked assumption(s)" —
+      consistent within declared slice, never certifies reality outside the graph).
     - `unestablished`: data or experimental design stops at the edge of the map
-      (missing control, missing cost ledger, unquantified budget, `.notShown` forget,
+      (missing control, unchecked theorem bet, `.notShown` forget on `uniqueRecovery`,
       undeclared upstream source, or dangling graph input — not a proven structural contradiction).
     - `rejected`: direct structural or empirical contradiction inside the declared graph.
     - `outOfScope`: claim lies outside structural operation-flow verification
@@ -799,15 +800,26 @@ def FlowFinding.isContradictionFor (kind : FlowClaimKind ν σ) : FlowFinding ν
   | .failedForgetOnPath _ _ .notShown => kind.isEmergence
   | f => f.isContradiction
 
+/-- Classify a finding as informational-only (recorded as a note without affecting `epistemicVerdict`).
+    `missingCostAccounting` is recorded as a note ("no cost accounting recorded; not counted")
+    rather than moving an effectiveness claim from `admissible` to `unestablished`.
+    Findings about a *declared* cost ledger (`trivialCostLedger`, `unusedCostLedger`,
+    `unaccountedCostSource`) and all control-arm findings remain verdict-bearing. -/
+def FlowFinding.isNoteOnly : FlowFinding ν σ → Bool
+  | .missingCostAccounting _ _ => true
+  | _                          => false
+
 /-- Four-state epistemic verdict for a flow claim.
-    Preserves legacy `flowVerdict` untouched for full backwards compatibility. -/
+    Preserves legacy `flowVerdict` untouched for full backwards compatibility.
+    Informational note-only findings (`isNoteOnly = true`, currently `missingCostAccounting`)
+    are recorded in `auditFlow` as notes without moving `epistemicVerdict`. -/
 def epistemicVerdict (c : FlowClaim ν σ) : EpistemicVerdict :=
   match c.kind with
   | .outOfScope _ => .outOfScope
   | _ =>
-    let findings := auditFlow c
-    if findings.isEmpty then .admissible
-    else if findings.any (FlowFinding.isContradictionFor c.kind) then .rejected
+    let verdictFindings := (auditFlow c).filter (fun f => !f.isNoteOnly)
+    if verdictFindings.isEmpty then .admissible
+    else if verdictFindings.any (FlowFinding.isContradictionFor c.kind) then .rejected
     else .unestablished
 
 /-! ### General Soundness & Anti-Degeneration Theorems (no Classical.choice) -/
@@ -1567,16 +1579,53 @@ theorem admissible_effectiveness_has_control_and_charged_cost
     exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
   · cases hadm
 
+omit [DecidableEq ν] [DecidableEq σ] in
+private theorem not_isNoteOnly_of_isContradictionFor {kind : FlowClaimKind ν σ} {f : FlowFinding ν σ}
+    (h : f.isContradictionFor kind = true) : f.isNoteOnly = false := by
+  cases f with
+  | missingCostAccounting _ _ =>
+    simp [FlowFinding.isContradictionFor, FlowFinding.isContradiction] at h
+  | _ => rfl
+
+private theorem filter_nil_implies_false {α : Type} {p : α → Bool} :
+    ∀ {l : List α}, l.filter p = [] → ∀ a ∈ l, p a = false
+  | [], _, _, ha => by cases ha
+  | x :: xs, h, a, ha => by
+    simp only [List.filter] at h
+    cases hx : p x with
+    | true => simp [hx] at h
+    | false =>
+      simp only [hx] at h
+      cases List.mem_cons.mp ha with
+      | inl heq => rw [heq]; exact hx
+      | inr htail => exact filter_nil_implies_false h a htail
+
+private theorem filter_eq_nil_of_all_false {α : Type} {p : α → Bool} :
+    ∀ {l : List α}, (∀ a ∈ l, p a = false) → l.filter p = []
+  | [], _ => rfl
+  | x :: xs, hall => by
+    have hx : p x = false := hall x List.mem_cons_self
+    simp only [List.filter, hx]
+    exact filter_eq_nil_of_all_false (fun a ha => hall a (List.mem_cons_of_mem x ha))
+
 /--
-Theorem 7a (Equivalence of `admissible` between 4-state `epistemicVerdict` and legacy `flowVerdict`):
-A claim is `EpistemicVerdict.admissible` if and only if it is `FlowVerdict.admissible`.
-In particular, an `outOfScope` claim is never `admissible` under either verdict.
+Theorem 7a (Characterization of `EpistemicVerdict.admissible`):
+A claim is `EpistemicVerdict.admissible` if and only if it is not `outOfScope` and every finding
+in `auditFlow c` (if any) is informational note-only (`f.isNoteOnly = true`, i.e.,
+`missingCostAccounting`). In particular, any legacy `FlowVerdict.admissible` claim is
+`EpistemicVerdict.admissible`, and an `outOfScope` claim is never `admissible`.
 -/
-theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν σ) :
-    epistemicVerdict c = .admissible ↔ flowVerdict c = .admissible := by
+theorem epistemicVerdict_admissible_iff (c : FlowClaim ν σ) :
+    epistemicVerdict c = .admissible ↔
+    (∀ r, c.kind ≠ .outOfScope r) ∧
+    ∀ f ∈ auditFlow c, f.isNoteOnly = true := by
   cases hk : c.kind with
   | outOfScope r =>
-    simp [epistemicVerdict, flowVerdict, auditFlow, hk]
+    constructor
+    · intro h
+      simp [epistemicVerdict, hk] at h
+    · rintro ⟨hnot, _⟩
+      exact absurd rfl (hnot r)
   | emergesWithout _ _
   | emergesWithExclusion _ _ _
   | independentConvergence _ _ _
@@ -1584,14 +1633,49 @@ theorem epistemicVerdict_admissible_iff_flowVerdict_admissible (c : FlowClaim ν
   | conditionalFlow _ _
   | effectivenessClaim _ _ _ _ _
   | theoremApplication _ _ _ =>
-    unfold epistemicVerdict flowVerdict
+    unfold epistemicVerdict
     rw [hk]
     dsimp only
+    constructor
+    · intro h
+      refine ⟨(fun _ hEq => by cases hEq), ?_⟩
+      cases hempty : ((auditFlow c).filter (fun f => !f.isNoteOnly)).isEmpty with
+      | true =>
+        have hnil : (auditFlow c).filter (fun f => !f.isNoteOnly) = [] := by
+          cases hl : (auditFlow c).filter (fun f => !f.isNoteOnly) with
+          | nil => rfl
+          | cons _ _ => rw [hl] at hempty; cases hempty
+        intro f hf
+        have hbf := filter_nil_implies_false hnil f hf
+        cases hn : f.isNoteOnly with
+        | true => rfl
+        | false => rw [hn] at hbf; cases hbf
+      | false =>
+        simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
+        split at h <;> cases h
+    · rintro ⟨_, hnotes⟩
+      have hnil : (auditFlow c).filter (fun f => !f.isNoteOnly) = [] :=
+        filter_eq_nil_of_all_false (fun f hf => by rw [hnotes f hf]; rfl)
+      rw [hnil]
+      rfl
+
+theorem epistemicVerdict_admissible_of_flowVerdict_admissible (c : FlowClaim ν σ)
+    (hadm : flowVerdict c = .admissible) :
+    epistemicVerdict c = .admissible := by
+  have hnil : auditFlow c = [] := by
+    unfold flowVerdict at hadm
     cases hempty : (auditFlow c).isEmpty with
-    | true => simp
+    | true =>
+      cases hl : auditFlow c with
+      | nil => rfl
+      | cons _ _ => rw [hl] at hempty; cases hempty
     | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte]
-      split <;> simp
+      simp [hempty] at hadm
+  have hnotOos : ∀ r, c.kind ≠ .outOfScope r := by
+    intro r hr
+    rw [auditFlow, hr] at hnil
+    cases hnil
+  exact (epistemicVerdict_admissible_iff c).mpr ⟨hnotOos, fun f hf => by rw [hnil] at hf; cases hf⟩
 
 /--
 Theorem 7b (Characterization of `EpistemicVerdict.outOfScope`):
@@ -1648,20 +1732,25 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
     constructor
     · intro h
       refine ⟨(fun _ hEq => by cases hEq), ?_⟩
-      cases hempty : (auditFlow c).isEmpty with
+      cases hempty : ((auditFlow c).filter (fun f => !f.isNoteOnly)).isEmpty with
       | true => simp [hempty] at h
       | false =>
         simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
         split at h
         · rename_i hany
-          exact List.any_eq_true.mp hany
+          obtain ⟨f, hfFilt, hcontra⟩ := List.any_eq_true.mp hany
+          exact ⟨f, (List.mem_filter.mp hfFilt).1, hcontra⟩
         · cases h
     · rintro ⟨_, f, hf, hcontra⟩
-      have hne : (auditFlow c).isEmpty = false := by
-        cases hl : auditFlow c with
-        | nil => rw [hl] at hf; cases hf
+      have hnotNote : (!f.isNoteOnly) = true := by
+        simp [not_isNoteOnly_of_isContradictionFor hcontra]
+      have hfFilt : f ∈ (auditFlow c).filter (fun g => !g.isNoteOnly) :=
+        List.mem_filter.mpr ⟨hf, hnotNote⟩
+      have hne : ((auditFlow c).filter (fun g => !g.isNoteOnly)).isEmpty = false := by
+        cases hl : (auditFlow c).filter (fun g => !g.isNoteOnly) with
+        | nil => rw [hl] at hfFilt; cases hfFilt
         | cons _ _ => rfl
-      have hany := List.any_eq_true.mpr ⟨f, hf, hcontra⟩
+      have hany := List.any_eq_true.mpr ⟨f, hfFilt, hcontra⟩
       simp [hne, hany]
 
 /--

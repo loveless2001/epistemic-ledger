@@ -975,7 +975,8 @@ class PipelineTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertIn("admissible (consistent within declared slice)", md)
+            self.assertEqual(by_id["claimA_clean_measured"]["display_state"], "noStructuralAlarm")
+            self.assertIn("**no structural alarm**", md)
             self.assertIn("UNESTABLISHED (data/design stops at map edge)", md)
             self.assertIn("OUT OF SCOPE", md)
             self.assertIn("**[Out of Scope]** Normative policy/ethics balancing", md)
@@ -1945,7 +1946,9 @@ class PipelineTests(unittest.TestCase):
             cond_locs = {x["item"]: x["location"] for x in dl_by_id["condWithMixedDeclLocs"]["declaration_locations"]}
             self.assertEqual(cond_locs, {"inClaimSrc": "in_claim", "bodySrc": "elsewhere_in_document"})
 
-            self.assertIn("rests on 2 declared bets", md_dl)
+            self.assertEqual(dl_by_id["thmWithMixedDeclLocs"]["display_state"], "conditional")
+            self.assertEqual(dl_by_id["condWithMixedDeclLocs"]["display_state"], "noStructuralAlarm")
+            self.assertIn("conditional on 2 declared, unchecked assumptions", md_dl)
             self.assertIn("declared in claim sentence", md_dl)
             self.assertIn("declared in document body (offset @", md_dl)
 
@@ -2344,6 +2347,359 @@ class PipelineTests(unittest.TestCase):
             with contextlib.redirect_stdout(buf_oos25):
                 self.assertEqual(cli_main(["ask", "--doc", str(doc_path), "--spec", str(sp_oos25)]), 0)
             self.assertIn("Ask-back complete: 0 unanswered question(s)", buf_oos25.getvalue())
+
+    def test_epistemic_report_display_d1_to_d4_and_legacy_not_asked(self) -> None:
+        """End-to-end tests for spec D1–D4 (`261127-1525-report-display-follows-epistemic-criteria-spec`):
+        - D1: `admissible` -> `display_state: noStructuralAlarm`, rendered as `no structural alarm` in
+          Markdown report, comparison report, and CLI summary; `"admissible"` appears ONLY in the enum legend.
+        - D2: `admissible` with `declared_bet_count >= 1` -> `display_state: conditional`, rendered as
+          `conditional on N declared, unchecked assumption(s)` (while `unestablished` with bets stays `unestablished`).
+        - D3: Reader stop answers (E2–E5) and E6 `rests_on` (with referenced `display_state`) appear directly
+          under claim heading (before findings) and in verdict table, labeled `reader-recorded, quote-checked,
+          not Lean-verified`, stored under `reader_ask_back` (`verified_by_lean: False`), never under
+          `lean_verification`; `"none recorded"` when none; `"not asked"` for records older than v2.5.
+        - D4: `missingCostAccounting` alone no longer moves kernel-verified `epistemicVerdict` (remains
+          `admissible` / `noStructuralAlarm` + note `no cost accounting recorded; not counted`), while declared
+          flawed ledgers (`trivialCostLedger`, `unusedCostLedger`, `unaccountedCostSource`) and control-arm
+          findings are unchanged.
+        """
+        import contextlib
+        import io
+        import re
+
+        doc_text = (
+            "Abstract: The randomised trial shows treatment outperforms the independent control arm.\n"
+            "Section 2: Assuming hypothesis H1 and hypothesis H2, the main structural bound holds.\n"
+            "Section 3: In contrast to the abstract, the authors only suggest a modest trend on the test set.\n"
+            "Section 4: The experiment only measured cohort A and fitted its parameters on cohort A.\n"
+            "Section 5: The secondary claim rests directly on the main structural bound.\n"
+        )
+        q_rct = "The randomised trial shows treatment outperforms the independent control arm."
+        q_thm = "Assuming hypothesis H1 and hypothesis H2, the main structural bound holds."
+        q_own = "In contrast to the abstract, the authors only suggest a modest trend on the test set."
+        q_slice = "The experiment only measured cohort A and fitted its parameters on cohort A."
+        q_sec = "The secondary claim rests directly on the main structural bound."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            doc_path = base / "d1_d4.txt"
+            doc_path.write_text(doc_text, encoding="utf-8")
+            doc = ingest_document(str(doc_path))
+
+            spec_v25 = {
+                "schema_version": "epistemic-ledger/v2.5",
+                "auditor": "DisplayAuditor",
+                "paper_title": "D1-D4 Epistemic Display Verification",
+                "nodes": [
+                    "treatIn",
+                    "ctrlIn",
+                    "treatArm",
+                    "ctrlArm",
+                    "rctEval",
+                    "unusedLedger",
+                    "thmOut",
+                ],
+                "tags": ["studyCost", "hyp1", "hyp2", "hyp3"],
+                "sources": [
+                    {"node": "treatIn", "origin": "setByExperimenter", "carries": [], "quote": q_rct},
+                    {"node": "ctrlIn", "origin": "setByExperimenter", "carries": [], "quote": q_rct},
+                    {"node": "unusedLedger", "origin": "setByExperimenter", "carries": ["studyCost"], "quote": q_rct},
+                ],
+                "ops": [
+                    {"name": "run_treat", "inputs": ["treatIn"], "output": "treatArm", "kind": "transform", "introduces": [], "quote": q_rct},
+                    {"name": "run_ctrl", "inputs": ["ctrlIn"], "output": "ctrlArm", "kind": "transform", "introduces": [], "quote": q_rct},
+                    {"name": "eval_rct", "inputs": ["treatArm", "ctrlArm"], "output": "rctEval", "kind": "transform", "introduces": [], "quote": q_rct},
+                    {"name": "derive_thm", "inputs": ["treatIn"], "output": "thmOut", "kind": "transform", "introduces": [], "quote": q_thm},
+                ],
+                "claims": [
+                    {
+                        "id": "rctNoCostLedger",
+                        "statement": "Randomised trial shows treatment outperforms control without a declared cost ledger.",
+                        "quote": q_rct,
+                        "provenance": "authorClaimed",
+                        "nature": "qualitative",
+                        "kind": "effectivenessClaim",
+                        "method_node": "treatArm",
+                        "evaluation_node": "rctEval",
+                        "control_node": "ctrlArm",
+                        "cost_ledger_node": None,
+                        "cost_tag": "studyCost",
+                        "ask_back": {
+                            "causal": {"status": "answered", "quote": q_rct, "rules_out": "selection bias via randomisation"},
+                            "own_wording": {"status": "not_found", "searched_where": "Checked all sections."},
+                            "slice": {"status": "answered", "quote": q_slice, "reading": "within", "reason": "Scoped to trial."},
+                            "test_inputs": {"status": "not_applicable", "reason": "RCT comparison."},
+                            "rests_on": {"status": "not_applicable", "reason": "Standalone RCT."},
+                        },
+                    },
+                    {
+                        "id": "rctUnusedDeclaredLedger",
+                        "statement": "Same RCT with an explicitly declared ledger that does not feed evaluation.",
+                        "quote": q_rct,
+                        "provenance": "reviewerStressTest",
+                        "nature": "qualitative",
+                        "kind": "effectivenessClaim",
+                        "method_node": "treatArm",
+                        "evaluation_node": "rctEval",
+                        "control_node": "ctrlArm",
+                        "cost_ledger_node": "unusedLedger",
+                        "cost_tag": "studyCost",
+                        "ask_back": {
+                            "causal": {"status": "not_applicable", "reason": "Ledger stress test."},
+                            "own_wording": {"status": "not_applicable", "reason": "Ledger stress test."},
+                            "slice": {"status": "not_applicable", "reason": "Ledger stress test."},
+                            "test_inputs": {"status": "not_applicable", "reason": "Ledger stress test."},
+                            "rests_on": {"status": "not_applicable", "reason": "Standalone."},
+                        },
+                    },
+                    {
+                        "id": "thmConditionalTwoBets",
+                        "statement": "Assuming H1 and H2, the structural bound holds.",
+                        "quote": q_thm,
+                        "provenance": "authorClaimed",
+                        "nature": "qualitative",
+                        "kind": "theoremApplication",
+                        "target": "thmOut",
+                        "hypotheses": [
+                            {"tag": "hyp1", "status": "bet", "quote": q_thm},
+                            {"tag": "hyp2", "status": "bet", "quote": q_thm},
+                        ],
+                        "declared_bets": ["hyp1", "hyp2"],
+                        "ask_back": {
+                            "causal": {"status": "not_found", "searched_where": "Sections 2-5; no causal test."},
+                            "own_wording": {
+                                "status": "answered",
+                                "quote": q_own,
+                                "same_proposition_reason": "Restates the same trend cautiously.",
+                                "reading": "sentence_stronger",
+                            },
+                            "slice": {
+                                "status": "answered",
+                                "quote": q_slice,
+                                "reading": "beyond",
+                                "reason": "Only cohort A was measured.",
+                            },
+                            "test_inputs": {
+                                "status": "answered",
+                                "quote": q_slice,
+                                "fitted_inputs": "parameters fitted on cohort A",
+                                "compared_output": "cohort A trend",
+                                "claims_independent_test": True,
+                                "reading": "fitted_on_test_data",
+                                "reason": "Fitted on the evaluated cohort.",
+                            },
+                            "rests_on": {"status": "not_applicable", "reason": "Primary theorem claim."},
+                        },
+                    },
+                    {
+                        "id": "thmUnestablishedWithOneDeclaredBet",
+                        "statement": "Bound with one declared bet and one undeclared bet stays unestablished.",
+                        "quote": q_thm,
+                        "provenance": "reviewerStressTest",
+                        "nature": "qualitative",
+                        "kind": "theoremApplication",
+                        "target": "thmOut",
+                        "hypotheses": [
+                            {"tag": "hyp1", "status": "bet", "quote": q_thm},
+                            {"tag": "hyp3", "status": "bet", "quote": q_thm},
+                        ],
+                        "declared_bets": ["hyp1"],
+                        "ask_back": {
+                            "causal": {"status": "not_applicable", "reason": "Theorem check."},
+                            "own_wording": {"status": "not_applicable", "reason": "Theorem check."},
+                            "slice": {"status": "not_applicable", "reason": "Theorem check."},
+                            "test_inputs": {"status": "not_applicable", "reason": "Theorem check."},
+                            "rests_on": {"status": "not_applicable", "reason": "Standalone."},
+                        },
+                    },
+                    {
+                        "id": "secRestsOnConditional",
+                        "statement": "Secondary claim rests on the conditional bound.",
+                        "quote": q_sec,
+                        "provenance": "authorClaimed",
+                        "nature": "qualitative",
+                        "kind": "conditionalFlow",
+                        "target": "thmOut",
+                        "declared_sources": ["treatIn"],
+                        "ask_back": {
+                            "causal": {"status": "not_applicable", "reason": "Summary restatement."},
+                            "own_wording": {"status": "not_applicable", "reason": "Stated once."},
+                            "slice": {"status": "answered", "quote": q_slice, "reading": "within", "reason": "Within scope."},
+                            "test_inputs": {"status": "not_applicable", "reason": "No fitted test."},
+                            "rests_on": {
+                                "status": "answered",
+                                "claim_ids": ["thmConditionalTwoBets"],
+                                "reason": "Directly rests on the main bound.",
+                            },
+                        },
+                    },
+                ],
+            }
+            self.assertEqual(validate_spec(spec_v25, doc=doc)[0], [])
+
+            sp = base / "d1_d4.json"
+            sp.write_text(json.dumps(spec_v25), encoding="utf-8")
+            out = base / "out"
+            cli_buf = io.StringIO()
+            with contextlib.redirect_stdout(cli_buf):
+                rc = cli_main(["run", "--doc", str(doc_path), "--spec", str(sp), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            cli_out = cli_buf.getvalue()
+
+            rep = json.loads((out / "DisplayAuditor_report.json").read_text(encoding="utf-8"))
+            md = (out / "DisplayAuditor_report.md").read_text(encoding="utf-8")
+            by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
+
+            # D4: missingCostAccounting alone -> kernel verdict admissible + display_state noStructuralAlarm + cost note
+            self.assertEqual(by_id["rctNoCostLedger"]["verdict"], "admissible")
+            self.assertEqual(by_id["rctNoCostLedger"]["display_state"], "noStructuralAlarm")
+            self.assertEqual(by_id["rctNoCostLedger"]["notes"], ["no cost accounting recorded; not counted"])
+            # Declared flawed ledger (unusedCostLedger) still moves verdict to unestablished
+            self.assertEqual(by_id["rctUnusedDeclaredLedger"]["verdict"], "unestablished")
+            self.assertEqual(by_id["rctUnusedDeclaredLedger"]["display_state"], "unestablished")
+            self.assertIn("unusedCostLedger", [f["type"] for f in by_id["rctUnusedDeclaredLedger"]["findings"]])
+
+            # D2: conditional on 2 declared, unchecked assumptions; unestablished with 1 declared bet stays unestablished
+            self.assertEqual(by_id["thmConditionalTwoBets"]["verdict"], "admissible")
+            self.assertEqual(by_id["thmConditionalTwoBets"]["display_state"], "conditional")
+            self.assertEqual(by_id["thmConditionalTwoBets"]["declared_bet_count"], 2)
+            self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["verdict"], "unestablished")
+            self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["display_state"], "unestablished")
+
+            # D1 CLI summary lines: no "admissible", shows "no structural alarm", "conditional on 2 ...", and cost note
+            self.assertNotIn("admissible", cli_out.lower())
+            self.assertIn("rctNoCostLedger: no structural alarm (0 finding(s); note: no cost accounting recorded; not counted", cli_out)
+            self.assertIn("thmConditionalTwoBets: conditional on 2 declared, unchecked assumptions", cli_out)
+
+            # D1 Markdown: "admissible" must appear ONLY in the legend naming `EpistemicVerdict.admissible`
+            non_legend_md = "\n".join(
+                ln for ln in md.splitlines() if "Display-state legend:" not in ln
+            )
+            self.assertIsNone(re.search(r"\badmissible\b", non_legend_md, flags=re.IGNORECASE))
+            self.assertIn("EpistemicVerdict.admissible", md)
+            self.assertIn("- **Note:** no cost accounting recorded; not counted", md)
+            self.assertIn("conditional on 2 declared, unchecked assumptions", md)
+
+            # D3 JSON separation: stop_answers strictly under reader_ask_back (verified_by_lean=False), never lean_verification
+            rab = rep["reader_ask_back"]
+            self.assertFalse(rab["verified_by_lean"])
+            self.assertEqual(rab["stop_answers_summary"]["in_scope_claims_with_stop_answers"], 1)
+            self.assertEqual(rab["stop_answers_summary"]["in_scope_claims_total"], 5)
+            for c in rep["lean_verification"]["claims"]:
+                self.assertNotIn("stop_answers", c)
+                self.assertNotIn("ask_back", c)
+            self.assertEqual(
+                rab["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
+                [
+                    "causal_test_not_found",
+                    "sentence_stronger_than_own_wording",
+                    "speaks_beyond_slice",
+                    "fitted_on_test_data",
+                ],
+            )
+            self.assertEqual(rab["by_claim"]["rctNoCostLedger"]["stop_answers"], [])
+            self.assertEqual(
+                rab["by_claim"]["secRestsOnConditional"]["rests_on"],
+                [{"claim_id": "thmConditionalTwoBets", "display_state": "conditional", "declared_bet_count": 2}],
+            )
+
+            # D3 Markdown ordering: stop answers appear directly under claim heading BEFORE Statement & Findings
+            self.assertIn("1/5 in-scope claim(s) carry a stop answer", md)
+            self.assertIn("reader-recorded, quote-checked, not Lean-verified", md)
+            sec_start = md.index("### `thmConditionalTwoBets`")
+            sec_body = md[sec_start : md.index("### `thmUnestablishedWithOneDeclaredBet`")]
+            self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Statement:**"))
+            self.assertLess(sec_body.index("**Stop answers"), sec_body.index("**Findings:**"))
+            self.assertIn("`thmConditionalTwoBets` (conditional on 2 declared, unchecked assumptions)", md)
+
+            # D1 comparison.md: no "admissible" as a state outside the legend
+            spec_b = copy.deepcopy(spec_v25)
+            spec_b["auditor"] = "DisplayAuditorB"
+            spec_b["claims"] = [copy.deepcopy(spec_v25["claims"][0]), copy.deepcopy(spec_v25["claims"][2])]
+            spec_a_cmp = copy.deepcopy(spec_b)
+            spec_a_cmp["auditor"] = "DisplayAuditorA"
+            pa, pb = base / "cmp_a.json", base / "cmp_b.json"
+            pa.write_text(json.dumps(spec_a_cmp), encoding="utf-8")
+            pb.write_text(json.dumps(spec_b), encoding="utf-8")
+            out_cmp = base / "out_cmp"
+            self.assertEqual(
+                cli_main(["compare", "--doc", str(doc_path), "--spec", str(pa), "--spec", str(pb), "--out", str(out_cmp)]),
+                0,
+            )
+            cmp_md = (out_cmp / "comparison.md").read_text(encoding="utf-8")
+            non_legend_cmp = "\n".join(
+                ln for ln in cmp_md.splitlines() if "Display-state legend:" not in ln
+            )
+            self.assertIsNone(re.search(r"\badmissible\b", non_legend_cmp, flags=re.IGNORECASE))
+            self.assertIn("**no structural alarm**", cmp_md)
+
+            # Codex #27514 preflight: partial/incomplete ask-back entries (e.g. E2 not_found missing
+            # searched_where, E4 beyond missing quote/reason) MUST NOT be promoted as quote-checked stop
+            # answers, while completed entries on the SAME claim (e.g. E3 sentence_stronger) STILL appear!
+            partial_stop_spec = copy.deepcopy(spec_v25)
+            partial_stop_spec["auditor"] = "PartialStopAuditor"
+            partial_stop_spec["claims"] = [
+                copy.deepcopy(spec_v25["claims"][2]),  # thmConditionalTwoBets
+            ]
+            partial_stop_spec["claims"][0]["ask_back"] = {
+                "causal": {"status": "not_found"},  # incomplete: missing searched_where -> excluded
+                "own_wording": {  # complete -> MUST still appear!
+                    "status": "answered",
+                    "quote": q_own,
+                    "same_proposition_reason": "Restates the same trend cautiously.",
+                    "reading": "sentence_stronger",
+                },
+                "slice": {"status": "answered", "reading": "beyond"},  # incomplete: missing quote/reason -> excluded
+            }
+            sp_pstop = base / "partial_stop.json"
+            sp_pstop.write_text(json.dumps(partial_stop_spec), encoding="utf-8")
+            out_pstop = base / "out_pstop"
+            self.assertEqual(
+                cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_pstop), "--out", str(out_pstop)]),
+                0,
+            )
+            rep_pstop = json.loads((out_pstop / "PartialStopAuditor_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                rep_pstop["reader_ask_back"]["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
+                ["sentence_stronger_than_own_wording"],
+            )
+            # If ALL entries are incomplete, stop_answers is empty and count is 0/1
+            all_partial_spec = copy.deepcopy(partial_stop_spec)
+            del all_partial_spec["claims"][0]["ask_back"]["own_wording"]
+            sp_apstop = base / "all_partial_stop.json"
+            sp_apstop.write_text(json.dumps(all_partial_spec), encoding="utf-8")
+            out_apstop = base / "out_apstop"
+            self.assertEqual(
+                cli_main(["run", "--doc", str(doc_path), "--spec", str(sp_apstop), "--out", str(out_apstop)]),
+                0,
+            )
+            rep_apstop = json.loads((out_apstop / "PartialStopAuditor_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                rep_apstop["reader_ask_back"]["by_claim"]["thmConditionalTwoBets"]["stop_answers"],
+                [],
+            )
+            self.assertEqual(
+                rep_apstop["reader_ask_back"]["stop_answers_summary"]["in_scope_claims_with_stop_answers"],
+                0,
+            )
+
+            # Acceptance 4: record older than v2.5 still runs and shows "not asked"
+            out_legacy = base / "out_legacy_v21"
+            self.assertEqual(
+                cli_main(["run", "--doc", str(SAMPLE_DOC), "--spec", str(SPEC_A), "--out", str(out_legacy)]),
+                0,
+            )
+            rep_leg = json.loads((out_legacy / "AuditorA_report.json").read_text(encoding="utf-8"))
+            md_leg = (out_legacy / "AuditorA_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                rep_leg["reader_ask_back"]["by_claim"]["claimA_clean_measured"]["stop_answers_status"],
+                "not_asked",
+            )
+            self.assertIn("not asked", md_leg)
+            non_legend_leg = "\n".join(
+                ln for ln in md_leg.splitlines() if "Display-state legend:" not in ln
+            )
+            self.assertIsNone(re.search(r"\badmissible\b", non_legend_leg, flags=re.IGNORECASE))
 
 
 if __name__ == "__main__":

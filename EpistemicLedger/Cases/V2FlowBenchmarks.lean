@@ -639,6 +639,25 @@ theorem normative_balancing_epistemic_out_of_scope :
       ∈ auditFlow normativeLegalBalancingClaim := by
   decide
 
+/-- D4: `missingCostAccounting` alone is informational note-only and does NOT move `epistemicVerdict`
+    away from `.admissible` when an independent matched control feeds evaluation. -/
+def independentControlNoCostLedger : FlowClaim EffectivenessTests.Node EffectivenessTests.Tag where
+  statement := "Randomised treatment vs independent control arm without a declared cost ledger."
+  graph :=
+    ⟨[⟨.accountA, .setByExperimenter, []⟩,
+      ⟨.accountB, .setByExperimenter, []⟩],
+     [⟨"run_treatment", [.accountA], .autonomousSocietyRun, .transform []⟩,
+      ⟨"run_control", [.accountB], .humanPlusAiControlRun, .transform []⟩,
+      ⟨"compare_arms", [.autonomousSocietyRun, .humanPlusAiControlRun], .costNormalizedComparison, .transform []⟩]⟩
+  kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
+    (some .humanPlusAiControlRun) none .resourceCost
+
+theorem independent_control_no_cost_ledger_epistemic_admissible_with_note :
+    epistemicVerdict independentControlNoCostLedger = .admissible ∧
+    FlowFinding.missingCostAccounting EffectivenessTests.Node.autonomousSocietyRun EffectivenessTests.Tag.resourceCost
+      ∈ auditFlow independentControlNoCostLedger := by
+  decide
+
 /-! #### Codex `#27358` Regression Tests: `.notShown` on sole path vs bypass, and `uniqueRecovery` side-branch `.lossy` -/
 
 inductive RNode where

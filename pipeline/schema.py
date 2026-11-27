@@ -367,6 +367,12 @@ def _ask_back_entry_missing_fields(qkey: str, entry: dict[str, Any]) -> list[str
     return missing
 
 
+def is_ask_back_entry_complete(qkey: str, entry: Any) -> bool:
+    """Return True iff a single ask-back entry (`causal`, `own_wording`, `slice`, `test_inputs`,
+    `rests_on`, or `kind_anchor`) has all required fields present (and thus is not a partial draft)."""
+    return isinstance(entry, dict) and len(_ask_back_entry_missing_fields(qkey, entry)) == 0
+
+
 def verify_quote_in_document(doc: IngestedDocument, quote: str, path: str) -> QuoteMatch:
     norm_q = normalize_whitespace(quote)
     nonspace_len = len(re.sub(r"\s+", "", norm_q))
