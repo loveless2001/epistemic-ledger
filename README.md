@@ -70,7 +70,7 @@ Every structural claim also checks graph completeness (`danglingInput`).
 
 ## Quick Start
 
-### 1. Build Lean 4 proofs & soundness theorems (42 jobs)
+### 1. Build Lean 4 proofs & soundness theorems
 
 ```bash
 lake build
@@ -109,7 +109,6 @@ See [pipeline/README.md](pipeline/README.md) for full CLI options (`run`, `ask`,
 ## Repository Layout
 
 - `EpistemicLedger/OperationFlow.lean` — Core operation-graph verifier, Policy 3, Tier-2 experimental `effectivenessClaim`, and constructive soundness theorems (axioms `{propext, Quot.sound}` only).
-- `EpistemicLedger/AuditRules.lean` — Historical v0/v1 flat-record audit rules (R1–R4).
-- `EpistemicLedger/Cases/` — Blind-test archives (Rounds 1–3), adversarial test suites, and benchmark proofs.
+- `EpistemicLedger/Cases/` — Operation-flow blind-test archives, adversarial test suites, and benchmark proofs.
 - `pipeline/` — Zero-dependency Python 3 stdlib CLI (`ingest.py`, `schema.py`, `lean_runner.py`, `report.py`, `audit_cli.py`) + unit tests (`pipeline/tests/test_pipeline.py`).
 - `pipeline/examples/` — Committed audit specs including real-paper examples (`society_ai_scientists_v21_5claims.json`, `society_ai_scientists_v23.json`, `papadopetraki_2025_v23.json`).

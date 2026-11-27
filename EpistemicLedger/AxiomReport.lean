@@ -1,29 +1,22 @@
-import EpistemicLedger.AuditRules
-import EpistemicLedger.Cases.BarontiniColdAtomsTime
-import EpistemicLedger.Cases.BalestrieroLeCunPlatonicJepa
-import EpistemicLedger.Cases.AdversarialForgetOrder
-import EpistemicLedger.Cases.BlindTestSummary
+import EpistemicLedger.OperationFlow
+import EpistemicLedger.Cases.V2FlowBenchmarks
+import EpistemicLedger.Cases.V2BlindTestSummary
 
 /-
-Prints, at build time, which axioms each result rests on. The aim is that none
-of them needs `Classical.choice`: the ledger should not itself lean on
-"exists without exhibiting".
+Prints, at build time, which axioms each core OperationFlow soundness theorem
+and benchmark proof rests on. None may depend on `Classical.choice`, `sorryAx`,
+or compiler reduction axioms — only `{propext, Quot.sound}`.
 -/
-open EpistemicLedger
+open EpistemicLedger.OperationFlow
 
-#print axioms audit_forget_order_irrelevant
-#print axioms audit_findings_survive_more_used
-#print axioms clean_audit_dependency_declared_or_forgotten
-#print axioms clean_audit_intrinsic_has_no_experimenter_structure
-#print axioms Cases.BarontiniColdAtomsTime.headline_findings
-#print axioms Cases.BarontiniColdAtomsTime.headline_rejected
-#print axioms Cases.BarontiniColdAtomsTime.body_claim_admissible
-#print axioms Cases.BalestrieroLeCunPlatonicJepa.headline_findings
-#print axioms Cases.BalestrieroLeCunPlatonicJepa.headline_rejected
-#print axioms Cases.BalestrieroLeCunPlatonicJepa.conditional_theorem_admissible
-#print axioms Cases.BalestrieroLeCunPlatonicJepa.engineering_claim_admissible
-#print axioms AdversarialForgetOrder.contradictory_record_rejected
-#print axioms AdversarialForgetOrder.reversed_record_rejected
-#print axioms Cases.BlindTestSummary.blind_test_result
-#print axioms Cases.BlindTestSummary.rule4_fired_only_on_two_claims
-#print axioms Cases.BlindTestSummary.rejected_count
+#print axioms admissible_emerges_has_no_smuggling_path
+#print axioms unrelated_experimenter_source_preserves_emerges_audit
+#print axioms failed_forget_propagates
+#print axioms shown_forget_blocks
+#print axioms admissible_policy3_clean_both_alarms
+#print axioms admissible_effectiveness_has_control_and_charged_cost
+#print axioms epistemicVerdict_admissible_iff
+#print axioms epistemicVerdict_outOfScope_iff
+#print axioms epistemicVerdict_rejected_iff
+#print axioms admissible_theoremApplication_implies_hypotheses_satisfied
+#print axioms EpistemicLedger.Cases.V2FlowBenchmarks.EpistemicVerdictTests.independent_control_no_cost_ledger_epistemic_admissible_with_note
