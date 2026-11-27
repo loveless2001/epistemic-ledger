@@ -45,7 +45,7 @@ class PipelineTests(unittest.TestCase):
                 [f["type"] for f in by_id["claimC_depth_in_loss"]["findings"]],
                 ["excludedChannelLeak"],
             )
-            self.assertEqual(by_id["claimD_unique_recovery"]["verdict"], "rejected")
+            self.assertEqual(by_id["claimD_unique_recovery"]["verdict"], "unestablished")
             self.assertEqual(
                 [f["type"] for f in by_id["claimD_unique_recovery"]["findings"]],
                 ["lossyChannelOnPath"],
@@ -186,7 +186,7 @@ class PipelineTests(unittest.TestCase):
             res = run_lean_verification(spec, repo_root=REPO_ROOT, out_lean_path=Path(tmp) / "Escaped.lean")
             by_id = {c.claim_id: c for c in res.claims}
             self.assertEqual(by_id["claimA_clean_measured"].verdict, "admissible")
-            self.assertEqual(by_id["claimD_unique_recovery"].verdict, "rejected")
+            self.assertEqual(by_id["claimD_unique_recovery"].verdict, "unestablished")
             self.assertEqual(by_id["claimD_unique_recovery"].findings[0]["op"], 'op_"quoted"_\\slash')
 
     def test_codex_r2_p2_failed_lean_rerun_leaves_no_stale_proof_or_report(self) -> None:
@@ -968,8 +968,11 @@ class PipelineTests(unittest.TestCase):
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
             self.assertEqual(by_id["recoverFromQRPair"]["verdict"], "unestablished")
-            self.assertEqual([f["type"] for f in by_id["recoverFromQRPair"]["findings"]], ["parallelLossyBranches"])
-            self.assertEqual(by_id["recoverFromQOnly"]["verdict"], "rejected")
+            self.assertEqual(
+                [f["type"] for f in by_id["recoverFromQRPair"]["findings"]],
+                ["lossyChannelOnPath", "lossyChannelOnPath"],
+            )
+            self.assertEqual(by_id["recoverFromQOnly"]["verdict"], "unestablished")
             self.assertEqual([f["type"] for f in by_id["recoverFromQOnly"]["findings"]], ["lossyChannelOnPath"])
 
     def test_codex_27376_tag_specific_vs_untargeted_lossy_projection(self) -> None:
@@ -1016,12 +1019,12 @@ class PipelineTests(unittest.TestCase):
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
             self.assertEqual(by_id["taggedSignal"]["verdict"], "admissible")
-            self.assertEqual(by_id["taggedNoise"]["verdict"], "rejected")
+            self.assertEqual(by_id["taggedNoise"]["verdict"], "unestablished")
             self.assertEqual([f["type"] for f in by_id["taggedNoise"]["findings"]], ["lossyChannelOnPath"])
             self.assertEqual(by_id["untaggedSignal"]["verdict"], "unestablished")
-            self.assertEqual([f["type"] for f in by_id["untaggedSignal"]["findings"]], ["untargetedLossyChannel"])
+            self.assertEqual([f["type"] for f in by_id["untaggedSignal"]["findings"]], ["lossyChannelOnPath"])
             self.assertEqual(by_id["untaggedNoise"]["verdict"], "unestablished")
-            self.assertEqual([f["type"] for f in by_id["untaggedNoise"]["findings"]], ["untargetedLossyChannel"])
+            self.assertEqual([f["type"] for f in by_id["untaggedNoise"]["findings"]], ["lossyChannelOnPath"])
 
     def test_codex_27379_xor_side_information_bypass_and_prompt_loses_guidance(self) -> None:
         """Regression test for Codex `#27379`:
@@ -1070,17 +1073,14 @@ class PipelineTests(unittest.TestCase):
             rep = json.loads((out / "XorSideInfo_report.json").read_text(encoding="utf-8"))
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
-            self.assertEqual(by_id["recoverFromPOnly"]["verdict"], "rejected")
+            self.assertEqual(by_id["recoverFromPOnly"]["verdict"], "unestablished")
             self.assertEqual([f["type"] for f in by_id["recoverFromPOnly"]["findings"]], ["lossyChannelOnPath"])
             self.assertEqual(by_id["recoverFromPairPR"]["verdict"], "unestablished")
-            self.assertEqual([f["type"] for f in by_id["recoverFromPairPR"]["findings"]], ["lossyWithSideInformation"])
-            self.assertEqual(by_id["recoverFromPairPR"]["findings"][0]["side_nodes"], ["rBit"])
+            self.assertEqual([f["type"] for f in by_id["recoverFromPairPR"]["findings"]], ["lossyChannelOnPath"])
 
-            # Codex #27382: uniqueRecovery reports explicitly disclose DAG independent-source-support boundary,
-            # and modeling coupled `(r, c)` (`c = r`) via a shared upstream SourceNode triggers `lossyWithSideInformation`.
             md_xor = (out / "XorSideInfo_report.md").read_text(encoding="utf-8")
-            self.assertIn("Unmodeled joint support constraints across disconnected SourceNodes", md_xor)
-            self.assertTrue(any("joint support constraints" in s for s in rep["out_of_scope"]))
+            self.assertIn("Joint invertibility across lossy channels", md_xor)
+            self.assertTrue(any("Joint invertibility" in s for s in rep["out_of_scope"]))
 
             spec_coupled = copy.deepcopy(spec)
             spec_coupled["auditor"] = "XorCoupled"
@@ -1105,8 +1105,7 @@ class PipelineTests(unittest.TestCase):
             rep_c = json.loads((out_c / "XorCoupled_report.json").read_text(encoding="utf-8"))
             c0 = rep_c["lean_verification"]["claims"][0]
             self.assertEqual(c0["verdict"], "unestablished")
-            self.assertEqual([f["type"] for f in c0["findings"]], ["lossyWithSideInformation"])
-            self.assertEqual(c0["findings"][0]["side_nodes"], ["sharedR"])
+            self.assertEqual([f["type"] for f in c0["findings"]], ["lossyChannelOnPath"])
 
     def test_claude_27388_large_graph_no_max_rec_depth_and_scaled_usage_numbers(self) -> None:
         """Regression tests for Claude `#27388`:

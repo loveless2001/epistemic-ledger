@@ -137,7 +137,7 @@ def narrowEngineeringClaim : FlowClaim Node Tag where
   kind := .conditionalFlow .textJepa [.trueWorldZ, .webImageCorpus, .pairingOracle, .clipImageTextPretraining]
 
 theorem independence_rejected : epistemicVerdict independentConvergenceClaim = .rejected := by decide
-theorem unique_recovery_rejected : epistemicVerdict uniqueRecoveryClaim = .rejected := by decide
+theorem unique_recovery_unestablished : epistemicVerdict uniqueRecoveryClaim = .unestablished := by decide
 theorem narrow_engineering_admissible : epistemicVerdict narrowEngineeringClaim = .admissible := by decide
 
 theorem catches_shared_clip_pretraining :
@@ -145,7 +145,7 @@ theorem catches_shared_clip_pretraining :
       ∈ auditFlow independentConvergenceClaim := by decide
 
 theorem catches_lossy_observation :
-    FlowFinding.lossyChannelOnPath "lossy_real_observation" Node.realModalityProjection
+    FlowFinding.lossyChannelOnPath "lossy_real_observation" Node.realModalityProjection Tag.worldStateZ
       ∈ auditFlow uniqueRecoveryClaim := by decide
 
 end PlatonicJepaFlow
@@ -844,7 +844,8 @@ def orphanDeclaredBetClaim : FlowClaim MathNode MathTag where
 theorem parallel_lossy_qr_pair_is_unestablished_not_rejected :
     epistemicVerdict parallelLossyQRPairClaim = .unestablished ∧
     auditFlow parallelLossyQRPairClaim =
-      [FlowFinding.parallelLossyBranches QRNode.qrPair QRTag.inputN [QRNode.qDiv2, QRNode.rMod2]] := by
+      [FlowFinding.lossyChannelOnPath "div2" QRNode.qDiv2 QRTag.inputN,
+       FlowFinding.lossyChannelOnPath "mod2" QRNode.rMod2 QRTag.inputN] := by
   decide
 
 theorem orphan_declared_bet_caught_in_lean :
@@ -865,29 +866,29 @@ inductive ProjTag where
 
 /-- Tag-specific projection `observed = signal` loses ONLY `.noise` (`.lossyOn [.noise] []`):
     - recovering `.signal` -> `admissible` (lossless on `.signal`),
-    - recovering `.noise` -> `rejected` (`lossyChannelOnPath`). -/
+    - recovering `.noise` -> `unestablished` (`lossyChannelOnPath`). -/
 def taggedProjectionGraph : FlowGraph ProjNode ProjTag :=
   ⟨[⟨.jointState, .measured, [.signal, .noise]⟩],
    [⟨"project_first", [.jointState], .observed, .lossyOn [.noise] []⟩]⟩
 
 /-- Untagged projection (`.lossy []`, does not specify which tag collides):
-    both `.signal` and `.noise` return `unestablished` (`untargetedLossyChannel`). -/
+    both `.signal` and `.noise` return `unestablished` (`lossyChannelOnPath`). -/
 def untaggedProjectionGraph : FlowGraph ProjNode ProjTag :=
   ⟨[⟨.jointState, .measured, [.signal, .noise]⟩],
    [⟨"project_first", [.jointState], .observed, .lossy []⟩]⟩
 
-theorem tagged_projection_preserves_signal_rejects_noise :
+theorem tagged_projection_preserves_signal_flags_noise :
     epistemicVerdict ⟨"Recover signal", taggedProjectionGraph, .uniqueRecovery .observed .signal⟩ = .admissible ∧
-    epistemicVerdict ⟨"Recover noise", taggedProjectionGraph, .uniqueRecovery .observed .noise⟩ = .rejected ∧
+    epistemicVerdict ⟨"Recover noise", taggedProjectionGraph, .uniqueRecovery .observed .noise⟩ = .unestablished ∧
     auditFlow ⟨"Recover noise", taggedProjectionGraph, .uniqueRecovery .observed .noise⟩ =
-      [FlowFinding.lossyChannelOnPath "project_first" ProjNode.observed] := by
+      [FlowFinding.lossyChannelOnPath "project_first" ProjNode.observed ProjTag.noise] := by
   decide
 
 theorem untagged_projection_is_unestablished_for_both_tags :
     epistemicVerdict ⟨"Recover signal", untaggedProjectionGraph, .uniqueRecovery .observed .signal⟩ = .unestablished ∧
     epistemicVerdict ⟨"Recover noise", untaggedProjectionGraph, .uniqueRecovery .observed .noise⟩ = .unestablished ∧
     auditFlow ⟨"Recover signal", untaggedProjectionGraph, .uniqueRecovery .observed .signal⟩ =
-      [FlowFinding.untargetedLossyChannel "project_first" ProjNode.observed ProjTag.signal] := by
+      [FlowFinding.lossyChannelOnPath "project_first" ProjNode.observed ProjTag.signal] := by
   decide
 
 /-! #### Codex `#27379` Regression Tests: Side Information `p = s XOR r` vs `(p, r)` -/
@@ -906,15 +907,15 @@ def xorSideInfoGraph : FlowGraph XorNode XorTag :=
    [⟨"measure_parity", [.sBit, .rBit], .parityP, .lossyOn [.signal, .reference] []⟩,
     ⟨"combine_with_reference", [.parityP, .rBit], .pairPR, .transform []⟩]⟩
 
-/-- Observing `p = s XOR r` alone has no side-information bypass -> `rejected` (`lossyChannelOnPath`).
-    Observing `(p, r)` has `r` bypassing `measure_parity` -> `unestablished` (`lossyWithSideInformation`). -/
-theorem xor_parity_alone_rejected_and_pair_with_reference_unestablished :
-    epistemicVerdict ⟨"Recover s from p alone", xorSideInfoGraph, .uniqueRecovery .parityP .signal⟩ = .rejected ∧
+/-- Under simplified C3 semantics, any lossy channel affecting the target tag returns `unestablished`
+    (`lossyChannelOnPath`), never falsely rejecting jointly invertible side-information patterns. -/
+theorem xor_parity_alone_and_pair_with_reference_unestablished :
+    epistemicVerdict ⟨"Recover s from p alone", xorSideInfoGraph, .uniqueRecovery .parityP .signal⟩ = .unestablished ∧
     auditFlow ⟨"Recover s from p alone", xorSideInfoGraph, .uniqueRecovery .parityP .signal⟩ =
-      [FlowFinding.lossyChannelOnPath "measure_parity" XorNode.parityP] ∧
+      [FlowFinding.lossyChannelOnPath "measure_parity" XorNode.parityP XorTag.signal] ∧
     epistemicVerdict ⟨"Recover s from (p, r)", xorSideInfoGraph, .uniqueRecovery .pairPR .signal⟩ = .unestablished ∧
     auditFlow ⟨"Recover s from (p, r)", xorSideInfoGraph, .uniqueRecovery .pairPR .signal⟩ =
-      [FlowFinding.lossyWithSideInformation "measure_parity" XorNode.parityP [XorNode.rBit]] := by
+      [FlowFinding.lossyChannelOnPath "measure_parity" XorNode.parityP XorTag.signal] := by
   decide
 
 end EpistemicVerdictTests

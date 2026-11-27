@@ -167,18 +167,9 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
         '  | .sharedExperimenterSource shared =>',
         '      "{\\"type\\":\\"sharedExperimenterSource\\",\\"shared\\":" ++ jsonStr (nodeName shared) ++ "}"',
-        '  | .lossyChannelOnPath opName output =>',
+        '  | .lossyChannelOnPath opName output tag =>',
         '      "{\\"type\\":\\"lossyChannelOnPath\\",\\"op\\":" ++ jsonStr opName ++',
-        '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ "}"',
-        '  | .untargetedLossyChannel opName output tag =>',
-        '      "{\\"type\\":\\"untargetedLossyChannel\\",\\"op\\":" ++ jsonStr opName ++',
         '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
-        '  | .lossyWithSideInformation opName output sideNodes =>',
-        '      "{\\"type\\":\\"lossyWithSideInformation\\",\\"op\\":" ++ jsonStr opName ++',
-        '      ",\\"output\\":" ++ jsonStr (nodeName output) ++ ",\\"side_nodes\\":" ++ jsonNodeList sideNodes ++ "}"',
-        '  | .parallelLossyBranches target tag lossyOuts =>',
-        '      "{\\"type\\":\\"parallelLossyBranches\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
-        '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ ",\\"lossy_outputs\\":" ++ jsonNodeList lossyOuts ++ "}"',
         '  | .unaccessedTargetStructure target tag =>',
         '      "{\\"type\\":\\"unaccessedTargetStructure\\",\\"target\\":" ++ jsonStr (nodeName target) ++',
         '      ",\\"tag\\":" ++ jsonStr (tagName tag) ++ "}"',
@@ -276,13 +267,7 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
     if ft == "sharedExperimenterSource":
         return f"FlowFinding.sharedExperimenterSource Node.{f['shared']}"
     if ft == "lossyChannelOnPath":
-        return f'FlowFinding.lossyChannelOnPath "{escape_lean_str(f["op"])}" Node.{f["output"]}'
-    if ft == "untargetedLossyChannel":
-        return f'FlowFinding.untargetedLossyChannel "{escape_lean_str(f["op"])}" Node.{f["output"]} Tag.{f["tag"]}'
-    if ft == "lossyWithSideInformation":
-        return f'FlowFinding.lossyWithSideInformation "{escape_lean_str(f["op"])}" Node.{f["output"]} {_lean_node_list(f["side_nodes"])}'
-    if ft == "parallelLossyBranches":
-        return f"FlowFinding.parallelLossyBranches Node.{f['target']} Tag.{f['tag']} {_lean_node_list(f['lossy_outputs'])}"
+        return f'FlowFinding.lossyChannelOnPath "{escape_lean_str(f["op"])}" Node.{f["output"]} Tag.{f["tag"]}'
     if ft == "unaccessedTargetStructure":
         return f"FlowFinding.unaccessedTargetStructure Node.{f['target']} Tag.{f['tag']}"
     if ft == "undeclaredUpstreamSource":

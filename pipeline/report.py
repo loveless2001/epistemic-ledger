@@ -31,27 +31,8 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Shared Experimenter Source]** branches share unforgotten experimenter input `{f['shared']}`"
     if ft == "lossyChannelOnPath":
         return (
-            f"**[Lossy Channel Bottleneck]** many-to-one op `{f['op']}` at `{f['output']}` witnesses tag collision and "
-            f"cuts all paths to target (assuming colliding inputs remain jointly valid while holding disconnected outside "
-            f"sources fixed; if outside sources have unmodeled joint constraints, treat recovery on the constrained support as unestablished)"
-        )
-    if ft == "untargetedLossyChannel":
-        return (
-            f"**[Untargeted Lossy Channel]** op `{f['op']}` at `{f['output']}` is marked `lossy` without specifying "
-            f"`loses` for `{f['tag']}`; cannot certify lossless recovery or prove collision on `{f['tag']}` specifically"
-        )
-    if ft == "lossyWithSideInformation":
-        sides = ", ".join(f"`{s}`" for s in f.get("side_nodes", []))
-        return (
-            f"**[Lossy Channel with Side-Information Bypass — Undecidable from Graph Alone]** op `{f['op']}` at "
-            f"`{f['output']}` collides on the target tag, but co-input/ancestor node(s) ({sides}) bypass `{f['output']}` "
-            f"into the final observation (e.g. `r` in `(s XOR r, r)`); joint non-invertibility requires algebraic proof"
-        )
-    if ft == "parallelLossyBranches":
-        outs = ", ".join(f"`{o}`" for o in f.get("lossy_outputs", []))
-        return (
-            f"**[Parallel Lossy Branches — Undecidable from Graph Alone]** every `{f['tag']}` path to `{f['target']}` "
-            f"crosses a lossy op ({outs}) with no single lossy bottleneck; joint injectivity requires algebraic/domain proof"
+            f"**[Lossy Channel on Path]** lossy op `{f['op']}` at `{f['output']}` sits on every `{f['tag']}`-carrying "
+            f"path to target; graph topology alone cannot certify lossless recovery or refute joint/side-information invertibility (`unestablished`)"
         )
     if ft == "unaccessedTargetStructure":
         return (
@@ -196,10 +177,9 @@ OUT_OF_SCOPE_ACCOUNTING = (
     "independence, evaluation wiring, and forget-proof cost-source coverage without reading or comparing numbers."
 )
 OUT_OF_SCOPE_SOURCE_SUPPORT = (
-    "Unmodeled joint support constraints across disconnected SourceNodes (e.g., an external coupling "
-    "`c = r` not represented by a shared upstream SourceNode) are out of scope for pure DAG topology: "
-    "`lossyChannelOnPath` certifies non-recoverability assuming both colliding inputs of the bottleneck op "
-    "remain jointly valid while holding disconnected outside observations fixed."
+    "Joint invertibility across lossy channels or side-information constraints is out of scope for pure DAG "
+    "topology: `lossyChannelOnPath` reports `unestablished` whenever every path carrying the target tag passes "
+    "through a lossy operation affecting that tag."
 )
 OUT_OF_SCOPE_PDF_MATH = (
     "PDF text extraction (`pdftotext`) can drop superscripts, subscripts, and mathematical symbols; "
