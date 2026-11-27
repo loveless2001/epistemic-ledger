@@ -252,7 +252,6 @@
         "claim4_exercise_training_effectiveness_vs_chemo_control": {
           "verdict": "unestablished",
           "finding_types": [
-            "missingCostAccounting",
             "missingMatchedControl"
           ]
         },
@@ -268,7 +267,6 @@
         "society_efficiency_stress_test": {
           "verdict": "unestablished",
           "finding_types": [
-            "missingCostAccounting",
             "missingMatchedControl"
           ]
         },

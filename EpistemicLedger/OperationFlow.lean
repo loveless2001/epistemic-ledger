@@ -158,8 +158,6 @@ inductive FlowFinding (ν σ : Type) where
   /-- Graph completeness error: an upstream operation consumes a node that has neither a
       `SourceNode` nor a producing `Op` in the graph. -/
   | danglingInput (opName : String) (missing : ν)
-  /-- Tier 2: `methodNode` has no raw upstream `SourceNode` carrying `costTag`, or no cost ledger was provided. -/
-  | missingCostAccounting (methodNode : ν) (costTag : σ)
   /-- Tier 2: `costLedgerNode` is identical to `methodNode` or `controlNode` (not a distinct metering/ledger node). -/
   | trivialCostLedger (costLedgerNode : ν) (armNode : ν)
   /-- Tier 2: `costLedgerNode` does not feed `evaluationNode`. -/
@@ -686,16 +684,14 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
       else none
     undeclared ++ danglingInputsUpstream c.graph target
   | .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag =>
-    let methodRawCosts := rawSourceOrigins c.graph costTag methodNode
     let evalAnc := ancestors c.graph evaluationNode
-    let costMissing : List (FlowFinding ν σ) :=
-      if methodRawCosts.isEmpty then [.missingCostAccounting methodNode costTag] else []
     let methodUnused : List (FlowFinding ν σ) :=
       if methodNode ∉ evalAnc then [.unusedMethodNode methodNode evaluationNode] else []
     let ledgerFindings : List (FlowFinding ν σ) :=
       match costLedgerNode with
-      | none => [.missingCostAccounting methodNode costTag]
+      | none => []
       | some ledger =>
+        let methodRawCosts := rawSourceOrigins c.graph costTag methodNode
         let trivMethod : List (FlowFinding ν σ) :=
           if ledger = methodNode then [.trivialCostLedger ledger methodNode] else []
         let trivCtrl : List (FlowFinding ν σ) :=
@@ -729,7 +725,7 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
         let unusedErr : List (FlowFinding ν σ) :=
           if ctrl ∉ evalAnc then [.unusedControlNode ctrl evaluationNode] else []
         selfErr ++ depErr ++ unusedErr ++ danglingInputsUpstream c.graph ctrl
-    costMissing ++ ledgerFindings ++ methodUnused ++ controlFindings
+    ledgerFindings ++ methodUnused ++ controlFindings
       ++ danglingInputsUpstream c.graph methodNode
       ++ danglingInputsUpstream c.graph evaluationNode
   | .theoremApplication target hypotheses declaredBets =>
@@ -770,7 +766,6 @@ def FlowFinding.isContradiction : FlowFinding ν σ → Bool
   | .unaccessedTargetStructure _ _        => false
   | .undeclaredUpstreamSource _           => false
   | .danglingInput _ _                    => false
-  | .missingCostAccounting _ _            => false
   | .trivialCostLedger _ _                => true
   | .unusedCostLedger _ _                 => false
   | .unaccountedCostSource _ _ _          => true
@@ -800,26 +795,15 @@ def FlowFinding.isContradictionFor (kind : FlowClaimKind ν σ) : FlowFinding ν
   | .failedForgetOnPath _ _ .notShown => kind.isEmergence
   | f => f.isContradiction
 
-/-- Classify a finding as informational-only (recorded as a note without affecting `epistemicVerdict`).
-    `missingCostAccounting` is recorded as a note ("no cost accounting recorded; not counted")
-    rather than moving an effectiveness claim from `admissible` to `unestablished`.
-    Findings about a *declared* cost ledger (`trivialCostLedger`, `unusedCostLedger`,
-    `unaccountedCostSource`) and all control-arm findings remain verdict-bearing. -/
-def FlowFinding.isNoteOnly : FlowFinding ν σ → Bool
-  | .missingCostAccounting _ _ => true
-  | _                          => false
-
 /-- Four-state epistemic verdict for a flow claim.
-    Preserves legacy `flowVerdict` untouched for full backwards compatibility.
-    Informational note-only findings (`isNoteOnly = true`, currently `missingCostAccounting`)
-    are recorded in `auditFlow` as notes without moving `epistemicVerdict`. -/
+    Preserves legacy `flowVerdict` untouched for full backwards compatibility. -/
 def epistemicVerdict (c : FlowClaim ν σ) : EpistemicVerdict :=
   match c.kind with
   | .outOfScope _ => .outOfScope
   | _ =>
-    let verdictFindings := (auditFlow c).filter (fun f => !f.isNoteOnly)
-    if verdictFindings.isEmpty then .admissible
-    else if verdictFindings.any (FlowFinding.isContradictionFor c.kind) then .rejected
+    let findings := auditFlow c
+    if findings.isEmpty then .admissible
+    else if findings.any (FlowFinding.isContradictionFor c.kind) then .rejected
     else .unestablished
 
 /-! ### General Soundness & Anti-Degeneration Theorems (no Classical.choice) -/
@@ -1435,15 +1419,14 @@ theorem admissible_policy3_clean_both_alarms
   · cases hadm
 
 /--
-Theorem 6 (Soundness of Tier 2 v2.4 — structural `effectivenessClaim`):
+Theorem 6 (Soundness of Tier 2 — structural `effectivenessClaim`):
 If an `effectivenessClaim` is `admissible`, then:
-  (1) `methodNode` has at least one raw upstream `costTag` source (ignoring `.forget`),
-  (2) `methodNode ∈ ancestors c.graph evaluationNode`,
-  (3) `costLedgerNode = some ledger` with `ledger ≠ methodNode`, `ledger ∈ ancestors evaluationNode`,
-      and EVERY raw `costTag` source of `methodNode` (ignoring `.forget`) is metered directly by
-      `ledger` without passing through `methodNode` or `controlNode`
-      (`src ∈ rawSourceOriginsExcluding c.graph costTag (ledgerExcludedArms methodNode controlNode) ledger`),
-  (4) `controlNode = some ctrl` with `ctrl ≠ methodNode`, `methodNode ∉ ancestors ctrl`,
+  (1) `methodNode ∈ ancestors c.graph evaluationNode`,
+  (2) whenever a cost ledger is declared (`costLedgerNode = some ledger`), `ledger ≠ methodNode`,
+      `ledger ∈ ancestors evaluationNode`, and EVERY raw `costTag` source of `methodNode`
+      (ignoring `.forget`) is metered directly by `ledger` without passing through `methodNode`
+      or `controlNode`,
+  (3) `controlNode = some ctrl` with `ctrl ≠ methodNode`, `methodNode ∉ ancestors ctrl`,
       `ctrl ∉ ancestors methodNode`, and `ctrl ∈ ancestors evaluationNode`.
 -/
 theorem admissible_effectiveness_has_control_and_charged_cost
@@ -1451,10 +1434,9 @@ theorem admissible_effectiveness_has_control_and_charged_cost
     (controlNode costLedgerNode : Option ν) (costTag : σ)
     (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag)
     (hadm : flowVerdict c = .admissible) :
-    (rawSourceOrigins c.graph costTag methodNode ≠ []) ∧
     (methodNode ∈ ancestors c.graph evaluationNode) ∧
-    (∃ ledger,
-      costLedgerNode = some ledger ∧
+    (∀ ledger,
+      costLedgerNode = some ledger →
       ledger ≠ methodNode ∧
       ledger ∈ ancestors c.graph evaluationNode ∧
       ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
@@ -1476,65 +1458,56 @@ theorem admissible_effectiveness_has_control_and_charged_cost
     have h2 := (List.append_eq_nil_iff.mp h1).1
     have hctrl := (List.append_eq_nil_iff.mp h2).2
     have h3 := (List.append_eq_nil_iff.mp h2).1
+    have hledger := (List.append_eq_nil_iff.mp h3).1
     have hmethUnused := (List.append_eq_nil_iff.mp h3).2
-    have h4 := (List.append_eq_nil_iff.mp h3).1
-    have hcostMiss := (List.append_eq_nil_iff.mp h4).1
-    have hledger := (List.append_eq_nil_iff.mp h4).2
-    have hnonempty : rawSourceOrigins c.graph costTag methodNode ≠ [] := by
-      intro hzero
-      simp [hzero] at hcostMiss
     have hmethInEval : methodNode ∈ ancestors c.graph evaluationNode := by
       split at hmethUnused
       · simp at hmethUnused
       · rename_i hnot
         exact Decidable.byContradiction hnot
-    have hledgerExists : ∃ ledger,
-        costLedgerNode = some ledger ∧
+    have hledgerValid : ∀ ledger,
+        costLedgerNode = some ledger →
         ledger ≠ methodNode ∧
         ledger ∈ ancestors c.graph evaluationNode ∧
         ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
           src ∈ rawSourceOriginsExcluding c.graph costTag
             (ledgerExcludedArms methodNode controlNode) ledger := by
-      cases hl : costLedgerNode with
-      | none =>
-        rw [hl] at hledger
-        simp at hledger
-      | some ledger =>
-        rw [hl] at hledger
-        dsimp only at hledger
-        have hl1 := (List.append_eq_nil_iff.mp hledger).1
-        have hl2 := (List.append_eq_nil_iff.mp hl1).1
-        have hl3 := (List.append_eq_nil_iff.mp hl2).1
-        have htrivM := (List.append_eq_nil_iff.mp hl3).1
-        have hunusedL := (List.append_eq_nil_iff.mp hl2).2
-        have huncharged := (List.append_eq_nil_iff.mp hl1).2
-        have hneM : ledger ≠ methodNode := by
-          split at htrivM
-          · simp at htrivM
-          · assumption
-        have hlInEval : ledger ∈ ancestors c.graph evaluationNode := by
-          split at hunusedL
-          · simp at hunusedL
-          · rename_i hnot
-            exact Decidable.byContradiction hnot
-        have hallCharged : ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
-            src ∈ rawSourceOriginsExcluding c.graph costTag
-              (ledgerExcludedArms methodNode controlNode) ledger := by
-          intro src hsrc
-          have hmemAll : src ∈ (match controlNode with
-              | some ctrl => (rawSourceOrigins c.graph costTag methodNode ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
-              | none => rawSourceOrigins c.graph costTag methodNode) := by
-            cases controlNode with
-            | none => exact hsrc
-            | some ctrl =>
-              rw [List.mem_eraseDups]
-              exact List.mem_append_left _ hsrc
-          have hfm := List.filterMap_eq_nil_iff.mp huncharged src hmemAll
-          split at hfm
-          · simp at hfm
-          · rename_i hnot
-            exact Decidable.byContradiction hnot
-        exact ⟨ledger, rfl, hneM, hlInEval, hallCharged⟩
+      intro ledger hl
+      rw [hl] at hledger
+      dsimp only at hledger
+      have hl1 := (List.append_eq_nil_iff.mp hledger).1
+      have hl2 := (List.append_eq_nil_iff.mp hl1).1
+      have hl3 := (List.append_eq_nil_iff.mp hl2).1
+      have htrivM := (List.append_eq_nil_iff.mp hl3).1
+      have hunusedL := (List.append_eq_nil_iff.mp hl2).2
+      have huncharged := (List.append_eq_nil_iff.mp hl1).2
+      have hneM : ledger ≠ methodNode := by
+        split at htrivM
+        · simp at htrivM
+        · assumption
+      have hlInEval : ledger ∈ ancestors c.graph evaluationNode := by
+        split at hunusedL
+        · simp at hunusedL
+        · rename_i hnot
+          exact Decidable.byContradiction hnot
+      have hallCharged : ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
+          src ∈ rawSourceOriginsExcluding c.graph costTag
+            (ledgerExcludedArms methodNode controlNode) ledger := by
+        intro src hsrc
+        have hmemAll : src ∈ (match controlNode with
+            | some ctrl => (rawSourceOrigins c.graph costTag methodNode ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
+            | none => rawSourceOrigins c.graph costTag methodNode) := by
+          cases controlNode with
+          | none => exact hsrc
+          | some ctrl =>
+            rw [List.mem_eraseDups]
+            exact List.mem_append_left _ hsrc
+        have hfm := List.filterMap_eq_nil_iff.mp huncharged src hmemAll
+        split at hfm
+        · simp at hfm
+        · rename_i hnot
+          exact Decidable.byContradiction hnot
+      exact ⟨hneM, hlInEval, hallCharged⟩
     have hctrlExists : ∃ ctrl,
         controlNode = some ctrl ∧
         ctrl ≠ methodNode ∧
@@ -1576,49 +1549,18 @@ theorem admissible_effectiveness_has_control_and_charged_cost
           · rename_i hnot
             exact Decidable.byContradiction hnot
         exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval⟩
-    exact ⟨hnonempty, hmethInEval, hledgerExists, hctrlExists⟩
+    exact ⟨hmethInEval, hledgerValid, hctrlExists⟩
   · cases hadm
-
-omit [DecidableEq ν] [DecidableEq σ] in
-private theorem not_isNoteOnly_of_isContradictionFor {kind : FlowClaimKind ν σ} {f : FlowFinding ν σ}
-    (h : f.isContradictionFor kind = true) : f.isNoteOnly = false := by
-  cases f with
-  | missingCostAccounting _ _ =>
-    simp [FlowFinding.isContradictionFor, FlowFinding.isContradiction] at h
-  | _ => rfl
-
-private theorem filter_nil_implies_false {α : Type} {p : α → Bool} :
-    ∀ {l : List α}, l.filter p = [] → ∀ a ∈ l, p a = false
-  | [], _, _, ha => by cases ha
-  | x :: xs, h, a, ha => by
-    simp only [List.filter] at h
-    cases hx : p x with
-    | true => simp [hx] at h
-    | false =>
-      simp only [hx] at h
-      cases List.mem_cons.mp ha with
-      | inl heq => rw [heq]; exact hx
-      | inr htail => exact filter_nil_implies_false h a htail
-
-private theorem filter_eq_nil_of_all_false {α : Type} {p : α → Bool} :
-    ∀ {l : List α}, (∀ a ∈ l, p a = false) → l.filter p = []
-  | [], _ => rfl
-  | x :: xs, hall => by
-    have hx : p x = false := hall x List.mem_cons_self
-    simp only [List.filter, hx]
-    exact filter_eq_nil_of_all_false (fun a ha => hall a (List.mem_cons_of_mem x ha))
 
 /--
 Theorem 7a (Characterization of `EpistemicVerdict.admissible`):
-A claim is `EpistemicVerdict.admissible` if and only if it is not `outOfScope` and every finding
-in `auditFlow c` (if any) is informational note-only (`f.isNoteOnly = true`, i.e.,
-`missingCostAccounting`). In particular, any legacy `FlowVerdict.admissible` claim is
-`EpistemicVerdict.admissible`, and an `outOfScope` claim is never `admissible`.
+A claim is `EpistemicVerdict.admissible` if and only if it is not `outOfScope` and `auditFlow c = []`
+(equivalently, `flowVerdict c = .admissible`).
 -/
 theorem epistemicVerdict_admissible_iff (c : FlowClaim ν σ) :
     epistemicVerdict c = .admissible ↔
     (∀ r, c.kind ≠ .outOfScope r) ∧
-    ∀ f ∈ auditFlow c, f.isNoteOnly = true := by
+    auditFlow c = [] := by
   cases hk : c.kind with
   | outOfScope r =>
     constructor
@@ -1639,43 +1581,17 @@ theorem epistemicVerdict_admissible_iff (c : FlowClaim ν σ) :
     constructor
     · intro h
       refine ⟨(fun _ hEq => by cases hEq), ?_⟩
-      cases hempty : ((auditFlow c).filter (fun f => !f.isNoteOnly)).isEmpty with
+      cases hempty : (auditFlow c).isEmpty with
       | true =>
-        have hnil : (auditFlow c).filter (fun f => !f.isNoteOnly) = [] := by
-          cases hl : (auditFlow c).filter (fun f => !f.isNoteOnly) with
-          | nil => rfl
-          | cons _ _ => rw [hl] at hempty; cases hempty
-        intro f hf
-        have hbf := filter_nil_implies_false hnil f hf
-        cases hn : f.isNoteOnly with
-        | true => rfl
-        | false => rw [hn] at hbf; cases hbf
+        cases hl : auditFlow c with
+        | nil => rfl
+        | cons _ _ => rw [hl] at hempty; cases hempty
       | false =>
         simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
         split at h <;> cases h
-    · rintro ⟨_, hnotes⟩
-      have hnil : (auditFlow c).filter (fun f => !f.isNoteOnly) = [] :=
-        filter_eq_nil_of_all_false (fun f hf => by rw [hnotes f hf]; rfl)
+    · rintro ⟨_, hnil⟩
       rw [hnil]
       rfl
-
-theorem epistemicVerdict_admissible_of_flowVerdict_admissible (c : FlowClaim ν σ)
-    (hadm : flowVerdict c = .admissible) :
-    epistemicVerdict c = .admissible := by
-  have hnil : auditFlow c = [] := by
-    unfold flowVerdict at hadm
-    cases hempty : (auditFlow c).isEmpty with
-    | true =>
-      cases hl : auditFlow c with
-      | nil => rfl
-      | cons _ _ => rw [hl] at hempty; cases hempty
-    | false =>
-      simp [hempty] at hadm
-  have hnotOos : ∀ r, c.kind ≠ .outOfScope r := by
-    intro r hr
-    rw [auditFlow, hr] at hnil
-    cases hnil
-  exact (epistemicVerdict_admissible_iff c).mpr ⟨hnotOos, fun f hf => by rw [hnil] at hf; cases hf⟩
 
 /--
 Theorem 7b (Characterization of `EpistemicVerdict.outOfScope`):
@@ -1732,25 +1648,20 @@ theorem epistemicVerdict_rejected_iff (c : FlowClaim ν σ) :
     constructor
     · intro h
       refine ⟨(fun _ hEq => by cases hEq), ?_⟩
-      cases hempty : ((auditFlow c).filter (fun f => !f.isNoteOnly)).isEmpty with
+      cases hempty : (auditFlow c).isEmpty with
       | true => simp [hempty] at h
       | false =>
         simp only [hempty, Bool.false_eq_true, ↓reduceIte] at h
         split at h
         · rename_i hany
-          obtain ⟨f, hfFilt, hcontra⟩ := List.any_eq_true.mp hany
-          exact ⟨f, (List.mem_filter.mp hfFilt).1, hcontra⟩
+          exact List.any_eq_true.mp hany
         · cases h
     · rintro ⟨_, f, hf, hcontra⟩
-      have hnotNote : (!f.isNoteOnly) = true := by
-        simp [not_isNoteOnly_of_isContradictionFor hcontra]
-      have hfFilt : f ∈ (auditFlow c).filter (fun g => !g.isNoteOnly) :=
-        List.mem_filter.mpr ⟨hf, hnotNote⟩
-      have hne : ((auditFlow c).filter (fun g => !g.isNoteOnly)).isEmpty = false := by
-        cases hl : (auditFlow c).filter (fun g => !g.isNoteOnly) with
-        | nil => rw [hl] at hfFilt; cases hfFilt
+      have hne : (auditFlow c).isEmpty = false := by
+        cases hl : auditFlow c with
+        | nil => rw [hl] at hf; cases hf
         | cons _ _ => rfl
-      have hany := List.any_eq_true.mpr ⟨f, hfFilt, hcontra⟩
+      have hany := List.any_eq_true.mpr ⟨f, hf, hcontra⟩
       simp [hne, hany]
 
 /--

@@ -604,8 +604,7 @@ theorem ledger_cloned_from_control_rejected :
 
 theorem society_rejected_no_control_no_cost :
     flowVerdict societyNoControlNoCost = .rejected ∧
-    FlowFinding.missingMatchedControl Node.autonomousSocietyRun ∈ auditFlow societyNoControlNoCost ∧
-    FlowFinding.missingCostAccounting Node.autonomousSocietyRun Tag.resourceCost ∈ auditFlow societyNoControlNoCost := by
+    FlowFinding.missingMatchedControl Node.autonomousSocietyRun ∈ auditFlow societyNoControlNoCost := by
   decide
 
 end EffectivenessTests
@@ -639,8 +638,8 @@ theorem normative_balancing_epistemic_out_of_scope :
       ∈ auditFlow normativeLegalBalancingClaim := by
   decide
 
-/-- D4: `missingCostAccounting` alone is informational note-only and does NOT move `epistemicVerdict`
-    away from `.admissible` when an independent matched control feeds evaluation. -/
+/-- C2: an `effectivenessClaim` with an independent matched control and `costLedgerNode = none`
+    emits zero findings and is `.admissible`. -/
 def independentControlNoCostLedger : FlowClaim EffectivenessTests.Node EffectivenessTests.Tag where
   statement := "Randomised treatment vs independent control arm without a declared cost ledger."
   graph :=
@@ -652,10 +651,9 @@ def independentControlNoCostLedger : FlowClaim EffectivenessTests.Node Effective
   kind := .effectivenessClaim .autonomousSocietyRun .costNormalizedComparison
     (some .humanPlusAiControlRun) none .resourceCost
 
-theorem independent_control_no_cost_ledger_epistemic_admissible_with_note :
+theorem independent_control_no_cost_ledger_epistemic_admissible :
     epistemicVerdict independentControlNoCostLedger = .admissible ∧
-    FlowFinding.missingCostAccounting EffectivenessTests.Node.autonomousSocietyRun EffectivenessTests.Tag.resourceCost
-      ∈ auditFlow independentControlNoCostLedger := by
+    auditFlow independentControlNoCostLedger = [] := by
   decide
 
 /-! #### Codex `#27358` Regression Tests: `.notShown` on sole path vs bypass, and `uniqueRecovery` side-branch `.lossy` -/

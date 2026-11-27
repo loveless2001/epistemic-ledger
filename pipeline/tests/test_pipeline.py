@@ -661,9 +661,10 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["clonedControlLedgerRejected"]["verdict"], "rejected")
             self.assertEqual([f["type"] for f in by_id["clonedControlLedgerRejected"]["findings"]], ["unaccountedCostSource"])
             self.assertEqual(by_id["noControlNoLedgerUnestablished"]["verdict"], "unestablished")
-            ftypes = [f["type"] for f in by_id["noControlNoLedgerUnestablished"]["findings"]]
-            self.assertIn("missingCostAccounting", ftypes)
-            self.assertIn("missingMatchedControl", ftypes)
+            self.assertEqual(
+                [f["type"] for f in by_id["noControlNoLedgerUnestablished"]["findings"]],
+                ["missingMatchedControl"],
+            )
 
             # `compare` flags provenance & nature differences even when verdicts agree!
             s_cmp_a = copy.deepcopy(spec)
@@ -2550,10 +2551,10 @@ class PipelineTests(unittest.TestCase):
             md = (out / "DisplayAuditor_report.md").read_text(encoding="utf-8")
             by_id = {c["id"]: c for c in rep["lean_verification"]["claims"]}
 
-            # D4: missingCostAccounting alone -> kernel verdict admissible + display_state noStructuralAlarm + cost note
+            # C2: missingCostAccounting removed; independent control with cost_ledger_node=None -> clean noStructuralAlarm
             self.assertEqual(by_id["rctNoCostLedger"]["verdict"], "admissible")
             self.assertEqual(by_id["rctNoCostLedger"]["display_state"], "noStructuralAlarm")
-            self.assertEqual(by_id["rctNoCostLedger"]["notes"], ["no cost accounting recorded; not counted"])
+            self.assertEqual(by_id["rctNoCostLedger"]["findings"], [])
             # Declared flawed ledger (unusedCostLedger) still moves verdict to unestablished
             self.assertEqual(by_id["rctUnusedDeclaredLedger"]["verdict"], "unestablished")
             self.assertEqual(by_id["rctUnusedDeclaredLedger"]["display_state"], "unestablished")
@@ -2566,9 +2567,9 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["verdict"], "unestablished")
             self.assertEqual(by_id["thmUnestablishedWithOneDeclaredBet"]["display_state"], "unestablished")
 
-            # D1 CLI summary lines: no "admissible", shows "no structural alarm", "conditional on 2 ...", and cost note
+            # D1 CLI summary lines: no "admissible", shows "no structural alarm" and "conditional on 2 ..."
             self.assertNotIn("admissible", cli_out.lower())
-            self.assertIn("rctNoCostLedger: no structural alarm (0 finding(s); note: no cost accounting recorded; not counted", cli_out)
+            self.assertIn("rctNoCostLedger: no structural alarm (0 finding(s),", cli_out)
             self.assertIn("thmConditionalTwoBets: conditional on 2 declared, unchecked assumptions", cli_out)
 
             # D1 Markdown: "admissible" must appear ONLY in the legend naming `EpistemicVerdict.admissible`
@@ -2577,7 +2578,6 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertIsNone(re.search(r"\badmissible\b", non_legend_md, flags=re.IGNORECASE))
             self.assertIn("EpistemicVerdict.admissible", md)
-            self.assertIn("- **Note:** no cost accounting recorded; not counted", md)
             self.assertIn("conditional on 2 declared, unchecked assumptions", md)
 
             # D3 JSON separation: stop_answers strictly under reader_ask_back (verified_by_lean=False), never lean_verification

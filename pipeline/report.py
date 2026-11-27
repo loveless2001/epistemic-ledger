@@ -64,8 +64,6 @@ def format_finding_human(f: dict[str, Any]) -> str:
         return f"**[Undeclared Source]** upstream source `{f['source']}` omitted from conditional claim"
     if ft == "danglingInput":
         return f"**[Dangling Input]** op `{f['op']}` consumes undefined node `{f['missing']}`"
-    if ft == "missingCostAccounting":
-        return f"**[Note — No Cost Accounting]** no cost accounting recorded for `{f['method']}` (`{f['cost_tag']}`); not counted"
     if ft == "trivialCostLedger":
         return f"**[Trivial Cost Ledger]** ledger `{f['ledger']}` is identical to arm `{f['arm']}`"
     if ft == "unusedCostLedger":
@@ -104,9 +102,6 @@ def _count_declared_bets(claim_meta: dict[str, Any]) -> int:
         if isinstance(h, dict) and h.get("status") == "bet" and h.get("tag") in declared
     )
 
-
-NOTE_ONLY_FINDING_TYPES = frozenset({"missingCostAccounting"})
-COST_NOTE_TEXT = "no cost accounting recorded; not counted"
 
 DISPLAY_STATE_LEGEND = (
     "*Display-state legend: `no structural alarm` and `conditional on N declared, unchecked assumption(s)` "
@@ -213,12 +208,6 @@ def _extract_stop_answers(claim_meta: dict[str, Any]) -> tuple[list[str], list[s
     ):
         rests_on_ids = [str(cid) for cid in ro["claim_ids"] if isinstance(cid, str)]
     return stops, rests_on_ids
-
-
-def _claim_notes_from_findings(findings: list[dict[str, Any]]) -> list[str]:
-    if any(isinstance(f, dict) and f.get("type") == "missingCostAccounting" for f in findings):
-        return [COST_NOTE_TEXT]
-    return []
 
 
 def _format_verdict_table(verdict: str, declared_bet_count: int = 0, kind: str | None = None) -> str:
@@ -461,7 +450,6 @@ def build_single_report_dict(
                     "verdict": c.verdict,
                     "display_state": compute_display_state(c.verdict, bet_count),
                     "findings": c.findings,
-                    "notes": _claim_notes_from_findings(c.findings),
                     "axioms": c.axioms,
                     "kernel_verified": c.kernel_verified,
                     "nature": meta.get("nature", "qualitative"),
@@ -711,12 +699,9 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
             if "excluded_channel" in sig:
                 endpoint = f"{endpoint} (excl: {sig['excluded_channel']})"
         bet_count = int(c.get("declared_bet_count", _count_declared_bets(meta)))
-        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
-        notes = c.get("notes") or _claim_notes_from_findings(c["findings"])
-        findings_cell = f"{len(verdict_findings)} (+ cost note)" if notes else str(len(verdict_findings))
         stop_cell = _format_stop_table_cell(rab_by_claim.get(c["id"], {}))
         lines.append(
-            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {stop_cell} | {findings_cell} | `{', '.join(c['axioms']) or 'none'}` |"
+            f"| `{c['id']}` | `{meta['kind']}` | `{endpoint}` | **{_format_verdict_table(c['verdict'], bet_count, meta['kind'])}** | {stop_cell} | {len(c['findings'])} | `{', '.join(c['axioms']) or 'none'}` |"
         )
 
     lines += ["", "## Detailed Findings & Verbatim Evidence", ""]
@@ -793,9 +778,7 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                     lines.append(
                         f"  - `{dl['item']}` (`{dl['kind']}`): declared in document body (offset @{dl['char_offset']}, outside claim quote)"
                     )
-        verdict_findings = [f for f in c["findings"] if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
-        notes = c.get("notes") or _claim_notes_from_findings(c["findings"])
-        if not verdict_findings:
+        if not c["findings"]:
             if meta.get("kind") == "effectivenessClaim":
                 lines.append(
                     "- **Findings:** None (structural comparison checks passed: independent control and evaluation wiring; "
@@ -806,7 +789,7 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
         else:
             lines.append("- **Findings:**")
             hyp_quotes = {h["tag"]: h["quote"] for h in meta.get("hypotheses", [])}
-            for f in verdict_findings:
+            for f in c["findings"]:
                 lines.append(f"  - {format_finding_human(f)}")
                 origin = f.get("origin") or f.get("shared") or f.get("source")
                 if origin and origin in source_quotes:
@@ -817,8 +800,6 @@ def render_single_report_markdown(report: dict[str, Any], spec: dict[str, Any]) 
                 hyp_tag = f.get("hypothesis")
                 if hyp_tag and hyp_tag in hyp_quotes:
                     lines.append(f"    - *Evidence (`{hyp_tag}`):* \"{hyp_quotes[hyp_tag]}\"")
-        for note in notes:
-            lines.append(f"- **Note:** {note}")
         ab_data = meta.get("ask_back")
         unans_details = rab_claim.get("unanswered_details") or []
         unans_codes = rab_claim.get("unanswered") or []
@@ -959,7 +940,6 @@ def build_comparison_report(
                         "verdict": c["verdict"],
                         "display_state": c.get("display_state", compute_display_state(c["verdict"], bet_count)),
                         "declared_bet_count": bet_count,
-                        "notes": c.get("notes") or _claim_notes_from_findings(c["findings"]),
                         "quote": norm_quote,
                         "span": [start, end],
                         "signature": _claim_signature(meta),
@@ -1238,10 +1218,7 @@ def build_comparison_report(
             hq_short = sig["hedge_quote"].replace("|", "\\|")
             extras.append(f'hedged="{hq_short}"')
         extra_str = (", " + ", ".join(extras)) if extras else ""
-        verdict_ftypes = [ft for ft in info["finding_types"] if ft not in NOTE_ONLY_FINDING_TYPES]
-        ftypes = ", ".join(verdict_ftypes) or "clean"
-        if info.get("notes"):
-            ftypes += "; note: no cost accounting"
+        ftypes = ", ".join(info["finding_types"]) or "clean"
         bet_count = _count_declared_bets(sig)
         return f"**{_format_verdict_table(info['verdict'], bet_count, sig.get('kind'))}** (`{info['claim_id']}`: `{sig['kind']}` on `{tgt}`{extra_str}; {ftypes})"
 
@@ -1336,11 +1313,8 @@ def build_comparison_report(
                         for info in entry["claims"]:
                             disp_lbl = format_display_state_short(info["verdict"], int(info.get("declared_bet_count", 0)))
                             md.append(f"  - `{a}` (`{info['claim_id']}`, `{info['signature']}`) → **{disp_lbl}**")
-                            verdict_fs = [f for f in info.get("findings", []) if f.get("type") not in NOTE_ONLY_FINDING_TYPES]
-                            for f in verdict_fs:
+                            for f in info.get("findings", []):
                                 md.append(f"    - {format_finding_human(f)}")
-                            for note in info.get("notes") or []:
-                                md.append(f"    - **Note:** {note}")
 
     return comp_dict, "\n".join(md) + "\n"
 

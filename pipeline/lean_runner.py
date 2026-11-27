@@ -187,9 +187,6 @@ def _render_base_module(spec: dict[str, Any], namespace: str) -> str:
         '  | .danglingInput opName missing =>',
         '      "{\\"type\\":\\"danglingInput\\",\\"op\\":" ++ jsonStr opName ++',
         '      ",\\"missing\\":" ++ jsonStr (nodeName missing) ++ "}"',
-        '  | .missingCostAccounting methodNode costTag =>',
-        '      "{\\"type\\":\\"missingCostAccounting\\",\\"method\\":" ++ jsonStr (nodeName methodNode) ++',
-        '      ",\\"cost_tag\\":" ++ jsonStr (tagName costTag) ++ "}"',
         '  | .trivialCostLedger ledger armNode =>',
         '      "{\\"type\\":\\"trivialCostLedger\\",\\"ledger\\":" ++ jsonStr (nodeName ledger) ++',
         '      ",\\"arm\\":" ++ jsonStr (nodeName armNode) ++ "}"',
@@ -292,8 +289,6 @@ def _finding_to_lean_expr(f: dict[str, Any]) -> str:
         return f"FlowFinding.undeclaredUpstreamSource Node.{f['source']}"
     if ft == "danglingInput":
         return f'FlowFinding.danglingInput "{escape_lean_str(f["op"])}" Node.{f["missing"]}'
-    if ft == "missingCostAccounting":
-        return f"FlowFinding.missingCostAccounting Node.{f['method']} Tag.{f['cost_tag']}"
     if ft == "trivialCostLedger":
         return f"FlowFinding.trivialCostLedger Node.{f['ledger']} Node.{f['arm']}"
     if ft == "unusedCostLedger":
