@@ -33,8 +33,7 @@ inductive OpKind (σ : Type) where
       (representing structure introduced by the boundary/cut itself). -/
   | partition (cutStructures : List σ)
   /-- Many-to-one / information-destroying projection where the record does NOT specify which
-      specific tag collides (`untargetedLossyChannel` -> `unestablished` under `epistemicVerdict`,
-      preserving legacy `.rejected` under `flowVerdict`). -/
+      specific tag collides (`untargetedLossyChannel` -> `unestablished` under `epistemicVerdict`). -/
   | lossy (introduces : List σ)
   /-- Tag-specific many-to-one projection: explicitly witnesses that two distinct values of each
       tag in `lostTags` collide to the same output (lossless on tags NOT in `lostTags`). -/
@@ -182,12 +181,6 @@ inductive FlowFinding (ν σ : Type) where
   | orphanDeclaredBet (target : ν) (hyp : σ)
   /-- Claim explicitly declared out of scope for structural operation-flow auditing. -/
   | claimOutOfScope (reason : String)
-  deriving DecidableEq, Repr
-
-/-- Legacy two-state verdict for a flow claim (retained untouched for backwards compatibility). -/
-inductive FlowVerdict where
-  | admissible
-  | rejected
   deriving DecidableEq, Repr
 
 /-- Four-state epistemic verdict separating:
@@ -745,9 +738,6 @@ def auditFlow (c : FlowClaim ν σ) : List (FlowFinding ν σ) :=
     hypFindings ++ orphanBets ++ danglingInputsUpstream c.graph target
   | .outOfScope reason => [.claimOutOfScope reason]
 
-def flowVerdict (c : FlowClaim ν σ) : FlowVerdict :=
-  if (auditFlow c).isEmpty then .admissible else .rejected
-
 /-- Classify a finding as a direct structural/empirical contradiction (`true` → `rejected`)
     versus a data/design/graph-boundary gap (`false` → `unestablished`). -/
 def FlowFinding.isContradiction : FlowFinding ν σ → Bool
@@ -795,8 +785,7 @@ def FlowFinding.isContradictionFor (kind : FlowClaimKind ν σ) : FlowFinding ν
   | .failedForgetOnPath _ _ .notShown => kind.isEmergence
   | f => f.isContradiction
 
-/-- Four-state epistemic verdict for a flow claim.
-    Preserves legacy `flowVerdict` untouched for full backwards compatibility. -/
+/-- Four-state epistemic verdict for a flow claim. -/
 def epistemicVerdict (c : FlowClaim ν σ) : EpistemicVerdict :=
   match c.kind with
   | .outOfScope _ => .outOfScope
@@ -1171,28 +1160,32 @@ path carries `tag` to `target` (neither confirmed nor gated by `.notShown`).
 theorem admissible_emerges_has_no_smuggling_path
     (c : FlowClaim ν σ) (target : ν) (tag : σ)
     (hkind : c.kind = .emergesWithout target tag)
-    (hadm : flowVerdict c = .admissible) :
+    (hadm : epistemicVerdict c = .admissible) :
     findSmugglingPath c.graph tag target = none := by
-  unfold flowVerdict at hadm
-  split at hadm
-  · rename_i hempty
-    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
-    rw [auditFlow, hkind] at hnil
-    dsimp only at hnil
-    have hleft1 := (List.append_eq_nil_iff.mp hnil).1
-    have hleft := (List.append_eq_nil_iff.mp hleft1).1
-    have hforgets := (List.append_eq_nil_iff.mp hleft1).2
-    have hconfNone : findConfirmedSmugglingPath c.graph tag target = none := by
-      cases hp : findConfirmedSmugglingPath c.graph tag target with
-      | none => rfl
-      | some p =>
-        rw [hp] at hleft
-        cases p with
-        | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
-        | cons _ _ => simp at hleft
-    exact findSmugglingPathAux_none_of_confirmed_and_forgets_clean
-      c.graph tag target hforgets (.zero target) (Nat.le_refl _) hconfNone
-  · cases hadm
+  unfold epistemicVerdict at hadm
+  rw [hkind] at hadm
+  dsimp only at hadm
+  have hnil : auditFlow c = [] := by
+    cases hempty : (auditFlow c).isEmpty with
+    | true => exact List.isEmpty_iff.mp hempty
+    | false =>
+      simp only [hempty, Bool.false_eq_true, ↓reduceIte] at hadm
+      split at hadm <;> cases hadm
+  rw [auditFlow, hkind] at hnil
+  dsimp only at hnil
+  have hleft1 := (List.append_eq_nil_iff.mp hnil).1
+  have hleft := (List.append_eq_nil_iff.mp hleft1).1
+  have hforgets := (List.append_eq_nil_iff.mp hleft1).2
+  have hconfNone : findConfirmedSmugglingPath c.graph tag target = none := by
+    cases hp : findConfirmedSmugglingPath c.graph tag target with
+    | none => rfl
+    | some p =>
+      rw [hp] at hleft
+      cases p with
+      | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
+      | cons _ _ => simp at hleft
+  exact findSmugglingPathAux_none_of_confirmed_and_forgets_clean
+    c.graph tag target hforgets (.zero target) (Nat.le_refl _) hconfNone
 
 /--
 Theorem 2 (Anti-Degeneration — fixes v1's Rule 4 flaw):
@@ -1378,45 +1371,49 @@ then BOTH Alarm 1 (any leak into `excludedChannel`) AND Alarm 2 (any author-supp
 theorem admissible_policy3_clean_both_alarms
     (c : FlowClaim ν σ) (target excludedChannel : ν) (tag : σ)
     (hkind : c.kind = .emergesWithExclusion target excludedChannel tag)
-    (hadm : flowVerdict c = .admissible) :
+    (hadm : epistemicVerdict c = .admissible) :
     findSmugglingPath c.graph tag excludedChannel = none ∧
     findAuthorSuppliedPath c.graph tag target = none := by
-  unfold flowVerdict at hadm
-  split at hadm
-  · rename_i hempty
-    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
-    rw [auditFlow, hkind] at hnil
-    dsimp only at hnil
-    have h4 := (List.append_eq_nil_iff.mp hnil).1
-    have h3 := (List.append_eq_nil_iff.mp h4).1
-    have h2 := (List.append_eq_nil_iff.mp h3).1
-    have hforgetsAuthor := (List.append_eq_nil_iff.mp h3).2
-    have h12 := (List.append_eq_nil_iff.mp h2).1
-    have hforgetsExcl := (List.append_eq_nil_iff.mp h2).2
-    have ha1 := (List.append_eq_nil_iff.mp h12).1
-    have ha2 := (List.append_eq_nil_iff.mp h12).2
-    have hconf1 : findConfirmedSmugglingPath c.graph tag excludedChannel = none := by
-      cases hp : findConfirmedSmugglingPath c.graph tag excludedChannel with
-      | none => rfl
-      | some p =>
-        rw [hp] at ha1
-        cases p with
-        | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) excludedChannel hp)
-        | cons _ _ => simp at ha1
-    have hconf2 : findConfirmedAuthorSuppliedPath c.graph tag target = none := by
-      cases hp : findConfirmedAuthorSuppliedPath c.graph tag target with
-      | none => rfl
-      | some p =>
-        rw [hp] at ha2
-        cases p with
-        | nil => exact False.elim (findConfirmedAuthorSuppliedPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
-        | cons _ _ => simp at ha2
-    exact
-      ⟨ findSmugglingPathAux_none_of_confirmed_and_forgets_clean
-          c.graph tag excludedChannel hforgetsExcl (.zero excludedChannel) (Nat.le_refl _) hconf1
-      , findAuthorSuppliedPathAux_none_of_confirmed_and_forgets_clean
-          c.graph tag target hforgetsAuthor (.zero target) (Nat.le_refl _) hconf2 ⟩
-  · cases hadm
+  unfold epistemicVerdict at hadm
+  rw [hkind] at hadm
+  dsimp only at hadm
+  have hnil : auditFlow c = [] := by
+    cases hempty : (auditFlow c).isEmpty with
+    | true => exact List.isEmpty_iff.mp hempty
+    | false =>
+      simp only [hempty, Bool.false_eq_true, ↓reduceIte] at hadm
+      split at hadm <;> cases hadm
+  rw [auditFlow, hkind] at hnil
+  dsimp only at hnil
+  have h4 := (List.append_eq_nil_iff.mp hnil).1
+  have h3 := (List.append_eq_nil_iff.mp h4).1
+  have h2 := (List.append_eq_nil_iff.mp h3).1
+  have hforgetsAuthor := (List.append_eq_nil_iff.mp h3).2
+  have h12 := (List.append_eq_nil_iff.mp h2).1
+  have hforgetsExcl := (List.append_eq_nil_iff.mp h2).2
+  have ha1 := (List.append_eq_nil_iff.mp h12).1
+  have ha2 := (List.append_eq_nil_iff.mp h12).2
+  have hconf1 : findConfirmedSmugglingPath c.graph tag excludedChannel = none := by
+    cases hp : findConfirmedSmugglingPath c.graph tag excludedChannel with
+    | none => rfl
+    | some p =>
+      rw [hp] at ha1
+      cases p with
+      | nil => exact False.elim (findConfirmedSmugglingPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) excludedChannel hp)
+      | cons _ _ => simp at ha1
+  have hconf2 : findConfirmedAuthorSuppliedPath c.graph tag target = none := by
+    cases hp : findConfirmedAuthorSuppliedPath c.graph tag target with
+    | none => rfl
+    | some p =>
+      rw [hp] at ha2
+      cases p with
+      | nil => exact False.elim (findConfirmedAuthorSuppliedPathAux_ne_nil c.graph tag (c.graph.ops.length + 1) target hp)
+      | cons _ _ => simp at ha2
+  exact
+    ⟨ findSmugglingPathAux_none_of_confirmed_and_forgets_clean
+        c.graph tag excludedChannel hforgetsExcl (.zero excludedChannel) (Nat.le_refl _) hconf1
+    , findAuthorSuppliedPathAux_none_of_confirmed_and_forgets_clean
+        c.graph tag target hforgetsAuthor (.zero target) (Nat.le_refl _) hconf2 ⟩
 
 /--
 Theorem 6 (Soundness of Tier 2 — structural `effectivenessClaim`):
@@ -1433,7 +1430,7 @@ theorem admissible_effectiveness_has_control_and_charged_cost
     (c : FlowClaim ν σ) (methodNode evaluationNode : ν)
     (controlNode costLedgerNode : Option ν) (costTag : σ)
     (hkind : c.kind = .effectivenessClaim methodNode evaluationNode controlNode costLedgerNode costTag)
-    (hadm : flowVerdict c = .admissible) :
+    (hadm : epistemicVerdict c = .admissible) :
     (methodNode ∈ ancestors c.graph evaluationNode) ∧
     (∀ ledger,
       costLedgerNode = some ledger →
@@ -1448,114 +1445,117 @@ theorem admissible_effectiveness_has_control_and_charged_cost
       methodNode ∉ ancestors c.graph ctrl ∧
       ctrl ∉ ancestors c.graph methodNode ∧
       ctrl ∈ ancestors c.graph evaluationNode) := by
-  unfold flowVerdict at hadm
-  split at hadm
-  · rename_i hempty
-    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
-    rw [auditFlow, hkind] at hnil
-    dsimp only at hnil
-    have h1 := (List.append_eq_nil_iff.mp hnil).1
-    have h2 := (List.append_eq_nil_iff.mp h1).1
-    have hctrl := (List.append_eq_nil_iff.mp h2).2
-    have h3 := (List.append_eq_nil_iff.mp h2).1
-    have hledger := (List.append_eq_nil_iff.mp h3).1
-    have hmethUnused := (List.append_eq_nil_iff.mp h3).2
-    have hmethInEval : methodNode ∈ ancestors c.graph evaluationNode := by
-      split at hmethUnused
-      · simp at hmethUnused
+  unfold epistemicVerdict at hadm
+  rw [hkind] at hadm
+  dsimp only at hadm
+  have hnil : auditFlow c = [] := by
+    cases hempty : (auditFlow c).isEmpty with
+    | true => exact List.isEmpty_iff.mp hempty
+    | false =>
+      simp only [hempty, Bool.false_eq_true, ↓reduceIte] at hadm
+      split at hadm <;> cases hadm
+  rw [auditFlow, hkind] at hnil
+  dsimp only at hnil
+  have h1 := (List.append_eq_nil_iff.mp hnil).1
+  have h2 := (List.append_eq_nil_iff.mp h1).1
+  have hctrl := (List.append_eq_nil_iff.mp h2).2
+  have h3 := (List.append_eq_nil_iff.mp h2).1
+  have hledger := (List.append_eq_nil_iff.mp h3).1
+  have hmethUnused := (List.append_eq_nil_iff.mp h3).2
+  have hmethInEval : methodNode ∈ ancestors c.graph evaluationNode := by
+    split at hmethUnused
+    · simp at hmethUnused
+    · rename_i hnot
+      exact Decidable.byContradiction hnot
+  have hledgerValid : ∀ ledger,
+      costLedgerNode = some ledger →
+      ledger ≠ methodNode ∧
+      ledger ∈ ancestors c.graph evaluationNode ∧
+      ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
+        src ∈ rawSourceOriginsExcluding c.graph costTag
+          (ledgerExcludedArms methodNode controlNode) ledger := by
+    intro ledger hl
+    rw [hl] at hledger
+    dsimp only at hledger
+    have hl1 := (List.append_eq_nil_iff.mp hledger).1
+    have hl2 := (List.append_eq_nil_iff.mp hl1).1
+    have hl3 := (List.append_eq_nil_iff.mp hl2).1
+    have htrivM := (List.append_eq_nil_iff.mp hl3).1
+    have hunusedL := (List.append_eq_nil_iff.mp hl2).2
+    have huncharged := (List.append_eq_nil_iff.mp hl1).2
+    have hneM : ledger ≠ methodNode := by
+      split at htrivM
+      · simp at htrivM
+      · assumption
+    have hlInEval : ledger ∈ ancestors c.graph evaluationNode := by
+      split at hunusedL
+      · simp at hunusedL
       · rename_i hnot
         exact Decidable.byContradiction hnot
-    have hledgerValid : ∀ ledger,
-        costLedgerNode = some ledger →
-        ledger ≠ methodNode ∧
-        ledger ∈ ancestors c.graph evaluationNode ∧
-        ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
-          src ∈ rawSourceOriginsExcluding c.graph costTag
-            (ledgerExcludedArms methodNode controlNode) ledger := by
-      intro ledger hl
-      rw [hl] at hledger
-      dsimp only at hledger
-      have hl1 := (List.append_eq_nil_iff.mp hledger).1
-      have hl2 := (List.append_eq_nil_iff.mp hl1).1
-      have hl3 := (List.append_eq_nil_iff.mp hl2).1
-      have htrivM := (List.append_eq_nil_iff.mp hl3).1
-      have hunusedL := (List.append_eq_nil_iff.mp hl2).2
-      have huncharged := (List.append_eq_nil_iff.mp hl1).2
-      have hneM : ledger ≠ methodNode := by
-        split at htrivM
-        · simp at htrivM
+    have hallCharged : ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
+        src ∈ rawSourceOriginsExcluding c.graph costTag
+          (ledgerExcludedArms methodNode controlNode) ledger := by
+      intro src hsrc
+      have hmemAll : src ∈ (match controlNode with
+          | some ctrl => (rawSourceOrigins c.graph costTag methodNode ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
+          | none => rawSourceOrigins c.graph costTag methodNode) := by
+        cases controlNode with
+        | none => exact hsrc
+        | some ctrl =>
+          rw [List.mem_eraseDups]
+          exact List.mem_append_left _ hsrc
+      have hfm := List.filterMap_eq_nil_iff.mp huncharged src hmemAll
+      split at hfm
+      · simp at hfm
+      · rename_i hnot
+        exact Decidable.byContradiction hnot
+    exact ⟨hneM, hlInEval, hallCharged⟩
+  have hctrlExists : ∃ ctrl,
+      controlNode = some ctrl ∧
+      ctrl ≠ methodNode ∧
+      methodNode ∉ ancestors c.graph ctrl ∧
+      ctrl ∉ ancestors c.graph methodNode ∧
+      ctrl ∈ ancestors c.graph evaluationNode := by
+    cases hc : controlNode with
+    | none =>
+      rw [hc] at hctrl
+      simp at hctrl
+    | some ctrl =>
+      rw [hc] at hctrl
+      dsimp only at hctrl
+      have hc1 := (List.append_eq_nil_iff.mp hctrl).1
+      have hc2 := (List.append_eq_nil_iff.mp hc1).1
+      have hself := (List.append_eq_nil_iff.mp hc2).1
+      have hdep := (List.append_eq_nil_iff.mp hc2).2
+      have hunused := (List.append_eq_nil_iff.mp hc1).2
+      have hne : ctrl ≠ methodNode := by
+        split at hself
+        · simp at hself
         · assumption
-      have hlInEval : ledger ∈ ancestors c.graph evaluationNode := by
-        split at hunusedL
-        · simp at hunusedL
+      have hnotDep : methodNode ∉ ancestors c.graph ctrl ∧ ctrl ∉ ancestors c.graph methodNode := by
+        split at hdep
+        · simp at hdep
+        · rename_i hcond
+          have hfalse : (methodNode ∈ ancestors c.graph ctrl || ctrl ∈ ancestors c.graph methodNode) = false := by
+            cases hb : (methodNode ∈ ancestors c.graph ctrl || ctrl ∈ ancestors c.graph methodNode) with
+            | false => rfl
+            | true =>
+              exfalso
+              apply hcond
+              simp [hne, hb]
+          simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not] at hfalse
+          exact hfalse
+      have hctrlInEval : ctrl ∈ ancestors c.graph evaluationNode := by
+        split at hunused
+        · simp at hunused
         · rename_i hnot
           exact Decidable.byContradiction hnot
-      have hallCharged : ∀ src ∈ rawSourceOrigins c.graph costTag methodNode,
-          src ∈ rawSourceOriginsExcluding c.graph costTag
-            (ledgerExcludedArms methodNode controlNode) ledger := by
-        intro src hsrc
-        have hmemAll : src ∈ (match controlNode with
-            | some ctrl => (rawSourceOrigins c.graph costTag methodNode ++ rawSourceOrigins c.graph costTag ctrl).eraseDups
-            | none => rawSourceOrigins c.graph costTag methodNode) := by
-          cases controlNode with
-          | none => exact hsrc
-          | some ctrl =>
-            rw [List.mem_eraseDups]
-            exact List.mem_append_left _ hsrc
-        have hfm := List.filterMap_eq_nil_iff.mp huncharged src hmemAll
-        split at hfm
-        · simp at hfm
-        · rename_i hnot
-          exact Decidable.byContradiction hnot
-      exact ⟨hneM, hlInEval, hallCharged⟩
-    have hctrlExists : ∃ ctrl,
-        controlNode = some ctrl ∧
-        ctrl ≠ methodNode ∧
-        methodNode ∉ ancestors c.graph ctrl ∧
-        ctrl ∉ ancestors c.graph methodNode ∧
-        ctrl ∈ ancestors c.graph evaluationNode := by
-      cases hc : controlNode with
-      | none =>
-        rw [hc] at hctrl
-        simp at hctrl
-      | some ctrl =>
-        rw [hc] at hctrl
-        dsimp only at hctrl
-        have hc1 := (List.append_eq_nil_iff.mp hctrl).1
-        have hc2 := (List.append_eq_nil_iff.mp hc1).1
-        have hself := (List.append_eq_nil_iff.mp hc2).1
-        have hdep := (List.append_eq_nil_iff.mp hc2).2
-        have hunused := (List.append_eq_nil_iff.mp hc1).2
-        have hne : ctrl ≠ methodNode := by
-          split at hself
-          · simp at hself
-          · assumption
-        have hnotDep : methodNode ∉ ancestors c.graph ctrl ∧ ctrl ∉ ancestors c.graph methodNode := by
-          split at hdep
-          · simp at hdep
-          · rename_i hcond
-            have hfalse : (methodNode ∈ ancestors c.graph ctrl || ctrl ∈ ancestors c.graph methodNode) = false := by
-              cases hb : (methodNode ∈ ancestors c.graph ctrl || ctrl ∈ ancestors c.graph methodNode) with
-              | false => rfl
-              | true =>
-                exfalso
-                apply hcond
-                simp [hne, hb]
-            simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not] at hfalse
-            exact hfalse
-        have hctrlInEval : ctrl ∈ ancestors c.graph evaluationNode := by
-          split at hunused
-          · simp at hunused
-          · rename_i hnot
-            exact Decidable.byContradiction hnot
-        exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval⟩
-    exact ⟨hmethInEval, hledgerValid, hctrlExists⟩
-  · cases hadm
+      exact ⟨ctrl, rfl, hne, hnotDep.1, hnotDep.2, hctrlInEval⟩
+  exact ⟨hmethInEval, hledgerValid, hctrlExists⟩
 
 /--
 Theorem 7a (Characterization of `EpistemicVerdict.admissible`):
-A claim is `EpistemicVerdict.admissible` if and only if it is not `outOfScope` and `auditFlow c = []`
-(equivalently, `flowVerdict c = .admissible`).
+A claim is `EpistemicVerdict.admissible` if and only if it is not `outOfScope` and `auditFlow c = []`.
 -/
 theorem epistemicVerdict_admissible_iff (c : FlowClaim ν σ) :
     epistemicVerdict c = .admissible ↔
@@ -1675,36 +1675,32 @@ then:
 theorem admissible_theoremApplication_implies_hypotheses_satisfied
     (c : FlowClaim ν σ) (target : ν) (hypotheses : List (Hypothesis σ)) (declaredBets : List σ)
     (hkind : c.kind = .theoremApplication target hypotheses declaredBets)
-    (hadm : flowVerdict c = .admissible) :
+    (hadm : epistemicVerdict c = .admissible) :
     (∀ h ∈ hypotheses, h.status = .discharged ∨ (h.status = .bet ∧ h.id ∈ declaredBets)) ∧
     (∀ b ∈ declaredBets, ∃ h ∈ hypotheses, h.id = b) := by
-  unfold flowVerdict at hadm
-  split at hadm
-  · rename_i hempty
-    have hnil : auditFlow c = [] := List.isEmpty_iff.mp hempty
-    rw [auditFlow, hkind] at hnil
-    dsimp only at hnil
-    have h12 := (List.append_eq_nil_iff.mp hnil).1
-    have hhyps := (List.append_eq_nil_iff.mp h12).1
-    have horphans := (List.append_eq_nil_iff.mp h12).2
-    constructor
-    · intro h hh
-      have hfm := List.filterMap_eq_nil_iff.mp hhyps h hh
-      cases hs : h.status with
-      | discharged => exact Or.inl rfl
-      | knownFalse => simp [hs] at hfm
-      | bet =>
-        simp only [hs] at hfm
-        split at hfm
-        · rename_i hdecl
-          exact Or.inr ⟨rfl, hdecl⟩
-        · simp at hfm
-    · intro b hb
-      have hfm := List.filterMap_eq_nil_iff.mp horphans b hb
+  have hnil : auditFlow c = [] := (epistemicVerdict_admissible_iff c).mp hadm |>.2
+  rw [auditFlow, hkind] at hnil
+  dsimp only at hnil
+  have h12 := (List.append_eq_nil_iff.mp hnil).1
+  have hhyps := (List.append_eq_nil_iff.mp h12).1
+  have horphans := (List.append_eq_nil_iff.mp h12).2
+  constructor
+  · intro h hh
+    have hfm := List.filterMap_eq_nil_iff.mp hhyps h hh
+    cases hs : h.status with
+    | discharged => exact Or.inl rfl
+    | knownFalse => simp [hs] at hfm
+    | bet =>
+      simp only [hs] at hfm
       split at hfm
-      · rename_i hmem
-        exact List.mem_map.mp hmem
+      · rename_i hdecl
+        exact Or.inr ⟨rfl, hdecl⟩
       · simp at hfm
-  · cases hadm
+  · intro b hb
+    have hfm := List.filterMap_eq_nil_iff.mp horphans b hb
+    split at hfm
+    · rename_i hmem
+      exact List.mem_map.mp hmem
+    · simp at hfm
 
 end EpistemicLedger.OperationFlow

@@ -42,21 +42,21 @@ def emergenceOn (g : FlowGraph Node Tag) : FlowClaim Node Tag where
   kind := .emergesWithout .readout .causalStructure
 
 /-- With the simulator declared, the claim is rejected. -/
-theorem full_graph_rejected : flowVerdict (emergenceOn fullGraph) = .rejected := by decide
+theorem full_graph_rejected : epistemicVerdict (emergenceOn fullGraph) = .rejected := by decide
 
 /-- GAP 1 (closed). With the simulator left out of `sources`, the same claim
 used to pass, although the graph itself shows an input whose origin and
 structure were never stated. Since gemini's dangling-input check
-(2026-11-26 17:35) it is rejected. Kept as a regression test. -/
-theorem undeclared_leaf_input_rejected :
-    flowVerdict (emergenceOn graphWithUndeclaredLeaf) = .rejected := by decide
+(2026-11-26 17:35) it is flagged (`unestablished` via `danglingInput`). Kept as a regression test. -/
+theorem undeclared_leaf_input_unestablished :
+    epistemicVerdict (emergenceOn graphWithUndeclaredLeaf) = .unestablished := by decide
 
-/-- GAP 1 (closed), conditional claims: the undeclared input is now reported. -/
-theorem undeclared_leaf_input_rejected_conditional :
-    flowVerdict
+/-- GAP 1 (closed), conditional claims: the undeclared input is now reported (`unestablished`). -/
+theorem undeclared_leaf_input_unestablished_conditional :
+    epistemicVerdict
       { statement := "Given the probe, the readout holds."
         graph := graphWithUndeclaredLeaf
-        kind := .conditionalFlow .readout [.probe] } = .rejected := by decide
+        kind := .conditionalFlow .readout [.probe] } = .unestablished := by decide
 
 /-- A graph in which nothing carries the structure, with one forget step that
 has no evidence. -/
@@ -73,14 +73,14 @@ step without evidence rejected on its own. Since gemini's fix (2026-11-26
 Kept as a regression test. -/
 theorem idle_forget_no_longer_rejects :
     findSmugglingPath graphWithIdleForget .causalStructure .readout = none
-      ∧ flowVerdict (emergenceOn graphWithIdleForget) = .admissible := by decide
+      ∧ epistemicVerdict (emergenceOn graphWithIdleForget) = .admissible := by decide
 
 /-- OBSERVATION (open). Whether an emergence claim is rejected follows the auditor's
 `carries` label: the same operations with the label removed from the simulator
 pass. In a pipeline where every input reaches the target, the path search adds
 nothing to that one label. -/
 theorem verdict_follows_the_carries_label :
-    flowVerdict (emergenceOn
+    epistemicVerdict (emergenceOn
       { fullGraph with
         sources :=
           [ ⟨.simulator, .setByExperimenter, []⟩,

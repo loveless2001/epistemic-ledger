@@ -66,8 +66,8 @@ def narrowClaim : FlowClaim Node Tag where
   graph := graph
   kind := .conditionalFlow .entropicTimeTau [.opticalTrap, .opticalBarrierV, .labClock2ms, .becAtoms]
 
-theorem headline_rejected : flowVerdict headlineClaim = .rejected := by decide
-theorem narrow_admissible : flowVerdict narrowClaim = .admissible := by decide
+theorem headline_rejected : epistemicVerdict headlineClaim = .rejected := by decide
+theorem narrow_admissible : epistemicVerdict narrowClaim = .admissible := by decide
 
 theorem headline_catches_failed_forget :
     FlowFinding.failedForgetOnPath "absorb_barrier_in_norm" Tag.timeOrdering Invariance.contradicted
@@ -136,9 +136,9 @@ def narrowEngineeringClaim : FlowClaim Node Tag where
   graph := graph
   kind := .conditionalFlow .textJepa [.trueWorldZ, .webImageCorpus, .pairingOracle, .clipImageTextPretraining]
 
-theorem independence_rejected : flowVerdict independentConvergenceClaim = .rejected := by decide
-theorem unique_recovery_rejected : flowVerdict uniqueRecoveryClaim = .rejected := by decide
-theorem narrow_engineering_admissible : flowVerdict narrowEngineeringClaim = .admissible := by decide
+theorem independence_rejected : epistemicVerdict independentConvergenceClaim = .rejected := by decide
+theorem unique_recovery_rejected : epistemicVerdict uniqueRecoveryClaim = .rejected := by decide
+theorem narrow_engineering_admissible : epistemicVerdict narrowEngineeringClaim = .admissible := by decide
 
 theorem catches_shared_clip_pretraining :
     FlowFinding.sharedUpstreamStructure Node.clipImageTextPretraining Tag.crossModalAlignment
@@ -195,8 +195,8 @@ def narrowRecoveryClaim : FlowClaim Node Tag where
   kind := .conditionalFlow .reconstructedLightCone
     [.minkowskiQftSimulator, .quantumProbeSetup, .externalMetricExtractor]
 
-theorem headline_rejected : flowVerdict headlineClaim = .rejected := by decide
-theorem narrow_recovery_admissible : flowVerdict narrowRecoveryClaim = .admissible := by decide
+theorem headline_rejected : epistemicVerdict headlineClaim = .rejected := by decide
+theorem narrow_recovery_admissible : epistemicVerdict narrowRecoveryClaim = .admissible := by decide
 
 theorem headline_exhibits_multi_hop_smuggling_path :
     FlowFinding.smuggledStructure
@@ -286,7 +286,7 @@ def ablationClaim (coTrackerCarries3D : Bool) : FlowClaim Node Tag where
   kind := .emergesWithout .reptAblationModel .geometry3D
 
 theorem main_rejected_for_depth_pose_smuggling :
-    flowVerdict mainEmergenceClaim = .rejected := by decide
+    epistemicVerdict mainEmergenceClaim = .rejected := by decide
 
 theorem main_exhibits_offline_3d_path :
     FlowFinding.smuggledStructure
@@ -298,7 +298,7 @@ theorem main_exhibits_offline_3d_path :
 /-- With Table 2 ablation blocking depth+pose, if CoTracker3 itself carries 3D pretraining taint,
 the checker pinpoints CoTracker3 as the remaining smuggling path. -/
 theorem ablation_pinpoints_cotracker_if_tainted :
-    flowVerdict (ablationClaim true) = .rejected ∧
+    epistemicVerdict (ablationClaim true) = .rejected ∧
     FlowFinding.smuggledStructure
       Tag.geometry3D
       Node.coTracker3Pretrained
@@ -308,7 +308,7 @@ theorem ablation_pinpoints_cotracker_if_tainted :
 /-- With Table 2 ablation blocking depth+pose and no 3D taint in CoTracker3/DINOv2,
 no 3D-tagged path is found in the recorded graph despite multiple `setByExperimenter` nodes. -/
 theorem ablation_admissible_when_cotracker_clean :
-    flowVerdict (ablationClaim false) = .admissible := by decide
+    epistemicVerdict (ablationClaim false) = .admissible := by decide
 
 end RePTFlow
 
@@ -356,23 +356,23 @@ def idleForgetGraph : FlowClaim Node Tag where
       ⟨"idle_forget", [.mid], .output, .forget .geometry .notShown⟩]⟩
   kind := .emergesWithout .output .geometry
 
-theorem fabricated_recovery_rejected :
-    flowVerdict fabricatedRecovery = .rejected ∧
+theorem fabricated_recovery_unestablished :
+    epistemicVerdict fabricatedRecovery = .unestablished ∧
     FlowFinding.unaccessedTargetStructure Node.output Tag.geometry ∈ auditFlow fabricatedRecovery := by
   decide
 
 theorem shared_experimenter_rejected :
-    flowVerdict sharedExperimenterInput = .rejected ∧
+    epistemicVerdict sharedExperimenterInput = .rejected ∧
     FlowFinding.sharedExperimenterSource Node.input ∈ auditFlow sharedExperimenterInput := by
   decide
 
-theorem dangling_input_rejected :
-    flowVerdict danglingInputGraph = .rejected ∧
+theorem dangling_input_unestablished :
+    epistemicVerdict danglingInputGraph = .unestablished ∧
     FlowFinding.danglingInput "consume_missing" Node.input ∈ auditFlow danglingInputGraph := by
   decide
 
 theorem idle_forget_admissible :
-    flowVerdict idleForgetGraph = .admissible := by
+    epistemicVerdict idleForgetGraph = .admissible := by
   decide
 
 end AdversarialRegressions
@@ -461,29 +461,29 @@ def simulatorDepthInLoss : FlowClaim Node Tag where
   kind := .emergesWithExclusion .trainedModel .lossTarget .geometry3D
 
 theorem measured_depth_in_loss_rejected_by_alarm1 :
-    flowVerdict measuredDepthInLoss = .rejected ∧
+    epistemicVerdict measuredDepthInLoss = .rejected ∧
     FlowFinding.excludedChannelLeak Tag.geometry3D Node.measuredDepth [.measuredDepth, .lossTarget]
       ∈ auditFlow measuredDepthInLoss := by
   decide
 
 theorem measured_depth_in_eval_only_admissible :
-    flowVerdict measuredDepthInEvalOnly = .admissible := by
+    epistemicVerdict measuredDepthInEvalOnly = .admissible := by
   decide
 
 theorem rept_frozen_dino_rejected_by_alarm2_only :
-    flowVerdict reptWithFrozenDino = .rejected ∧
+    epistemicVerdict reptWithFrozenDino = .rejected ∧
     FlowFinding.authorSuppliedStructure Tag.geometry3D Node.frozenDinoV2 [.frozenDinoV2, .trainedModel]
       ∈ auditFlow reptWithFrozenDino := by
   decide
 
 theorem simulator_rgb_only_rejected_by_alarm2 :
-    flowVerdict simulatorRgbOnly = .rejected ∧
+    epistemicVerdict simulatorRgbOnly = .rejected ∧
     FlowFinding.authorSuppliedStructure Tag.geometry3D Node.simRenderer [.simRenderer, .simRgb, .trainedModel]
       ∈ auditFlow simulatorRgbOnly := by
   decide
 
 theorem simulator_depth_in_loss_triggers_both_alarms :
-    flowVerdict simulatorDepthInLoss = .rejected ∧
+    epistemicVerdict simulatorDepthInLoss = .rejected ∧
     FlowFinding.excludedChannelLeak Tag.geometry3D Node.simRenderer [.simRenderer, .simDepth, .lossTarget]
       ∈ auditFlow simulatorDepthInLoss ∧
     FlowFinding.authorSuppliedStructure Tag.geometry3D Node.simRenderer [.simRenderer, .simRgb, .trainedModel]
@@ -581,29 +581,29 @@ def societyNoControlNoCost : FlowClaim Node Tag where
   kind := .effectivenessClaim .autonomousSocietyRun .rawStudyCountReport none none .resourceCost
 
 theorem separate_accounts_equal_dollars_posthoc_meter_admissible :
-    flowVerdict separateAccountsEqualDollars = .admissible := by
+    epistemicVerdict separateAccountsEqualDollars = .admissible := by
   decide
 
 theorem forget_shown_cannot_erase_spent_cost :
-    flowVerdict forgetShownCannotEraseCost = .rejected ∧
+    epistemicVerdict forgetShownCannotEraseCost = .rejected ∧
     FlowFinding.unaccountedCostSource Node.humanOperatorHours Node.partialCostLedger Tag.resourceCost
       ∈ auditFlow forgetShownCannotEraseCost := by
   decide
 
 theorem dependent_control_arm_rejected :
-    flowVerdict controlDerivedFromMethod = .rejected ∧
+    epistemicVerdict controlDerivedFromMethod = .rejected ∧
     FlowFinding.dependentControlArm Node.autonomousSocietyRun Node.clonedControlArm
       ∈ auditFlow controlDerivedFromMethod := by
   decide
 
 theorem ledger_cloned_from_control_rejected :
-    flowVerdict ledgerClonedFromControlOnly = .rejected ∧
+    epistemicVerdict ledgerClonedFromControlOnly = .rejected ∧
     FlowFinding.unaccountedCostSource Node.sharedGpuCluster Node.partialCostLedger Tag.resourceCost
       ∈ auditFlow ledgerClonedFromControlOnly := by
   decide
 
-theorem society_rejected_no_control_no_cost :
-    flowVerdict societyNoControlNoCost = .rejected ∧
+theorem society_unestablished_no_control_no_cost :
+    epistemicVerdict societyNoControlNoCost = .unestablished ∧
     FlowFinding.missingMatchedControl Node.autonomousSocietyRun ∈ auditFlow societyNoControlNoCost := by
   decide
 
@@ -697,7 +697,7 @@ def losslessSignalWithLossyNoiseClaim : FlowClaim RNode RTag where
   kind := .uniqueRecovery .pairOut .signal
 
 /-- Codex Finding 2b: `uniqueRecovery` with NO upstream `SourceNode` carrying `.signal` -> `unestablished`
-    (missing observational access in the declared graph; legacy `flowVerdict` remains `.rejected`). -/
+    (missing observational access in the declared graph). -/
 def unaccessedRecoveryClaim : FlowClaim RNode RTag where
   statement := "Claiming unique recovery of signal with no declared SourceNode carrying signal."
   graph := ⟨[⟨.noise, .measured, []⟩], [⟨"readout", [.noise], .target, .transform []⟩]⟩
@@ -706,7 +706,6 @@ def unaccessedRecoveryClaim : FlowClaim RNode RTag where
 /-- Unhedged emergence across `.forget .signal .notShown` -> `rejected` (Rule 2, Part B: Barontini F2);
     `uniqueRecovery` across `.forget .signal .notShown` remains `unestablished` (tested below). -/
 theorem sole_path_notShown_emergence_rejected :
-    flowVerdict solePathNotShownClaim = .rejected ∧
     epistemicVerdict solePathNotShownClaim = .rejected ∧
     auditFlow solePathNotShownClaim = [FlowFinding.failedForgetOnPath "unverified_forget" RTag.signal Invariance.notShown] := by
   decide
@@ -722,7 +721,6 @@ theorem lossless_signal_with_lossy_unrelated_noise_admissible :
   decide
 
 theorem unaccessed_recovery_is_unestablished_in_epistemic_verdict :
-    flowVerdict unaccessedRecoveryClaim = .rejected ∧
     epistemicVerdict unaccessedRecoveryClaim = .unestablished := by
   decide
 
@@ -753,7 +751,6 @@ theorem pair_raw_and_rounded_signal_admissible :
   decide
 
 theorem recovery_through_notShown_is_unestablished :
-    flowVerdict recoveryThroughNotShownForgetClaim = .rejected ∧
     epistemicVerdict recoveryThroughNotShownForgetClaim = .unestablished ∧
     auditFlow recoveryThroughNotShownForgetClaim =
       [FlowFinding.failedForgetOnPath "unverified_forget" RTag.signal Invariance.notShown] := by
@@ -808,7 +805,6 @@ theorem math_declared_bet_admissible :
   decide
 
 theorem math_undeclared_bet_unestablished :
-    flowVerdict mathUndeclaredBetClaim = .rejected ∧
     epistemicVerdict mathUndeclaredBetClaim = .unestablished ∧
     auditFlow mathUndeclaredBetClaim =
       [FlowFinding.undeclaredHypothesisBet MathNode.theoremOut MathTag.grh] := by
@@ -846,14 +842,12 @@ def orphanDeclaredBetClaim : FlowClaim MathNode MathTag where
     [.grh]
 
 theorem parallel_lossy_qr_pair_is_unestablished_not_rejected :
-    flowVerdict parallelLossyQRPairClaim = .rejected ∧
     epistemicVerdict parallelLossyQRPairClaim = .unestablished ∧
     auditFlow parallelLossyQRPairClaim =
       [FlowFinding.parallelLossyBranches QRNode.qrPair QRTag.inputN [QRNode.qDiv2, QRNode.rMod2]] := by
   decide
 
 theorem orphan_declared_bet_caught_in_lean :
-    flowVerdict orphanDeclaredBetClaim = .rejected ∧
     epistemicVerdict orphanDeclaredBetClaim = .unestablished ∧
     auditFlow orphanDeclaredBetClaim =
       [FlowFinding.orphanDeclaredBet MathNode.theoremOut MathTag.grh] := by

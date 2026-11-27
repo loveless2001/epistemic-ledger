@@ -14,8 +14,8 @@ inductive Tag where
   | geometry
   deriving DecidableEq, Repr
 
-private def verdictFor (g : FlowGraph Node Tag) (k : FlowClaimKind Node Tag) : FlowVerdict :=
-  flowVerdict ⟨"Synthetic review case", g, k⟩
+private def verdictFor (g : FlowGraph Node Tag) (k : FlowClaimKind Node Tag) : EpistemicVerdict :=
+  epistemicVerdict ⟨"Synthetic review case", g, k⟩
 
 /-- The only tagged origin is an operation. The measured source carries no geometry. -/
 private def injected : FlowGraph Node Tag :=
@@ -24,7 +24,7 @@ private def injected : FlowGraph Node Tag :=
 theorem injected_tag_cannot_establish_recovery :
     let claim : FlowClaim Node Tag := ⟨"Recovery", injected, .uniqueRecovery .output .geometry⟩
     auditFlow claim = [.unaccessedTargetStructure .output .geometry] ∧
-      flowVerdict claim = .rejected := by decide
+      epistemicVerdict claim = .unestablished := by decide
 
 /-- Both branches use the same unforgotten experimenter-set input. Each
 operation introduces the target tag independently of the other operation. -/
@@ -37,7 +37,7 @@ theorem shared_setup_precludes_independence :
     let claim : FlowClaim Node Tag :=
       ⟨"Independent branches", sharedSetup, .independentConvergence .output .other .geometry⟩
     auditFlow claim = [.sharedExperimenterSource .input] ∧
-      flowVerdict claim = .rejected := by decide
+      epistemicVerdict claim = .rejected := by decide
 
 /-- A transform consumes a raw input for which no source or producing op was recorded. -/
 private def dangling : FlowGraph Node Tag :=
@@ -46,7 +46,7 @@ private def dangling : FlowGraph Node Tag :=
 theorem missing_input_is_reported :
     let claim : FlowClaim Node Tag := ⟨"Conditional result", dangling, .conditionalFlow .output []⟩
     auditFlow claim = [.danglingInput "consume missing input" .input] ∧
-      flowVerdict claim = .rejected := by decide
+      epistemicVerdict claim = .unestablished := by decide
 
 private def blocked : FlowGraph Node Tag :=
   ⟨[⟨.input, .measured, [.geometry]⟩],
@@ -54,7 +54,7 @@ private def blocked : FlowGraph Node Tag :=
 
 /-- Forget blocks this tag, while the conditional provenance rule still requires the input. -/
 example : verdictFor blocked (.emergesWithout .output .geometry) = .admissible ∧
-    verdictFor blocked (.conditionalFlow .output []) = .rejected ∧
+    verdictFor blocked (.conditionalFlow .output []) = .unestablished ∧
     verdictFor blocked (.conditionalFlow .output [.input]) = .admissible := by decide
 
 private def parallel (k : OpKind Tag) : FlowGraph Node Tag :=

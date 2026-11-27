@@ -182,13 +182,13 @@ def claim2 : FlowClaim Node Tag where
       .lightconeReadoutRule, .quadraticNullFormAnsatz ]
 
 #eval auditFlow claim1
-#eval flowVerdict claim1
+#eval epistemicVerdict claim1
 
 #eval auditFlow claim2
-#eval flowVerdict claim2
+#eval epistemicVerdict claim2
 
-theorem claim1_verdict : flowVerdict claim1 = .rejected := by decide
-theorem claim2_verdict : flowVerdict claim2 = .admissible := by decide
+theorem claim1_verdict : epistemicVerdict claim1 = .rejected := by decide
+theorem claim2_verdict : epistemicVerdict claim2 = .admissible := by decide
 
 -- Sensitivity note (checked once, then removed): if `declaredSources` held only what the quoted
 -- sentence names (the task and the agent), `auditFlow` returned two `undeclaredUpstreamSource`
